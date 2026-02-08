@@ -1,0 +1,131 @@
+{
+    "market_hours": {
+        "open": "09:15",
+        "close": "15:30",
+        "pre_open": "09:00",
+        "post_close": "15:45"
+    },
+    "critical_times": {
+        "first_15_min": "09:15-09:30",
+        "rbi_announcement_window": "10:00-10:30",
+        "fii_data_time": "10:30",
+        "dii_data_time": "14:30",
+        "last_hour_start": "14:30",
+        "options_close": "15:15"
+    },
+    "nifty": {
+        "ticker": "^NSEI",
+        "lot_size": 50,
+        "strike_interval": 50,
+        "expiry_day": "Thursday",
+        "monthly_expiry": "Last Thursday",
+        "price_range": {
+            "min": 15000,
+            "max": 25000,
+            "typical": 22000
+        }
+    },
+    "banknifty": {
+        "ticker": "^NSEBANK",
+        "lot_size": 15,
+        "strike_interval": 100,
+        "expiry_day": "Wednesday",
+        "monthly_expiry": "Last Wednesday",
+        "price_range": {
+            "min": 35000,
+            "max": 55000,
+            "typical": 45000
+        }
+    },
+    "sensex": {
+        "ticker": "^BSESN",
+        "lot_size": 10,
+        "strike_interval": 100,
+        "expiry_day": "Thursday",
+        "price_range": {
+            "min": 50000,
+            "max": 80000,
+            "typical": 65000
+        }
+    },
+    "trading_rules": {
+        "max_daily_trades": 10,
+        "max_position_size_percent": 5,
+        "max_portfolio_risk_percent": 10,
+        "stop_loss_default_atr": 1.2,
+        "take_profit_default_atr": 2.2,
+        "min_confidence_for_trade": 0.65,
+        "max_consecutive_losses": 3,
+        "cool_off_period_minutes": 30
+    },
+    "volatility_settings": {
+        "low_vol_threshold": 0.12,
+        "high_vol_threshold": 0.25,
+        "extreme_vol_threshold": 0.35,
+        "typical_iv_nifty": 0.15,
+        "typical_iv_banknifty": 0.20
+    },
+    "regime_detection": {
+        "trending_up_threshold": 0.6,
+        "trending_down_threshold": -0.6,
+        "ranging_threshold": 0.2,
+        "vol_expansion_threshold": 1.5,
+        "vol_compression_threshold": 0.7
+    },
+    "options_preferences": {
+        "preferred_dte": [
+            7,
+            14,
+            30
+        ],
+        "preferred_delta": {
+            "directional": 0.5,
+            "premium_selling": 0.3,
+            "hedging": 0.7
+        },
+        "max_theta_per_day": -0.005,
+        "preferred_moneyness": [
+            "ATM",
+            "OTM"
+        ],
+        "avoid_expiry_day": true,
+        "expiry_day_cutoff_hour": 14
+    },
+    "data_sources": {
+        "price_data": "yfinance",
+        "iv_data": "nsepy_or_manual",
+        "oi_data": "nsepy",
+        "news_sources": [
+            "moneycontrol",
+            "economic_times",
+            "bloomberg_quint"
+        ],
+        "fii_dii_data": "nse_website"
+    },
+    "risk_parameters": {
+        "var_confidence_level": 0.95,
+        "monte_carlo_simulations": 10000,
+        "bayesian_prior_strength": 2,
+        "position_sizing_method": "kelly_fraction",
+        "max_portfolio_var": 0.05
+    },
+    "performance_targets": {
+        "monthly_return_target": 5,
+        "max_monthly_drawdown": 8,
+        "sharpe_ratio_target": 1.5,
+        "win_rate_target": 55,
+        "profit_factor_target": 1.8,
+        "max_consecutive_loss_target": 3
+    },
+    "alerts": {
+        "email_alerts": true,
+        "telegram_bot": true,
+        "critical_alerts": [
+            "large_loss",
+            "regime_change",
+            "high_volatility",
+            "expiry_day"
+        ],
+        "daily_summary_time": "16:00"
+    }
+}
