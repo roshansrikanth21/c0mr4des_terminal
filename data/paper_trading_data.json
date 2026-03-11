@@ -1,0 +1,61 @@
+{
+  "balance": 977125.5004882812,
+  "positions": {
+    "SBIN": {
+      "quantity": 20,
+      "avg_price": 1143.566650390625
+    }
+  },
+  "orders": [
+    {
+      "id": "ORD_20260210120325_0",
+      "symbol": "SBIN",
+      "quantity": 10,
+      "side": "BUY",
+      "price": 1142.199951171875,
+      "type": "MARKET",
+      "time": "2026-02-10T12:03:25.212257",
+      "status": "FILLED"
+    },
+    {
+      "id": "ORD_20260210120544_1",
+      "symbol": "SBIN",
+      "quantity": 5,
+      "side": "SELL",
+      "price": 1141.300048828125,
+      "type": "MARKET",
+      "time": "2026-02-10T12:05:44.745820",
+      "status": "FILLED"
+    },
+    {
+      "id": "ORD_20260210123123_2",
+      "symbol": "SBIN",
+      "quantity": 10,
+      "side": "BUY",
+      "price": 1143.300048828125,
+      "type": "MARKET",
+      "time": "2026-02-10T12:31:23.136112",
+      "status": "FILLED"
+    },
+    {
+      "id": "ORD_20260210123230_3",
+      "symbol": "SBIN",
+      "quantity": 5,
+      "side": "SELL",
+      "price": 1143.199951171875,
+      "type": "MARKET",
+      "time": "2026-02-10T12:32:30.512472",
+      "status": "FILLED"
+    },
+    {
+      "id": "ORD_20260210125021_4",
+      "symbol": "SBIN",
+      "quantity": 10,
+      "side": "BUY",
+      "price": 1144.199951171875,
+      "type": "MARKET",
+      "time": "2026-02-10T12:50:21.196210",
+      "status": "FILLED"
+    }
+  ]
+}

@@ -7,6 +7,7 @@ from datetime import datetime, time, timedelta
 import pytz
 import pandas as pd
 import numpy as np
+from typing import Dict, List, Optional
 
 class IndianMarketTiming:
     def __init__(self):
@@ -121,6 +122,38 @@ class IndianMarketTiming:
         
         return signals
     
+    def get_pre_open_analysis(self, pre_open_data: Dict) -> Dict:
+        """
+        Analyze Indian market pre-open data (9:00 - 9:08 AM).
+        Detects potential gap-ups/downs and initial supply/demand.
+        """
+        if not pre_open_data:
+            return {"status": "NO_DATA", "bias": "NEUTRAL"}
+            
+        current_price = pre_open_data.get('price', 0)
+        prev_close = pre_open_data.get('prev_close', 0)
+        
+        if prev_close == 0: return {"status": "ERROR"}
+
+        gap_pct = (current_price - prev_close) / prev_close * 100
+        
+        bias = "NEUTRAL"
+        if gap_pct > 0.5: bias = "BULLISH_GAP"
+        elif gap_pct < -0.5: bias = "BEARISH_GAP"
+        
+        # Sense check: Large gaps often get "filled" in the first 30 mins
+        recommendation = "WAIT_FOR_ORB" # Opening Range Breakout
+        if abs(gap_pct) > 1.5:
+            recommendation = "CAUTION: OVEREXTENDED_GAP"
+
+        return {
+            "price": current_price,
+            "gap_pct": float(gap_pct),
+            "bias": bias,
+            "recommendation": recommendation,
+            "action": "WATCH_915"
+        }
+
     def should_enter_trade(self):
         """Based on timing, should we enter a new trade?"""
         now = datetime.now(self.ist)

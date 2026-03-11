@@ -3,6 +3,11 @@ import pandas as pd
 from scipy.stats import wasserstein_distance, entropy, norm, beta
 import yfinance as yf
 
+try:
+    from backend.services.market_data_service import get_sync_market_data
+except ImportError:
+    get_sync_market_data = None
+
 # --- Bayesian Inference Model ---
 class BayesianMarketModel:
     def __init__(self):
@@ -74,10 +79,20 @@ def get_quant_analysis(ticker: str, period="1y", interval="1d"):
     4. Monte Carlo: Future Risk Assessment.
     """
     try:
-        # Fetch Data
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        # Fetch Data through standardized service
+        if get_sync_market_data:
+            df = get_sync_market_data(ticker, period=period, interval=interval)
+        else:
+            df = yf.download(ticker, period=period, interval=interval, progress=False, group_by='ticker')
+            
+        if df.empty:
+            return {"error": f"No data found for {ticker}"}
+            
         if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+            if ticker in df.columns.levels[0]:
+                df = df[ticker]
+            else:
+                df.columns = df.columns.get_level_values(0)
             
         if len(df) < 100:
             return {"error": "Not enough data for Quant Analysis"}

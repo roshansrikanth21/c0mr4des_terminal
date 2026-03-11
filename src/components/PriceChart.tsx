@@ -10,12 +10,14 @@ import {
     ResponsiveContainer,
     ReferenceDot,
     ReferenceLine,
+    ReferenceArea,
     Legend
 } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Activity } from 'lucide-react';
 import { formatCurrency, getMarketByRegion, MarketRegion } from '@/lib/market-config';
+import { cn } from '@/lib/utils';
 
 interface PricePoint {
     date: string;
@@ -64,9 +66,9 @@ export function PriceChart({ ticker, region }: PriceChartProps) {
 
                 // Parallel Fetching
                 const [histRes, ictRes, quantRes] = await Promise.all([
-                    fetch(`http://localhost:8000/api/history?ticker=${encodedTicker}&period=${period}&interval=${selectedTf.interval}`),
-                    fetch(`http://localhost:8000/api/ict_analysis?ticker=${encodedTicker}&period=${period}`),
-                    fetch(`http://localhost:8000/api/quant_analysis?ticker=${encodedTicker}&period=1y`)
+                    fetch(`/api/history?ticker=${encodedTicker}&period=${period}&interval=${selectedTf.interval}`),
+                    fetch(`/api/ict_analysis?ticker=${encodedTicker}&period=${period}&interval=${selectedTf.interval}`),
+                    fetch(`/api/quant/institutional?ticker=${encodedTicker}`)
                 ]);
 
                 if (!histRes.ok) throw new Error('Failed to fetch history');
@@ -120,26 +122,30 @@ export function PriceChart({ ticker, region }: PriceChartProps) {
     const fvgBear = ictData.filter(i => i.type === 'FVG_BEAR');
 
     return (
-        <Card className="border border-border shadow-sm">
-            <CardHeader className="pb-2 border-b border-border/50 flex flex-row items-center justify-between">
-                <div className="flex flex-col gap-1">
-                    <CardTitle className="text-lg font-mono tracking-tight flex items-center gap-2">
-                        Price Action & Signals
-                        {quantData && (
-                            <Badge variant="outline" className={
-                                quantData.market_state === 'Defensive'
-                                    ? "bg-red-500/10 text-red-500 border-red-500/20"
-                                    : "bg-blue-500/10 text-blue-500 border-blue-500/20"
-                            }>
-                                {quantData.regime_cluster}
+        <Card className="border border-border shadow-sm overflow-hidden">
+            <CardHeader className="pb-4 pt-4 border-b border-border/50 flex flex-row items-center justify-between gap-4">
+                <div className="flex items-center gap-4 flex-nowrap">
+                    <CardTitle className="text-sm font-mono font-bold tracking-tight text-foreground flex items-center gap-3 whitespace-nowrap">
+                        <Activity className="w-4 h-4 text-primary" />
+                        MARKET DATA STREAM
+                        {quantData && quantData.regime && (
+                            <Badge variant="outline" className={cn(
+                                "font-mono text-[9px] px-2 py-0 border-current shadow-sm capitalize",
+                                quantData.regime.primary_regime?.includes('VOLATILITY') || quantData.regime.primary_regime?.includes('HIGH')
+                                    ? "bg-destructive/10 text-destructive"
+                                    : "bg-primary/10 text-primary"
+                            )}>
+                                {quantData.regime.primary_regime?.replace('_', ' ') || 'C0MR4DE TERMINAL SYNC'}
                             </Badge>
                         )}
                     </CardTitle>
-                    <div className="flex gap-2">
-                        <Badge variant="outline" className="text-[10px] bg-green-500/10 text-green-500 border-green-500/20">ENTRY</Badge>
-                        <Badge variant="outline" className="text-[10px] bg-red-500/10 text-red-500 border-red-500/20">EXIT</Badge>
-                        <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-500 border-emerald-500/20">FVG BULL</Badge>
-                        <Badge variant="outline" className="text-[10px] bg-rose-500/10 text-rose-500 border-rose-500/20">FVG BEAR</Badge>
+                    <div className="flex flex-wrap gap-2 items-center">
+                        <Badge variant="outline" className="text-[8px] font-mono border-green-500/30 text-green-500 uppercase">Entry Signal</Badge>
+                        <Badge variant="outline" className="text-[8px] font-mono border-destructive/30 text-destructive uppercase">Exit Signal</Badge>
+                        <div className="h-3 w-px bg-border/50 mx-1" />
+                        <span className="text-[10px] font-mono text-muted-foreground opacity-60 uppercase">
+                            Synced: {new Date().toLocaleTimeString()}
+                        </span>
                     </div>
                 </div>
                 <div className="flex bg-secondary/50 rounded-md p-1 gap-1">
@@ -202,27 +208,49 @@ export function PriceChart({ ticker, region }: PriceChartProps) {
                         />
                         <Legend verticalAlign="top" height={36} iconType="circle" wrapperStyle={{ fontSize: '10px' }} />
 
-                        {/* Reference Areas for FVGs - Simplified rendering for performance */}
-                        {/* Only draw last 50 FVGs to avoid DOM overload */}
-                        {fvgBull.slice(-50).map((fvg, i) => (
-                            <ReferenceLine
+                        {/* ICT FAIR VALUE GAPS (FVG) */}
+                        {fvgBull.slice(-20).map((fvg, i) => (
+                            <ReferenceArea
                                 key={`fvg-b-${i}`}
-                                y={fvg.bottom}
-                                stroke="#10b981"
-                                strokeDasharray="2 2"
-                                strokeOpacity={0.5}
-                                label={{ position: 'left', value: 'FVG', fill: '#10b981', fontSize: 8 }}
+                                y1={fvg.bottom}
+                                y2={fvg.top}
+                                fill="#22c55e"
+                                fillOpacity={0.2}
+                                stroke="#22c55e"
+                                strokeOpacity={0.3}
+                                strokeDasharray="3 3"
+                                label={{ position: 'insideRight', value: 'FVG', fill: '#22c55e', fontSize: 10 }}
                             />
                         ))}
 
-                        {fvgBear.slice(-50).map((fvg, i) => (
-                            <ReferenceLine
+                        {fvgBear.slice(-20).map((fvg, i) => (
+                            <ReferenceArea
                                 key={`fvg-s-${i}`}
-                                y={fvg.top}
-                                stroke="#f43f5e"
-                                strokeDasharray="2 2"
-                                strokeOpacity={0.5}
-                                label={{ position: 'left', value: 'FVG', fill: '#f43f5e', fontSize: 8 }}
+                                y1={fvg.top}
+                                y2={fvg.bottom}
+                                fill="#ef4444"
+                                fillOpacity={0.2}
+                                stroke="#ef4444"
+                                strokeOpacity={0.3}
+                                strokeDasharray="3 3"
+                                label={{ position: 'insideRight', value: 'FVG', fill: '#ef4444', fontSize: 10 }}
+                            />
+                        ))}
+
+                        {/* ICT ORDER BLOCKS (OB) */}
+                        {ictData.filter(i => i.type.includes('OB')).slice(-10).map((ob, i) => (
+                            <ReferenceArea
+                                key={`ob-${i}`}
+                                y1={ob.bottom}
+                                y2={ob.top}
+                                fill={ob.type.includes('BULLISH') ? "#3b82f6" : "#f59e0b"}
+                                fillOpacity={0.15}
+                                label={{
+                                    position: 'insideLeft',
+                                    value: ob.type.includes('BULLISH') ? 'OB Bull' : 'OB Bear',
+                                    fill: ob.type.includes('BULLISH') ? "#3b82f6" : "#f59e0b",
+                                    fontSize: 9
+                                }}
                             />
                         ))}
 

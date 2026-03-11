@@ -1,0 +1,147 @@
+{
+  "status": "success",
+  "trained_at": "2026-03-08T16:22:08.654768Z",
+  "ticker": "^NSEI",
+  "interval": "1d",
+  "rows": 365,
+  "date_range": {
+    "start": "2025-03-05T00:00:00+00:00",
+    "end": "2026-03-04T00:00:00+00:00"
+  },
+  "thresholds": {
+    "min_samples": 3,
+    "min_win_rate": 0.5,
+    "horizon_bars": 5,
+    "stop_atr": 1.0,
+    "target_atr": 1.5
+  },
+  "config": {
+    "ticker": "^NSEI",
+    "interval": "1d",
+    "period": "1y",
+    "min_samples": 3,
+    "min_win_rate": 0.5,
+    "horizon_bars": 5,
+    "stop_atr": 1.0,
+    "target_atr": 1.5,
+    "auto_backfill": true
+  },
+  "pattern_stats": [
+    {
+      "pattern_id": "bearish_ob",
+      "samples": 76,
+      "wins": 61,
+      "losses": 15,
+      "win_rate": 0.8026,
+      "avg_atr": 2.411398,
+      "approved": true
+    },
+    {
+      "pattern_id": "bullish_ob",
+      "samples": 73,
+      "wins": 58,
+      "losses": 15,
+      "win_rate": 0.7945,
+      "avg_atr": 2.351699,
+      "approved": true
+    },
+    {
+      "pattern_id": "bullish_sweep",
+      "samples": 45,
+      "wins": 26,
+      "losses": 19,
+      "win_rate": 0.5778,
+      "avg_atr": 2.352799,
+      "approved": true
+    },
+    {
+      "pattern_id": "bearish_ifvg",
+      "samples": 94,
+      "wins": 50,
+      "losses": 44,
+      "win_rate": 0.5319,
+      "avg_atr": 2.338263,
+      "approved": true
+    },
+    {
+      "pattern_id": "bearish_fvg",
+      "samples": 107,
+      "wins": 44,
+      "losses": 63,
+      "win_rate": 0.4112,
+      "avg_atr": 2.387424,
+      "approved": false
+    },
+    {
+      "pattern_id": "bearish_sweep",
+      "samples": 22,
+      "wins": 9,
+      "losses": 13,
+      "win_rate": 0.4091,
+      "avg_atr": 2.202351,
+      "approved": false
+    },
+    {
+      "pattern_id": "bullish_ifvg",
+      "samples": 103,
+      "wins": 39,
+      "losses": 64,
+      "win_rate": 0.3786,
+      "avg_atr": 2.311559,
+      "approved": false
+    },
+    {
+      "pattern_id": "bullish_fvg",
+      "samples": 106,
+      "wins": 40,
+      "losses": 66,
+      "win_rate": 0.3774,
+      "avg_atr": 2.322456,
+      "approved": false
+    }
+  ],
+  "approved_patterns": [
+    {
+      "pattern_id": "bearish_ob",
+      "samples": 76,
+      "wins": 61,
+      "losses": 15,
+      "win_rate": 0.8026,
+      "avg_atr": 2.411398,
+      "approved": true
+    },
+    {
+      "pattern_id": "bullish_ob",
+      "samples": 73,
+      "wins": 58,
+      "losses": 15,
+      "win_rate": 0.7945,
+      "avg_atr": 2.351699,
+      "approved": true
+    },
+    {
+      "pattern_id": "bullish_sweep",
+      "samples": 45,
+      "wins": 26,
+      "losses": 19,
+      "win_rate": 0.5778,
+      "avg_atr": 2.352799,
+      "approved": true
+    },
+    {
+      "pattern_id": "bearish_ifvg",
+      "samples": 94,
+      "wins": 50,
+      "losses": 44,
+      "win_rate": 0.5319,
+      "avg_atr": 2.338263,
+      "approved": true
+    }
+  ],
+  "approved_pattern_ids": [
+    "bearish_ob",
+    "bullish_ob",
+    "bullish_sweep",
+    "bearish_ifvg"
+  ]
+}

@@ -27,11 +27,11 @@ export function History() {
     async function fetchTrades() {
       if (!user) return;
       try {
-        const list = await blink.db.trades.list({
+        const list = await (blink.db as any).trades.list({
           where: { user_id: user.id },
           orderBy: { created_at: 'desc' }
         });
-        
+
         setTrades(list.map((t: any) => ({
           id: t.id,
           symbol: t.symbol,
@@ -131,7 +131,7 @@ export function History() {
 
       <div className="pt-10 text-center">
         <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-[0.15em] leading-relaxed max-w-xl mx-auto">
-          "The best trades are the ones you didn't take because they didn't meet your criteria. 
+          "The best trades are the ones you didn't take because they didn't meet your criteria.
           Execution logs show profit, but your filtered signals show discipline."
         </p>
       </div>

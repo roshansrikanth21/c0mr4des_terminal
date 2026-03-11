@@ -1,113 +1,289 @@
 import pandas as pd
 import numpy as np
+from typing import Dict, List, Any
 
-def detect_swings(df, window=3):
+class ICTSmartMoney:
     """
-    Identify Swing Highs and Lows (Fractals).
-    A Swing High is a candle high higher than 'window' candles to the left and right.
+    Implements 'Inner Circle Trader' (ICT) concepts:
+    - Fair Value Gaps (FVG)
+    - Order Blocks (OB)
+    - Market Structure Shifts (MSS)
+    - Break of Structure (BOS)
     """
-    df['SwingHigh'] = False
-    df['SwingLow'] = False
-    
-    # We need to look ahead, so we can't do this purely continuously without lag in live mode.
-    # For historical analysis:
-    for i in range(window, len(df) - window):
-        # Swing High
-        if df['High'].iloc[i] > df['High'].iloc[i-window:i].max() and \
-           df['High'].iloc[i] > df['High'].iloc[i+1:i+window+1].max():
-            df.at[df.index[i], 'SwingHigh'] = True
-            
-        # Swing Low
-        if df['Low'].iloc[i] < df['Low'].iloc[i-window:i].min() and \
-           df['Low'].iloc[i] < df['Low'].iloc[i+1:i+window+1].min():
-            df.at[df.index[i], 'SwingLow'] = True
-            
-    return df
 
-def detect_fair_value_gaps(df):
-    """
-    Identify Bullish and Bearish Fair Value Gaps (FVG).
-    Condition: 3-candle pattern with no overlap between Candle 1 and 3.
-    """
-    df['is_fvg_bull'] = False
-    df['is_fvg_bear'] = False
-    df['fvg_top'] = np.nan
-    df['fvg_bottom'] = np.nan
-    
-    # We start from index 2 (3rd candle)
-    for i in range(2, len(df)):
-        # Bullish FVG: Low of Candle 3 > High of Candle 1
-        low_3 = df['Low'].iloc[i]
-        high_1 = df['High'].iloc[i-2]
+    def __init__(self, df: pd.DataFrame):
+        self.df = df.copy()
+        # Ensure lowercase columns for consistency
+        self.df.columns = [c.lower() for c in self.df.columns]
+        if 'timestamp' not in self.df.columns:
+            # If standard yfinance index
+            self.df['timestamp'] = self.df.index
+
+    def detect_fair_value_gaps(self) -> List[Dict]:
+        """
+        Detects 3-candle Fair Value Gaps.
+        Bullish FVG: Candle 1 High < Candle 3 Low (Gap in between)
+        Bearish FVG: Candle 1 Low > Candle 3 High (Gap in between)
+        """
+        fvgs = []
+        df = self.df
         
-        if low_3 > high_1:
-            df.at[df.index[i], 'is_fvg_bull'] = True
-            df.at[df.index[i], 'fvg_top'] = low_3
-            df.at[df.index[i], 'fvg_bottom'] = high_1
-            
-        # Bearish FVG: High of Candle 3 < Low of Candle 1
-        high_3 = df['High'].iloc[i]
-        low_1 = df['Low'].iloc[i-2]
-        
-        if high_3 < low_1:
-            df.at[df.index[i], 'is_fvg_bear'] = True
-            df.at[df.index[i], 'fvg_top'] = low_1
-            df.at[df.index[i], 'fvg_bottom'] = high_3
-            
-    return df
+        if len(df) < 3:
+            return fvgs
 
-def detect_order_blocks(df):
-    """
-    Identify potential Order Blocks (OB).
-    Bullish OB: The last down candle before a structure break (simplified here as strong move).
-    """
-    # Simple logic for now: Bullish OB = Down candle followed by Bullish Engulfing or FVG
-    df['is_ob_bull'] = False
-    df['is_ob_bear'] = False
-    
-    for i in range(2, len(df)):
-        # Bullish OB Check
-        if df['Close'].iloc[i-1] < df['Open'].iloc[i-1]: # Prev was Red
-            if df['Close'].iloc[i] > df['Open'].iloc[i] and df['Close'].iloc[i] > df['High'].iloc[i-1]: # Curr is Green and breaks high
-                df.at[df.index[i-1], 'is_ob_bull'] = True # Mark the PREVIOUS candle as OB
+        # Vectorized approach or robust loop
+        # Loop is easier for logic clarity on 3-candle pattern
+        for i in range(2, len(df)):
+            try:
+                # Candles: i-2 (1), i-1 (2), i (3)
+                c1 = df.iloc[i-2]
+                c2 = df.iloc[i-1] # The "displacement" candle
+                c3 = df.iloc[i]
                 
-    return df
+                # --- BULLISH FVG ---
+                # Key: The Low of the 3rd candle is HIGHER than the High of the 1st candle
+                if c3['low'] > c1['high']:
+                    gap_size = c3['low'] - c1['high']
+                    # Filter: Gap must be significant (e.g., > 0.02% of price) to avoid noise
+                    min_gap = c2['close'] * 0.0002 
+                    
+                    if gap_size > min_gap:
+                        fvgs.append({
+                            "type": "bullish",
+                            "top": float(c3['low']),      # Gap Top
+                            "bottom": float(c1['high']),  # Gap Bottom
+                            "start_time": str(c2['timestamp']), # Center candle timestamp
+                            "end_time": str(c3['timestamp']),
+                            "mitigated": False
+                        })
 
-def get_ict_analysis(ticker, period="60d", interval="15m"):
-    import yfinance as yf
-    
-    # Fetch Data
-    df = yf.download(ticker, period=period, interval=interval, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    
-    if df.empty:
-        return []
+                # --- BEARISH FVG ---
+                # Key: The High of the 3rd candle is LOWER than the Low of the 1st candle
+                elif c3['high'] < c1['low']:
+                    gap_size = c1['low'] - c3['high']
+                    min_gap = c2['close'] * 0.0002
+                    
+                    if gap_size > min_gap:
+                        fvgs.append({
+                            "type": "bearish",
+                            "top": float(c1['low']),      # Gap Top
+                            "bottom": float(c3['high']),  # Gap Bottom
+                            "start_time": str(c2['timestamp']),
+                            "end_time": str(c3['timestamp']),
+                            "mitigated": False
+                        })
+            except Exception as e:
+                continue
+        
+        return fvgs
 
-    # Run Detection
-    df = detect_swings(df)
-    df = detect_fair_value_gaps(df)
-    df = detect_order_blocks(df)
-    
-    # Format output for JSON
-    results = []
-    
-    # We only send interesting points (Swings, FVGs, OBs) to save bandwidth
-    for i in range(len(df)):
-        row = df.iloc[i]
-        evt = {}
+    def detect_inverse_fair_value_gaps(self) -> List[Dict]:
+        """
+        Detect inverse FVG (IFVG) transitions.
+        Logic:
+        - A bullish FVG invalidated to downside can flip to bearish IFVG.
+        - A bearish FVG invalidated to upside can flip to bullish IFVG.
+        """
+        ifvgs: List[Dict] = []
+        fvgs = self.detect_fair_value_gaps()
+        if not fvgs:
+            return ifvgs
+
+        df = self.df
+        if len(df) < 10:
+            return ifvgs
+
+        # Pre-normalize timestamp for robust comparisons.
+        local = df.copy()
+        local["timestamp"] = pd.to_datetime(local["timestamp"], errors="coerce", utc=True)
+        local = local.dropna(subset=["timestamp"])
+        if local.empty:
+            return ifvgs
+
+        for fvg in fvgs:
+            try:
+                end_ts = pd.to_datetime(fvg.get("end_time"), errors="coerce", utc=True)
+                if pd.isna(end_ts):
+                    continue
+
+                future = local[local["timestamp"] > end_ts]
+                if future.empty:
+                    continue
+
+                top = float(fvg["top"])
+                bottom = float(fvg["bottom"])
+
+                if fvg["type"] == "bullish":
+                    invalidated = bool((future["low"] < bottom).any())
+                    if invalidated:
+                        ifvgs.append({
+                            "type": "bearish_ifvg",
+                            "top": top,
+                            "bottom": bottom,
+                            "source_type": "bullish_fvg",
+                            "flipped_at": str(future.loc[future["low"] < bottom, "timestamp"].iloc[0]),
+                            "end_time": fvg.get("end_time")
+                        })
+                else:
+                    invalidated = bool((future["high"] > top).any())
+                    if invalidated:
+                        ifvgs.append({
+                            "type": "bullish_ifvg",
+                            "top": top,
+                            "bottom": bottom,
+                            "source_type": "bearish_fvg",
+                            "flipped_at": str(future.loc[future["high"] > top, "timestamp"].iloc[0]),
+                            "end_time": fvg.get("end_time")
+                        })
+            except Exception:
+                continue
+
+        return ifvgs
+
+    def detect_order_blocks(self) -> List[Dict]:
+        """
+        Detects Bullish/Bearish Order Blocks.
+        Bullish OB: The last DOWN candle before a sequence that breaks structure or rises sharply.
+        Bearish OB: The last UP candle before a sharp drop.
+        """
+        obs = []
+        df = self.df
+        if len(df) < 5: return obs
         
-        if row['SwingHigh']: evt['type'] = 'SWING_HIGH'
-        elif row['SwingLow']: evt['type'] = 'SWING_LOW'
-        elif row['is_fvg_bull']: evt['type'] = 'FVG_BULL'
-        elif row['is_fvg_bear']: evt['type'] = 'FVG_BEAR'
+        # Simplified Logic for Robustness:
+        # Bullish OB: Red Candle followed by Green Candle that Engulfs or moves strongly
+        # We look for "Impulse" moves
         
-        if evt:
-            evt['time'] = df.index[i].strftime('%Y-%m-%d %H:%M')
-            evt['price'] = float(row['Close'])
-            if 'fvg_top' in row and not pd.isna(row['fvg_top']):
-                evt['top'] = float(row['fvg_top'])
-                evt['bottom'] = float(row['fvg_bottom'])
-            results.append(evt)
-            
-    return results
+        for i in range(2, len(df)-2):
+            try:
+                curr = df.iloc[i]
+                prev = df.iloc[i-1]
+                nex = df.iloc[i+1]
+                
+                # Identify Bullish OB
+                # 1. Previous candle was Red (Close < Open)
+                is_red = prev['close'] < prev['open']
+                # 2. Current/Next sequence moves Up strongly (e.g. Next closes above Prev High)
+                strong_move_up = nex['close'] > prev['high']
+                
+                if is_red and strong_move_up:
+                    obs.append({
+                        "type": "bullish_ob",
+                        "top": float(prev['high']),
+                        "bottom": float(prev['low']),
+                        "time": str(prev['timestamp']),
+                        "mitigated": False
+                    })
+                    
+                # Identify Bearish OB
+                # 1. Previous candle was Green
+                is_green = prev['close'] > prev['open']
+                # 2. Current/Next sequence moves Down strongly
+                strong_move_down = nex['close'] < prev['low']
+                
+                if is_green and strong_move_down:
+                    obs.append({
+                        "type": "bearish_ob",
+                        "top": float(prev['high']),
+                        "bottom": float(prev['low']),
+                        "time": str(prev['timestamp']),
+                        "mitigated": False
+                    })
+            except:
+                continue
+                
+        return obs
+
+    def detect_supply_demand_zones(self) -> List[Dict]:
+        """
+        Detects Supply and Demand zones (Rally-Base-Drop, Drop-Base-Rally).
+        A 'Base' is a consolidation candle with a small body.
+        """
+        zones = []
+        df = self.df
+        if len(df) < 3: return zones
+
+        for i in range(1, len(df) - 1):
+            try:
+                prev = df.iloc[i-1]
+                base = df.iloc[i]
+                nex = df.iloc[i+1]
+
+                # Calculate body size for "Base" candle detection
+                base_body = abs(base['close'] - base['open'])
+                base_range = base['high'] - base['low']
+                is_base = base_body < (base_range * 0.4) # Small body relative to range
+
+                if not is_base: continue
+
+                # Rally-Base-Drop (Supply Zone)
+                if prev['close'] > prev['open'] and nex['close'] < nex['low']:
+                    zones.append({
+                        "type": "supply",
+                        "top": float(base['high']),
+                        "bottom": float(base['low']),
+                        "time": str(base['timestamp']),
+                        "description": "Rally-Base-Drop"
+                    })
+
+                # Drop-Base-Rally (Demand Zone)
+                if prev['close'] < prev['open'] and nex['close'] > nex['high']:
+                    zones.append({
+                        "type": "demand",
+                        "top": float(base['high']),
+                        "bottom": float(base['low']),
+                        "time": str(base['timestamp']),
+                        "description": "Drop-Base-Rally"
+                    })
+            except:
+                continue
+        return zones
+
+    def detect_liquidity_sweeps(self) -> List[Dict]:
+        """
+        Detects sweeps of previous highs/lows (Stop Hunts).
+        """
+        sweeps = []
+        df = self.df
+        if len(df) < 10: return sweeps
+
+        for i in range(5, len(df)):
+            try:
+                curr = df.iloc[i]
+                # Look for a 5-candle swing low/high
+                lookback = df.iloc[i-5:i]
+                prev_low = lookback['low'].min()
+                prev_high = lookback['high'].max()
+
+                # Bullish Sweep: Price dips below previous low but closes above it
+                if curr['low'] < prev_low and curr['close'] > prev_low:
+                    sweeps.append({
+                        "type": "bullish_sweep",
+                        "level": float(prev_low),
+                        "time": str(curr['timestamp']),
+                        "description": "Liquidity Grab (Low)"
+                    })
+
+                # Bearish Sweep: Price spikes above previous high but closes below it
+                if curr['high'] > prev_high and curr['close'] < prev_high:
+                    sweeps.append({
+                        "type": "bearish_sweep",
+                        "level": float(prev_high),
+                        "time": str(curr['timestamp']),
+                        "description": "Liquidity Grab (High)"
+                    })
+            except:
+                continue
+        return sweeps
+
+    def analyze(self) -> Dict:
+        """
+        Returns full analysis report including MQL5 expansions.
+        """
+        return {
+            "fvg": self.detect_fair_value_gaps(),
+            "ifvg": self.detect_inverse_fair_value_gaps(),
+            "ob": self.detect_order_blocks(),
+            "snd": self.detect_supply_demand_zones(),
+            "sweeps": self.detect_liquidity_sweeps()
+        }

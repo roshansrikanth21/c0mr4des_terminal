@@ -1,6 +1,7 @@
 """
 Order Flow Analysis for Indian Markets
 Critical for entry timing in Nifty/Sensex options
+Enhanced with broker-level institutional flow data
 """
 
 import numpy as np
@@ -8,12 +9,34 @@ import pandas as pd
 from scipy.stats import norm
 from datetime import datetime, time
 import pytz
+from typing import Optional, Dict
+
+# Import enhanced institutional order flow analyzer
+try:
+    from backend.institutional_order_flow import InstitutionalOrderFlowAnalyzer
+    INSTITUTIONAL_FLOW_AVAILABLE = True
+except ImportError:
+    INSTITUTIONAL_FLOW_AVAILABLE = False
+
+# Import broker data service for order book access
+try:
+    from backend.services.market_data_service import async_market_data_service
+    import asyncio
+    BROKER_DATA_AVAILABLE = True
+except ImportError:
+    BROKER_DATA_AVAILABLE = False
 
 class OrderFlowAnalyzer:
     def __init__(self, ticker="^NSEI"):
         self.ticker = ticker
         self.vpoc_history = []
         self.support_resistance = {"support": [], "resistance": []}
+        
+        # Initialize institutional flow analyzer if available
+        if INSTITUTIONAL_FLOW_AVAILABLE:
+            self.institutional_analyzer = InstitutionalOrderFlowAnalyzer(ticker)
+        else:
+            self.institutional_analyzer = None
         
     def analyze_candle_structure(self, df):
         """Analyze candle patterns specific to Indian markets"""
@@ -219,3 +242,81 @@ class OrderFlowAnalyzer:
         
         # 2:1 Reward:Risk ratio
         return entry_price + (risk * 2)
+    
+    async def get_enhanced_entry_recommendation(self, df: pd.DataFrame) -> Dict:
+        """
+        Enhanced entry recommendation using broker-level order book data
+        Combines traditional volume profile with institutional flow analysis
+        """
+        # Get basic volume profile analysis
+        basic_analysis = self.get_entry_recommendation(df)
+        
+        # If broker data and institutional analyzer available, enhance with order book data
+        if BROKER_DATA_AVAILABLE and self.institutional_analyzer:
+            try:
+                # Get order book from broker
+                order_book = await async_market_data_service.get_order_book(self.ticker)
+                
+                if order_book and (order_book.get('bid') or order_book.get('ask')):
+                    # Run institutional flow analysis
+                    institutional_flow = self.institutional_analyzer.analyze_comprehensive_flow(order_book, df)
+                    
+                    # Combine signals
+                    enhanced_signals = []
+                    enhanced_confidence = basic_analysis.get('confidence', 0.5)
+                    
+                    # Add institutional flow signals
+                    flow_signal = institutional_flow.get('final_signal', {})
+                    flow_action = flow_signal.get('action', 'HOLD')
+                    flow_conf = flow_signal.get('confidence', 0)
+                    
+                    if flow_action in ['BUY', 'STRONG_BUY']:
+                        enhanced_signals.append(("INSTITUTIONAL_FLOW", "Buying pressure detected"))
+                        enhanced_confidence += flow_conf * 0.3
+                    elif flow_action in ['SELL', 'STRONG_SELL']:
+                        enhanced_signals.append(("INSTITUTIONAL_FLOW", "Selling pressure detected"))
+                        enhanced_confidence -= flow_conf * 0.3
+                    
+                    # Check for large orders
+                    large_orders = institutional_flow.get('large_orders', [])
+                    if large_orders:
+                        buy_orders = [o for o in large_orders if 'BUY' in o.get('type', '')]
+                        sell_orders = [o for o in large_orders if 'SELL' in o.get('type', '')]
+                        if len(buy_orders) > len(sell_orders):
+                            enhanced_signals.append(("LARGE_BUY_ORDERS", f"{len(buy_orders)} institutional buy orders"))
+                            enhanced_confidence += 0.15
+                        elif len(sell_orders) > len(buy_orders):
+                            enhanced_signals.append(("LARGE_SELL_ORDERS", f"{len(sell_orders)} institutional sell orders"))
+                            enhanced_confidence -= 0.15
+                    
+                    # Check absorption
+                    absorption = institutional_flow.get('absorption', {})
+                    if absorption.get('ask', {}).get('absorbed'):
+                        enhanced_signals.append(("ASK_ABSORPTION", "Large ask orders being absorbed (bullish)"))
+                        enhanced_confidence += 0.1
+                    if absorption.get('bid', {}).get('absorbed'):
+                        enhanced_signals.append(("BID_ABSORPTION", "Large bid orders being absorbed (bearish)"))
+                        enhanced_confidence -= 0.1
+                    
+                    # Update basic analysis with enhanced data
+                    basic_analysis['signals'] = basic_analysis.get('signals', []) + enhanced_signals
+                    basic_analysis['confidence'] = min(max(enhanced_confidence, 0), 1.0)  # Clamp to [0, 1]
+                    basic_analysis['institutional_flow'] = institutional_flow
+                    basic_analysis['order_book_analysis'] = {
+                        'imbalance': institutional_flow.get('order_book_imbalance', {}),
+                        'delta': institutional_flow.get('delta', {}),
+                        'momentum_shift': institutional_flow.get('momentum_shift', {})
+                    }
+                    
+                    # Upgrade action if institutional flow is strong
+                    if flow_action == 'STRONG_BUY' and basic_analysis.get('action') == 'WAIT':
+                        basic_analysis['action'] = 'ENTRY'
+                        basic_analysis['reason'] = "Strong institutional buying pressure detected"
+                    elif flow_action == 'STRONG_SELL' and basic_analysis.get('action') == 'ENTRY':
+                        basic_analysis['action'] = 'WAIT'
+                        basic_analysis['reason'] = "Strong institutional selling pressure - avoid entry"
+                
+            except Exception as e:
+                print(f"⚠ Enhanced order flow analysis failed: {e}. Using basic analysis.")
+        
+        return basic_analysis

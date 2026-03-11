@@ -1,59 +1,43 @@
-# Enhanced Vite React TypeScript Template
+# AI Market Analyser - Institutional Trading System
 
-This template includes built-in detection for missing CSS variables between your Tailwind config and CSS files.
+Professional-grade market analysis platform for Indian Equities and Options, featuring institutional quant models, ICT Smart Money concepts, and AI-driven visual analysis.
 
-## Features
+## 🚀 Quick Start (Windows)
 
-- **CSS Variable Detection**: Automatically detects if CSS variables referenced in `tailwind.config.cjs` are defined in `src/index.css`
-- **Enhanced Linting**: Includes ESLint, Stylelint, and custom CSS variable validation
-- **Shadcn/ui**: Pre-configured with all Shadcn components
-- **Modern Stack**: Vite + React + TypeScript + Tailwind CSS
+1. **Setup Core**:
+   ```bash
+   # Create virtual environment if needed
+   python -m venv .venv
+   .venv\Scripts\activate
+   pip install -r backend/requirements.txt
+   npm install
+   ```
 
-## Available Scripts
+2. **Configure**:
+   Add your `GEMINI_API_KEY` to `backend/.env`.
 
-```bash
-# Run all linting (includes CSS variable check)
-npm run lint
+3. **Launch**:
+   Double-click `run_system.bat` to start the Backend, Frontend, and Live Assistant.
 
-# Check only CSS variables
-npm run check:css-vars
+## 📊 System Components
 
-# Individual linting
-npm run lint:js    # ESLint
-npm run lint:css   # Stylelint
-```
+- **Backend API (Port 8000)**: FastAPI server with OU Process, MST, and ICT logic.
+- **Frontend Dashboard (Port 3000)**: React interface with real-time charts and signals.
+- **Live Trading Assistant**: Background market monitor and signal generator.
+- **Institutional Quant Engine**: Wasserstein Drift, Monte Carlo, and Bayesian Inference.
 
-## CSS Variable Detection
+## 📱 Access Points
 
-The template includes a custom script that:
+- **Dashboard**: [http://localhost:3000](http://localhost:3000)
+- **API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-1. **Parses `tailwind.config.cjs`** to find all `var(--variable)` references
-2. **Parses `src/index.css`** to find all defined CSS variables (`--variable:`)
-3. **Cross-references** them to find missing definitions
-4. **Reports undefined variables** with clear error messages
+## 🔧 Features Verified
 
-### Example Output
+- [x] **ICT/SMC Engine**: FVG, Order Blocks, BOS detection.
+- [x] **Quant Core**: Wasserstein Regime Shifts, Entropy, A-Vol.
+- [x] **Robust Data**: yfinance MultiIndex handling and 7-day retry logic.
+- [x] **Dark Mode**: Persistent theme toggle in the UI.
+- [x] **Broker Ready**: Angel One integration layer implemented.
 
-When CSS variables are missing:
-```
-❌ Undefined CSS variables found in tailwind.config.cjs:
-   --sidebar-background
-   --sidebar-foreground
-   --sidebar-primary
-
-Add these variables to src/index.css
-```
-
-When all variables are defined:
-```
-✅ All CSS variables in tailwind.config.cjs are defined
-```
-
-## How It Works
-
-The detection happens during the `npm run lint` command, which will:
-- Exit with error code 1 if undefined variables are found
-- Show exactly which variables need to be added to your CSS file
-- Integrate seamlessly with your development workflow
-
-This prevents runtime CSS issues where Tailwind classes reference undefined CSS variables.
+---
+*For detailed backtesting or docker deployment, see the source code scripts or docker-compose.yml.*

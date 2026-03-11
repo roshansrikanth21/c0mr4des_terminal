@@ -10,6 +10,7 @@ from typing import Dict, Any
 # Ensure backend directory is in path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import asyncio
 from backend.advanced_analysis import AdvancedTradingSystem
 from backend.bayesian_inference import BayesianTradingModel
 
@@ -47,57 +48,75 @@ class LiveTradingAssistant:
     def display_dashboard(self, analysis: Dict[str, Any]):
         self.clear_screen()
         print("="*60)
-        print(f" EDGE-OPS AI ASSISTANT - {datetime.now().strftime('%H:%M:%S')}")
+        print(f" C0MR4DE TERMINAL AI ASSISTANT - {datetime.now().strftime('%H:%M:%S')}")
         print("="*60)
         
         # 1. Market Status
-        market = analysis.get('market_analysis', {})
-        print(f"\n[MARKET STATUS] {market.get('ticker', 'N/A')}")
-        print(f"Price: {market.get('current_price', 0):.2f}")
-        print(f"Regime: {market.get('regime', 'Unknown')}")
+        print(f"\n[MARKET STATUS] {analysis.get('ticker', 'N/A')}")
+        print(f"Price: {analysis.get('current_price', 0):.2f}")
+        print(f"Session: {analysis.get('market_session', 'Unknown')}")
+
+        # 1.5 Institutional Regime
+        quant = analysis.get('quant_institutional', {})
+        if quant:
+            regime = quant.get('regime', {}).get('primary_regime', 'Unknown')
+            risk = quant.get('risk_assessment', {}).get('composite_risk_score', 0)
+            print(f"Regime: {regime} | Risk Score: {risk:.2f}")
         
         # 2. Timing
-        timing = analysis.get('full_analysis', {}).get('timing_signals', [])
+        timing = analysis.get('timing_signals', [])
         if timing:
             last_signal = timing[-1]
-            print(f"\n[TIMING] {last_signal.get('event', 'None')}")
-            print(f"Action: {last_signal.get('action', 'WAIT')}")
-            print(f"Message: {last_signal.get('message', '')}")
+            if isinstance(last_signal, dict):
+                print(f"\n[TIMING] {last_signal.get('event', 'Signal')}")
+                print(f"Action: {last_signal.get('action', 'WAIT')}")
+                print(f"Message: {last_signal.get('message', '')}")
         
-        # 3. Risk
-        risk = analysis.get('full_analysis', {}).get('risk_assessment', {})
-        print(f"\n[RISK ASSESSMENT]")
-        print(f"VaR (95%): {risk.get('var_95', 0):.2f}%")
-        print(f"Expected Shortfall: {risk.get('expected_shortfall', 0):.2f}%")
+        # 3. Risk (Placeholder)
+        # risk = analysis.get('full_analysis', {}).get('risk_assessment', {})
+        # print(f"\n[RISK ASSESSMENT]")
         
         # 4. Bayesian Beliefs
         beliefs = self.bayesian.get_current_beliefs()
         print(f"\n[STRATEGY INTELLIGENCE]")
         print(f"Win Rate: {beliefs['win_rate']['mean']:.1%}")
         print(f"Confidence: {beliefs['confidence']['score']:.0%}")
-        print(f"AI Recommendation: {beliefs['recommendation']['action']}")
         
         # 5. Opportunity
-        entry = analysis.get('entry_signal', {})
-        if entry.get('decision') == 'ENTER':
+        entry = analysis.get('combined_entry_decision', {})
+        
+        # Institutional Signals
+        if quant and quant.get('integrated_signals', {}).get('high_confidence_signals'):
+             print(f"\n[INSTITUTIONAL SIGNALS]")
+             for sig in quant['integrated_signals']['high_confidence_signals']:
+                  print(f"• {sig['type']} ({sig['source']}) - Conf: {sig['confidence']:.2f}")
+
+        if entry.get('action') == 'ENTRY':
             print("\n" + "*"*60)
             print("!!! TRADE OPPORTUNITY DETECTED !!!")
-            print(f"Type: {entry.get('details', {}).get('type', 'Unknown')}")
+            # entry['signals'] is a list of signals
             print(f"Confidence: {entry.get('confidence', 0):.2f}")
+            print(f"Target: {entry.get('target', 0):.2f}")
+            print(f"Stop Loss: {entry.get('stop_loss', 0):.2f}")
             print("*"*60)
             return True
         return False
 
-    def run(self):
-        print("Starting Edge-Ops Assistant...")
-        ticker = "^NSEI" # Default Nifty
+    async def run(self):
+        print("Starting C0MR4DE TERMINAL Assistant...")
+        # ticker is initialized in self.system
         
         while True:
             try:
                 # 1. Analyze
                 print("Fetching live data...")
-                analysis = self.system.analyze_market(ticker)
+                analysis = await self.system.get_complete_analysis()
                 
+                if analysis and "error" in analysis:
+                    print(f"Error: {analysis['error']}")
+                    await asyncio.sleep(10)
+                    continue
+
                 # 2. Display
                 has_signal = self.display_dashboard(analysis)
                 
@@ -111,14 +130,17 @@ class LiveTradingAssistant:
                 # In a real loop, we would track P&L here too.
                 
                 print("\nNext scan in 60 seconds... (Ctrl+C to stop)")
-                time.sleep(60)
+                await asyncio.sleep(60)
                 
             except KeyboardInterrupt:
                 print("\nAssistant stopped.")
                 break
             except Exception as e:
-                print(f"Error: {e}")
-                time.sleep(10)
+                import traceback
+                print(f"❌ [CRITICAL ERROR]: {e}")
+                traceback.print_exc()
+                print("\n⚠️ Entering 'Safe Mode' - Attempting recovery in 30 seconds...")
+                await asyncio.sleep(30)
 
     def track_trade(self, analysis):
         print("\n--- Trade Tracking Started ---")
@@ -159,4 +181,7 @@ class LiveTradingAssistant:
 
 if __name__ == "__main__":
     assistant = LiveTradingAssistant()
-    assistant.run()
+    try:
+        asyncio.run(assistant.run())
+    except KeyboardInterrupt:
+        pass

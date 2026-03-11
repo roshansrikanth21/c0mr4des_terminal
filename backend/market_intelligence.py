@@ -27,9 +27,15 @@ def get_market_intelligence(ticker: str, period: str = "1y", interval: str = "1d
     """
     try:
         # Fetch Data
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        df = yf.download(ticker, period=period, interval=interval, progress=False, group_by='ticker')
+        if df.empty:
+            return {"error": f"No data found for {ticker}"}
+            
         if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+            if ticker in df.columns.levels[0]:
+                df = df[ticker]
+            else:
+                df.columns = df.columns.get_level_values(0)
             
         if df.empty or len(df) < 50:
             return {"error": "Not enough data"}

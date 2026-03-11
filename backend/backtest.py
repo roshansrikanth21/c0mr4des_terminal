@@ -9,42 +9,53 @@ from datetime import datetime
 import uuid
 from backend.market_data import calculate_sma, calculate_rsi, calculate_atr
 from backend.intraday_utils import calculate_vwap, load_params
+from backend.ict_smart_money import ICTSmartMoney
+
+try:
+    # Shared data service improves speed/accuracy & adds provider fallbacks for backtests
+    from backend.services.market_data_service import get_sync_market_data
+except ImportError:
+    get_sync_market_data = None
 
 class Backtester:
-    def __init__(self, ticker="^NSEI", interval="5m", period="5d", initial_capital=100000):
+    def __init__(
+        self,
+        ticker="^NSEI",
+        interval="5m",
+        period="5d",
+        initial_capital=100000,
+        slippage_bps: float = 3.0,
+        transaction_cost_bps: float = 2.0,
+        allow_synthetic: bool = False,
+    ):
         self.ticker = ticker
         self.interval = interval
         self.period = period
         self.initial_capital = initial_capital
+        self.slippage_bps = float(slippage_bps)
+        self.transaction_cost_bps = float(transaction_cost_bps)
+        self.allow_synthetic = bool(allow_synthetic)
         self.balance = initial_capital
         self.trades = []
         self.data = None
         self.is_simulation = False
-        
-    def fetch_data(self):
-        """Fetch historical data from Yahoo Finance or Fallback to Synthetic"""
-        print(f"Fetching {self.period} of {self.interval} data for {self.ticker}...")
-        try:
-            # Use Ticker.history as it proved more reliable in testing
-            ticker_obj = yf.Ticker(self.ticker)
-            self.data = ticker_obj.history(period=self.period, interval=self.interval)
-            
-            # Additional check for empty data despite no error
-            if self.data is None or self.data.empty:
-                raise ValueError("Empty data returned")
-                
-            # History already has SingleIndex columns, no need for MultiIndex check usually
-            # But just in case
-            if isinstance(self.data.columns, pd.MultiIndex):
-                self.data.columns = self.data.columns.get_level_values(0)
-                
-            print(f"Live data fetched: {len(self.data)} records")
-            self.is_simulation = False # Confirm real data
+        self.data_source = "unknown"
+        self.total_trade_cost = 0.0
 
-        except Exception as e:
-            print(f"Live data fetch failed: {e}. Switching to SIMULATION MODE.")
-            self.data = self.generate_synthetic_data()
-            self.is_simulation = True
+    def _prepare_indicators(self):
+        """Calculate indicators on self.data and sanitize rows."""
+        if self.data is None or self.data.empty:
+            return
+
+        if isinstance(self.data.columns, pd.MultiIndex):
+            self.data.columns = self.data.columns.get_level_values(0)
+        self.data.columns = [str(c).capitalize() for c in self.data.columns]
+
+        # Ensure required OHLCV columns exist.
+        required = ["Open", "High", "Low", "Close", "Volume"]
+        for col in required:
+            if col not in self.data.columns:
+                raise ValueError(f"Missing required column for backtest: {col}")
 
         # Calculate indicators
         self.data['SMA9'] = calculate_sma(self.data['Close'], 9)
@@ -52,9 +63,52 @@ class Backtester:
         self.data['RSI'] = calculate_rsi(self.data['Close'], 9)
         self.data['VWAP'] = calculate_vwap(self.data['High'], self.data['Low'], self.data['Close'], self.data['Volume'])
         self.data['ATR'] = calculate_atr(self.data['High'], self.data['Low'], self.data['Close'], 14)
-        
+
         # Clean NaN values
         self.data.dropna(inplace=True)
+
+    def set_data(self, df: pd.DataFrame, source_label: str = "historical_store"):
+        """
+        Inject preloaded historical data instead of fetching from providers.
+        Useful for deterministic backtests over previously stored market data.
+        """
+        if df is None or df.empty:
+            raise ValueError("Cannot backtest with empty dataframe")
+        self.data = df.copy()
+        self.is_simulation = False
+        self.data_source = source_label
+        self._prepare_indicators()
+        
+    def fetch_data(self):
+        """Fetch historical data via shared providers or fallback to Yahoo/Synthetic"""
+        print(f"Fetching {self.period} of {self.interval} data for {self.ticker}...")
+        try:
+            # Use centralized market data service
+            from backend.services.market_data_service import get_sync_market_data
+            
+            if get_sync_market_data is not None:
+                self.data = get_sync_market_data(self.ticker, self.period, self.interval)
+            else:
+                self.data = yf.download(self.ticker, period=self.period, interval=self.interval, progress=False)
+                
+            if self.data is None or self.data.empty:
+                raise ValueError("Empty data returned")
+            
+            print(f"Live data fetched: {len(self.data)} records")
+            self.is_simulation = False  # Confirm real data
+            self.data_source = "live_provider"
+
+        except Exception as e:
+            if not self.allow_synthetic:
+                raise RuntimeError(
+                    f"Live data fetch failed for backtest and synthetic fallback is disabled: {e}"
+                ) from e
+            print(f"Live data fetch failed: {e}. Switching to SIMULATION MODE.")
+            self.data = self.generate_synthetic_data()
+            self.is_simulation = True
+            self.data_source = "synthetic_fallback"
+
+        self._prepare_indicators()
 
     def generate_synthetic_data(self):
         """Generate realistic synthetic 15-minute intraday data for simulation"""
@@ -99,6 +153,18 @@ class Backtester:
         sma_col = f'SMA{sma_period}'
         if sma_col not in self.data.columns:
              self.data[sma_col] = calculate_sma(self.data['Close'], sma_period)
+
+        # --- PRE-CALCULATE ICT LEVELS ---
+        # We calculate them once for the whole dataset for speed, 
+        # but in a real backtest we'd strictly only look at past data.
+        # Since FVG detection in our class uses (i-2, i-1, i), it is causal and safe.
+        ict = ICTSmartMoney(self.data)
+        fvgs = ict.detect_fair_value_gaps()
+        obs = ict.detect_order_blocks()
+        
+        # Convert to easy lookup (e.g., list of active zones)
+        # For simplicity in this loop, we will check if price is inside any KNOWN active FVG
+        # generated prior to the current candle index.
         
         for i in range(len(self.data)):
             candle = self.data.iloc[i]
@@ -111,10 +177,32 @@ class Backtester:
                 
             # --- SIGNAL LOGIC (Matches intraday_utils.py) ---
             
-            # ENTRY Condition: VWAP Pullback
+            # CHECK ICT CONFLUENCE
+            # Is price inside a Bullish FVG?
+            # Filter FVGs that started BEFORE current time
+            active_bull_fvgs = [f for f in fvgs if f['type'] == 'bullish' and pd.to_datetime(f['end_time']) < time]
+            in_fvg_zone = False
+            for f in active_bull_fvgs:
+                # If price dipped into FVG zone (Top > Low > Bottom)
+                if candle['Low'] <= f['top'] and candle['Low'] >= f['bottom']:
+                    in_fvg_zone = True
+                    break
+
+            # ENTRY Condition: VWAP Pullback AND (ICT Confluence OR Strong RSI)
             # Price > SMA (Uptrend), Price < VWAP (Dip), RSI < Learned Threshold
             if not in_position:
-                if price > candle[sma_col] and price < candle['VWAP'] and candle['RSI'] < rsi_entry:
+                basic_signal = price > candle[sma_col] and price < candle['VWAP'] and candle['RSI'] < rsi_entry
+                
+                # Boost confidence if in FVG
+                # Relaxed condition: Just being close to an FVG or Order Block is good enough
+                # OR if RSI is extremely oversold (< 30)
+                should_enter = basic_signal and (in_fvg_zone or candle['RSI'] < 35) 
+                
+                # DEBUG PRINT (remove in production)
+                # if basic_signal:
+                #    print(f"DEBUG [{time}] Potential Signal. In FVG: {in_fvg_zone}, RSI: {candle['RSI']:.2f} -> Enter: {should_enter}")
+
+                if should_enter:
                     entry_price = price
                     entry_time = time
                     # Logic: Buy ATM Option
@@ -161,15 +249,24 @@ class Backtester:
                     option_points = points_gained * 0.5
                     
                     lot_size = 25 if "NSEI" in self.ticker else 15
-                    pnl = option_points * lot_size
+                    gross_pnl = option_points * lot_size
+                    option_entry_notional = entry_price * lot_size * 0.5
+                    option_exit_notional = exit_price * lot_size * 0.5
+                    trade_cost = (option_entry_notional + option_exit_notional) * (
+                        (self.slippage_bps + self.transaction_cost_bps) / 10000.0
+                    )
+                    pnl = gross_pnl - trade_cost
                     
                     self.balance += pnl
+                    self.total_trade_cost += trade_cost
                     self.trades.append({
                         "entry_time": entry_time,
                         "exit_time": time,
                         "entry_price": entry_price,
                         "exit_price": exit_price,
                         "reason": reason,
+                        "gross_pnl": gross_pnl,
+                        "trade_cost": trade_cost,
                         "pnl": pnl
                     })
                     
@@ -188,6 +285,9 @@ class Backtester:
             "avg_win": 0.0,
             "avg_loss": 0.0,
             "final_balance": float(round(self.balance, 2)),
+            "is_simulation": self.is_simulation,
+            "data_source": self.data_source,
+            "total_trade_cost": float(round(self.total_trade_cost, 2)),
             "trades": []
         }
 
@@ -213,6 +313,8 @@ class Backtester:
                 "entry_price": float(t["entry_price"]),
                 "exit_price": float(t["exit_price"]),
                 "reason": str(t["reason"]),
+                "gross_pnl": float(t.get("gross_pnl", t["pnl"])),
+                "trade_cost": float(t.get("trade_cost", 0.0)),
                 "pnl": float(t["pnl"])
             })
 
@@ -250,12 +352,14 @@ class Backtester:
             "avg_win": float(round(avg_win, 2)),
             "avg_loss": float(round(avg_loss, 2)),
             "final_balance": float(round(self.balance, 2)),
+            "total_trade_cost": float(round(self.total_trade_cost, 2)),
             "sharpe_ratio": float(round(sharpe, 2)),
             "sortino_ratio": float(round(sortino, 2)),
             "calmar_ratio": float(round(calmar, 2)),
             "max_drawdown": float(round(max_dd, 4)),
             "expectancy": float(round(expectancy, 4)),
             "is_simulation": self.is_simulation,
+            "data_source": self.data_source,
             "run_id": str(uuid.uuid4()),
             "trades": json_trades
         }

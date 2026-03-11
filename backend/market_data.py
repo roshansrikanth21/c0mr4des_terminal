@@ -2,6 +2,13 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 
+try:
+    # Prefer the shared async-based data service (with fallbacks & caching)
+    from backend.services.market_data_service import get_sync_market_data, async_market_data_service
+except ImportError:
+    get_sync_market_data = None
+    async_market_data_service = None
+
 def calculate_sma(series, period):
     return series.rolling(window=period).mean()
 
@@ -58,37 +65,65 @@ def calculate_atr(high, low, close, period=14):
 
 def get_market_history(ticker: str, period: str = "1y", interval: str = "1d"):
     try:
-        # Determine Interval based on Period to optimize data density
-        interval = "1d"
-        if period in ["1mo", "3mo"]:
-            interval = "1h" # Higher resolution for short term
-        elif period == "5y" or period == "max":
-            interval = "1wk" # Lower resolution for long term
+        # Use the interval passed if it's granular, otherwise default to logic
+        if not interval:
+            interval = "1d"
+            if period in ["1mo", "3mo"]:
+                interval = "1h"
+            elif period == "5y" or period == "max":
+                interval = "1wk"
         
-        # Fetch data
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        print(f"FETCH: Ticker={ticker}, Period={period}, Interval={interval}")
+        
+        if get_sync_market_data is not None:
+            df = get_sync_market_data(ticker, period, interval)
+        else:
+            try:
+                # Defensive wrapper to stay alive even if yfinance internals crash
+                def _safe_download():
+                    try:
+                        d = yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
+                        return d
+                    except Exception as nested_e:
+                        print(f"   ⚠️ yfinance internal crash for {ticker}: {nested_e}")
+                        return pd.DataFrame()
+
+                data = _safe_download()
+                
+                # Check for None/Empty before any operations
+                if data is None or (isinstance(data, pd.DataFrame) and data.empty):
+                    print(f"   ⚠️ FETCH FAILED: No data returned for {ticker}")
+                    return []
+                
+                df = data
+            except Exception as e:
+                print(f"   ❌ FETCH EXCEPTION for {ticker}: {str(e)}")
+                return []
         
         if df.empty:
+            print(f"FETCH FAILED: Empty DataFrame for {ticker}")
             return []
 
-        # Handle multi-index columns
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        # Data is already normalized if it comes from get_sync_market_data
+        # But we double check for safety
+        if 'Close' not in df.columns:
+            print(f"FETCH ERROR: 'Close' column missing for {ticker}")
+            return []
 
         close = df['Close']
         high = df['High']
         low = df['Low']
         volume = df['Volume']
         
-        # Calculate Indicators
-        sma_50 = calculate_sma(close, 50)
-        sma_200 = calculate_sma(close, 200)
+        # Calculate Indicators (with fallback for smaller windows)
+        sma_50 = calculate_sma(close, min(len(close), 50))
+        sma_200 = calculate_sma(close, min(len(close), 200))
         rsi = calculate_rsi(close, 14)
         adx = calculate_adx(high, low, close, 14)
         atr = calculate_atr(high, low, close, 14)
         macd, macd_signal = calculate_macd(close)
         upper_bb, lower_bb = calculate_bollinger_bands(close)
-        vol_sma = volume.rolling(window=20).mean()
+        vol_sma = volume.rolling(window=min(len(volume), 20)).mean()
 
         history = []
         
@@ -222,10 +257,213 @@ def get_market_history(ticker: str, period: str = "1y", interval: str = "1d"):
         print(f"Error fetching history: {e}")
         return []
 
+async def get_market_history_async(ticker: str, period: str = "1y", interval: str = "1d"):
+    """
+    Async version of get_market_history.
+    """
+    try:
+        # Use the interval passed if it's granular, otherwise default to logic
+        if not interval:
+            interval = "1d"
+            if period in ["1mo", "3mo"]:
+                interval = "1h"
+            elif period == "5y" or period == "max":
+                interval = "1wk"
+        
+        print(f"FETCH (Async): Ticker={ticker}, Period={period}, Interval={interval}")
+        
+        if async_market_data_service is not None:
+            df = await async_market_data_service.get_market_data(ticker, period, interval)
+        else:
+            # Fallback to sync download if service not available (wrapped in thread logic in service, but here direct)
+            import asyncio
+            loop = asyncio.get_event_loop()
+            
+            def safe_download():
+                try:
+                    d = yf.download(ticker, period=period, interval=interval, progress=False, threads=False)
+                    if d is None: return pd.DataFrame()
+                    return d
+                except:
+                    return pd.DataFrame()
+
+            df = await loop.run_in_executor(None, safe_download)
+        
+        if df is None or df.empty:
+            print(f"FETCH FAILED: No data returned for {ticker}")
+            return []
+
+        # Data is already normalized if it comes from get_sync_market_data
+        # But we double check for safety
+        if 'Close' not in df.columns:
+            print(f"FETCH ERROR: 'Close' column missing for {ticker}")
+            return []
+            
+        # Heavy calculation part - run in thread pool if needed, but for now just run it here
+        # (Pandas operations are fast enough usually, unless huge data)
+        # To reuse logic, we can extract calculation to a separate function `calculate_indicators(df)`
+        # But for now, let's just duplicate the logic to avoid breaking legacy sync function or creating complex refactor
+        
+        close = df['Close']
+        high = df['High']
+        low = df['Low']
+        volume = df['Volume']
+        
+        # Calculate Indicators (with fallback for smaller windows)
+        sma_50 = calculate_sma(close, min(len(close), 50))
+        sma_200 = calculate_sma(close, min(len(close), 200))
+        rsi = calculate_rsi(close, 14)
+        adx = calculate_adx(high, low, close, 14)
+        atr = calculate_atr(high, low, close, 14)
+        macd, macd_signal = calculate_macd(close)
+        upper_bb, lower_bb = calculate_bollinger_bands(close)
+        vol_sma = volume.rolling(window=min(len(volume), 20)).mean()
+
+        history = []
+        
+        in_position = False
+        entry_price = 0
+        take_profit = None  # Initialize variable
+        stop_loss = None    # Initialize variable
+        
+        for i in range(len(df)):
+            date_obj = df.index[i]
+            # Format date based on resolution
+            date_str = date_obj.strftime('%Y-%m-%d %H:%M') if interval == "1h" else date_obj.strftime('%Y-%m-%d')
+            
+            price = float(close.iloc[i])
+            s50 = float(sma_50.iloc[i]) if not np.isnan(sma_50.iloc[i]) else None
+            s200 = float(sma_200.iloc[i]) if not np.isnan(sma_200.iloc[i]) else None
+            r_val = float(rsi.iloc[i]) if not np.isnan(rsi.iloc[i]) else 50
+            u_bb = float(upper_bb.iloc[i]) if not np.isnan(upper_bb.iloc[i]) else None
+            l_bb = float(lower_bb.iloc[i]) if not np.isnan(lower_bb.iloc[i]) else None
+            m_val = float(macd.iloc[i]) if not np.isnan(macd.iloc[i]) else 0
+            ms_val = float(macd_signal.iloc[i]) if not np.isnan(macd_signal.iloc[i]) else 0
+            adx_val = float(adx.iloc[i]) if not np.isnan(adx.iloc[i]) else 0
+            atr_val = float(atr.iloc[i]) if not np.isnan(atr.iloc[i]) else 0
+            vol_val = float(volume.iloc[i]) if not np.isnan(volume.iloc[i]) else 0
+            v_sma = float(vol_sma.iloc[i]) if not np.isnan(vol_sma.iloc[i]) else 0
+            
+            signal = None
+            confidence = 0.0
+            # stop_loss = None # Don't reset here if preserving state (logic in loop handles it)
+            reason = ""
+            
+            # Advanced Signal Logic (The "Model")
+            if s50 and s200 and atr_val > 0: 
+                # ENTRY CONDITIONS:
+                # 1. Trend: Above SMA 200 (Long term) OR Above SMA 50 (Med term)
+                # 2. Momentum: MACD Bullish Crossover OR RSI Recovery from oversold
+                # 3. Strength: ADX > 20 (Trend exists)
+                # 4. Volume: Volume > Average Volume (Confirmation) - Optional but boosts confidence
+                
+                is_uptrend = price > s50
+                macd_cross = (m_val > ms_val) and (m_val < 0) # Early entry
+                pullback = (price > s200) and (price < s50) and (r_val < 40) # Dip buy
+                
+                trend_strength = adx_val > 20
+                vol_confirmed = vol_val > v_sma
+                
+                if not in_position:
+                    entry_signal = False
+                    
+                    # Scenario A: Trend Following Breakout
+                    if is_uptrend and macd_cross and trend_strength:
+                         entry_signal = True
+                         reason = "Trend Breakout"
+                         confidence = 0.8
+                    
+                    # Scenario B: Mean Reversion (Dip Buy)
+                    elif pullback and r_val < 35:
+                         entry_signal = True
+                         reason = "Oversold Bounce"
+                         confidence = 0.6
+                         
+                    # Volume Boost
+                    if entry_signal and vol_confirmed:
+                        confidence += 0.1
+                        reason += " + Vol"
+
+                    if entry_signal and confidence > 0.6:
+                        signal = "ENTRY"
+                        in_position = True
+                        entry_price = price
+                        # Dynamic Stop Loss: 2 ATR below
+                        stop_loss = price - (2 * atr_val)
+                        # Take Profit: 2:1 Reward to Risk
+                        take_profit = price + (2 * (price - stop_loss))
+
+                # EXIT CONDITIONS:
+                # 1. Trend Reversal: Close below SMA 50 (if was trend trade)
+                # 2. RSI Overbought: > 75
+                # 3. Trailing Stop Breach (Simulated logic here implies standard stop)
+                elif in_position:
+                    # Calculate current dynamic stop (trailing theoretically) or fixed
+                    # For now, let's keep the initial stop to be clear in the UI, or trail it?
+                    # Let's trail it: Stop never goes down.
+                    current_stop = price - (2 * atr_val)
+                    if stop_loss and current_stop > stop_loss:
+                         stop_loss = current_stop
+                    
+                    stop_hit = price < stop_loss if stop_loss else False
+                    trend_break = price < s50 and r_val < 50
+                    take_profit_hit = price > take_profit if take_profit else False
+                    
+                    if stop_hit:
+                        signal = "EXIT"
+                        reason = "Stop Loss Hit"
+                        in_position = False
+                    elif take_profit_hit:
+                        signal = "EXIT"
+                        reason = "Take Profit Hit"
+                        in_position = False
+                    elif trend_break:
+                         signal = "EXIT"
+                         reason = "Trend Broken"
+                         in_position = False
+
+            # Determine explicit "Action" state
+            action = "WAIT"
+            if signal == "ENTRY":
+                action = "ENTER NOW"
+            elif signal == "EXIT":
+                action = "EXIT NOW"
+            elif in_position:
+                action = "HOLD"
+
+            history.append({
+                "date": date_str,
+                "price": price,
+                "sma50": s50,
+                "sma200": s200,
+                "rsi": r_val,
+                "upper_bb": u_bb,
+                "lower_bb": l_bb,
+                "stop_loss": stop_loss if in_position or signal == "ENTRY" else None,
+                "take_profit": take_profit if in_position or signal == "ENTRY" else None,
+                "confidence": confidence if signal == "ENTRY" else None,
+                "reason": reason if signal else None,
+                "signal": signal,
+                "action": action
+            })
+            
+        return history
+
+    except Exception as e:
+        print(f"Error fetching history: {e}")
+        return []
+
 def get_market_regime(ticker: str):
     try:
-        # Fetch data (enough for 200SMA)
-        df = yf.download(ticker, period="2y", interval="1d", progress=False)
+        # Fetch data (prefer shared provider service if available)
+        if get_sync_market_data is not None:
+            df = get_sync_market_data(ticker, period="2y", interval="1d")
+        else:
+            try:
+                data = yf.download(ticker, period="2y", interval="1d", progress=False, threads=False)
+                df = data if data is not None else pd.DataFrame()
+            except:
+                df = pd.DataFrame()
         
         if df.empty:
             return {
@@ -236,10 +474,14 @@ def get_market_regime(ticker: str):
                 "vitals": {"vix": 0, "rsi": 0, "adx": 0}
             }
 
-        # Calculate Indicators
-        # Handle multi-index columns if yfinance returns them
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        if 'Close' not in df.columns:
+             return {
+                "regime": "Error",
+                "confidence": 0.0,
+                "is_trade_allowed": False,
+                "reason": f"Column 'Close' missing for {ticker}",
+                "vitals": {"vix": 0, "rsi": 0, "adx": 0}
+            }
 
         close = df['Close']
         high = df['High']
@@ -277,13 +519,163 @@ def get_market_regime(ticker: str):
         vix_val = 0
         try:
             vix_ticker = "^INDIAVIX" if ticker == "^NSEI" else "^VIX"
-            vix_df = yf.download(vix_ticker, period="5d", progress=False)
+            if get_sync_market_data is not None:
+                vix_df = get_sync_market_data(vix_ticker, period="5d", interval="1d")
+            else:
+                vix_df = yf.download(vix_ticker, period="5d", progress=False)
+                
             if not vix_df.empty:
-                 if isinstance(vix_df.columns, pd.MultiIndex):
-                    vix_df.columns = vix_df.columns.get_level_values(0)
-                 vix_val = vix_df['Close'].iloc[-1]
+                 if 'Close' in vix_df.columns:
+                      vix_val = vix_df['Close'].iloc[-1]
         except:
             vix_val = 0
+
+        # Regime Logic
+        regime = "Range-bound"
+        confidence = 0.5
+        is_trade_allowed = True
+        reason = "Normal market conditions"
+
+        # Definition: Strong Uptrend
+        if current_close > current_sma_50 > current_sma_200:
+            regime = "Strong Uptrend"
+            confidence = 0.8
+            if current_adx > 25:
+                confidence += 0.1
+        
+        # Definition: Strong Downtrend
+        elif current_close < current_sma_50 < current_sma_200:
+            regime = "Strong Downtrend"
+            confidence = 0.8
+            if current_adx > 25:
+                confidence += 0.1
+
+        # Definition: Volatility Expansion (High VIX or high ADX)
+        if vix_val > 24 or current_adx > 40:
+             regime = "Volatility Expansion"
+             confidence = 0.9
+             is_trade_allowed = False # Example rule
+             reason = "Extreme Volatility"
+
+        # Trade filters
+        if current_rsi > 70 and "Uptrend" in regime:
+             is_trade_allowed = False
+             reason = "Overbought - Wait for pullback"
+        
+        if current_rsi < 30 and "Downtrend" in regime:
+             is_trade_allowed = False
+             reason = "Oversold - Wait for bounce"
+
+        return {
+            "regime": regime,
+            "confidence": min(confidence, 1.0),
+            "is_trade_allowed": is_trade_allowed,
+            "reason": reason,
+            "vitals": {
+                "vix": float(round(vix_val, 2)),
+                "rsi": float(round(current_rsi, 2)),
+                "adx": float(round(current_adx, 2))
+            }
+        }
+
+    except Exception as e:
+        print(f"Error processing data: {e}")
+        return {
+            "regime": "Range-bound",
+            "confidence": 0.0,
+            "is_trade_allowed": False,
+            "reason": f"Error: {str(e)}",
+            "vitals": {"vix": 0, "rsi": 0, "adx": 0}
+        }
+
+async def get_market_regime_async(ticker: str):
+    """
+    Async version of get_market_regime
+    """
+    try:
+        # Fetch data (prefer shared provider service if available)
+        if async_market_data_service is not None:
+            df = await async_market_data_service.get_market_data(ticker, period="2y", interval="1d")
+        else:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            def safe_dl():
+                try:
+                   d = yf.download(ticker, period="2y", interval="1d", progress=False, threads=False)
+                   return d if d is not None else pd.DataFrame()
+                except:
+                   return pd.DataFrame()
+            df = await loop.run_in_executor(None, safe_dl)
+        
+        if df.empty:
+            return {
+                "regime": "Range-bound",
+                "confidence": 0.0,
+                "is_trade_allowed": False,
+                "reason": "Data Unavailable",
+                "vitals": {"vix": 0, "rsi": 0, "adx": 0}
+            }
+
+        if 'Close' not in df.columns:
+             return {
+                "regime": "Error",
+                "confidence": 0.0,
+                "is_trade_allowed": False,
+                "reason": f"Column 'Close' missing for {ticker}",
+                "vitals": {"vix": 0, "rsi": 0, "adx": 0}
+            }
+
+        close = df['Close']
+        high = df['High']
+        low = df['Low']
+        
+        # Simple Moving Averages
+        sma_50 = calculate_sma(close, 50)
+        sma_200 = calculate_sma(close, 200)
+        
+        # RSI
+        rsi = calculate_rsi(close, 14)
+        
+        # ADX
+        adx = calculate_adx(high, low, close, 14)
+
+        # Get latest values (handle NaN at start of series)
+        if len(close) < 200:
+             return {
+                "regime": "Insufficient Data",
+                "confidence": 0.0,
+                "is_trade_allowed": False,
+                "reason": "Not enough history for 200 SMA",
+                "vitals": {"vix": 0, "rsi": 0, "adx": 0}
+            }
+            
+        current_close = close.iloc[-1]
+        current_sma_50 = sma_50.iloc[-1]
+        current_sma_200 = sma_200.iloc[-1]
+        current_rsi = rsi.iloc[-1]
+        # Use simple fillna(0) for safety if calculation resulted in NaNs
+        current_adx = adx.iloc[-1] if not np.isnan(adx.iloc[-1]) else 0
+        current_rsi = current_rsi if not np.isnan(current_rsi) else 50
+        
+        # Helper to safely get VIX (India VIX for NSE, regular VIX for others)
+        vix_val = 18.0 # Standard baseline fallback
+        try:
+            vix_ticker = "^INDIAVIX" if ticker == "^NSEI" else "^VIX"
+            if async_market_data_service is not None:
+                # Fast timeout for VIX as it's secondary data
+                vix_df = await async_market_data_service.get_market_data(vix_ticker, period="5d", interval="1d")
+            else:
+                 import asyncio
+                 loop = asyncio.get_event_loop()
+                 # Use very fast timeout for VIX to avoid hanging
+                 vix_df = await loop.run_in_executor(None, lambda: yf.download(vix_ticker, period="5d", progress=False, timeout=5))
+                
+            if not vix_df.empty:
+                 if 'Close' in vix_df.columns:
+                      vix_val = vix_df['Close'].iloc[-1]
+        except Exception as vix_err:
+            print(f"⚠️ VIX Fetch Delayed/Failed: {vix_err}. Using baseline.")
+            vix_val = 18.0
 
         # Regime Logic
         regime = "Range-bound"

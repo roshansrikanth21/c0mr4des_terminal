@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 
 // API Base URL (adjust if needed)
-const API_BASE = 'http://localhost:8000/api/dashboard';
+const API_BASE = '/api/dashboard';
 
 export function useInstitutionalData(ticker: string) {
     const [riskData, setRiskData] = useState<any>(null);
@@ -19,18 +19,34 @@ export function useInstitutionalData(ticker: string) {
             setIsLoading(true);
             setError(null);
             try {
-                // Fetch in parallel for speed
-                const [riskRes, strategyRes, timingRes, greeksRes] = await Promise.all([
+                // Fetch in parallel, but tolerate partial failures.
+                const [riskRes, strategyRes, timingRes, greeksRes] = await Promise.allSettled([
                     axios.get(`${API_BASE}/market_analysis?ticker=${ticker}`),
                     axios.get(`${API_BASE}/strategy_performance`),
-                    axios.get(`${API_BASE}/summary`),
+                    axios.get(`${API_BASE}/summary?ticker=${ticker}`),
                     axios.get(`${API_BASE}/options_chain?ticker=${ticker}`)
                 ]);
 
-                setRiskData(riskRes.data.risk_forecast);
-                setStrategyData(strategyRes.data);
-                setTimingData(timingRes.data.market_status);
-                setGreeksData(greeksRes.data);
+                if (riskRes.status === 'fulfilled') {
+                    setRiskData(riskRes.value.data.risk_forecast || null);
+                }
+
+                if (strategyRes.status === 'fulfilled') {
+                    setStrategyData(strategyRes.value.data || null);
+                }
+
+                if (timingRes.status === 'fulfilled') {
+                    setTimingData(timingRes.value.data.market_status || null);
+                }
+
+                if (greeksRes.status === 'fulfilled') {
+                    setGreeksData(greeksRes.value.data || null);
+                }
+
+                const hasFailure = [riskRes, strategyRes, timingRes, greeksRes].some(r => r.status === 'rejected');
+                if (hasFailure) {
+                    setError("Some institutional metrics are temporarily unavailable");
+                }
 
             } catch (err) {
                 console.error("Failed to fetch institutional data:", err);
@@ -43,8 +59,8 @@ export function useInstitutionalData(ticker: string) {
 
         if (ticker) {
             fetchData();
-            // Refresh every 30 seconds
-            const interval = setInterval(fetchData, 30000);
+            // Refresh every 45 seconds to avoid overlapping heavy recomputations.
+            const interval = setInterval(fetchData, 45000);
             return () => clearInterval(interval);
         }
     }, [ticker]);

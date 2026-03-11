@@ -10,9 +10,7 @@ interface BayesianMetrics {
         mean: number;
         credible_interval_95: [number, number];
     };
-    probabilities: {
-        profitable: number;
-    };
+    profitability_prob: number;
     recommendation: {
         action: string;
         message: string;
@@ -39,9 +37,11 @@ export function BayesianStrategyCard({ metrics, isLoading }: BayesianStrategyCar
         );
     }
 
-    const winRate = metrics.win_rate.mean * 100;
-    const confidence = metrics.probabilities.profitable * 100;
-    const action = metrics.recommendation.action;
+    const winRate = metrics.win_rate?.mean ? metrics.win_rate.mean * 100 : 0;
+    const confidence = metrics.profitability_prob ? metrics.profitability_prob * 100 : 0;
+    const action = metrics.recommendation?.action || "HOLD";
+
+    const ciHigh = metrics.win_rate?.credible_interval_95 ? metrics.win_rate.credible_interval_95[1] : 0;
 
     return (
         <Card className="border border-border/50 bg-card/50">
@@ -63,7 +63,7 @@ export function BayesianStrategyCard({ metrics, isLoading }: BayesianStrategyCar
                         <div className="text-[10px] uppercase font-mono text-muted-foreground">Calibrated Win Rate</div>
                         <div className="text-2xl font-bold font-mono text-primary">{winRate.toFixed(1)}%</div>
                         <div className="text-[9px] text-muted-foreground">
-                            ± {((metrics.win_rate.credible_interval_95[1] - metrics.win_rate.mean) * 100).toFixed(1)}% (95% CI)
+                            ± {((ciHigh - (metrics.win_rate?.mean || 0)) * 100).toFixed(1)}% (95% CI)
                         </div>
                     </div>
                     <Activity className="w-8 h-8 text-primary opacity-50" />
@@ -79,7 +79,7 @@ export function BayesianStrategyCard({ metrics, isLoading }: BayesianStrategyCar
                 </div>
 
                 <div className="bg-secondary/30 p-2 rounded text-[10px] font-mono border border-border/30">
-                    {metrics.recommendation.message}
+                    {metrics.recommendation?.message || "Analyzing market data..."}
                 </div>
             </CardContent>
         </Card>

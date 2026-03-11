@@ -8,23 +8,31 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Upload, ScanEye, Loader2, FileImage, CheckCircle, AlertCircle, Target, Send, Paperclip } from 'lucide-react';
+import { Upload, ScanEye, Loader2, FileImage, CheckCircle, AlertCircle, Target, Send, Paperclip, X } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface AnalysisResult {
+    status?: 'success' | 'error';
+    error?: string;
     patterns: string[];
     sentiment: string;
     confidence: number;
     recommendation: string;
     analysis: string;
+    action_type?: string;
+    entry_zone?: string;
+    target?: number;
+    stop_loss?: number;
+    ticker_detected?: string;
 }
 
 export function ScanDialog() {
     const [isOpen, setIsOpen] = useState(false);
-    const [selectedFile, setSelectedFile] = useState<File | null>(null);
-    const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+    const [previewUrls, setPreviewUrls] = useState<string[]>([]);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [result, setResult] = useState<AnalysisResult | null>(null);
     const [chatQuery, setChatQuery] = useState("");
@@ -44,7 +52,6 @@ export function ScanDialog() {
         setChatImage(null);
         setIsChatting(true);
 
-        // Add user message to history immediately
         setChatHistory(prev => [
             ...prev,
             {
@@ -63,9 +70,8 @@ export function ScanDialog() {
                 formData.append('file', currentImage);
             }
 
-            const res = await fetch('http://localhost:8000/api/chat_analysis', {
+            const res = await fetch('/api/chat_analysis', {
                 method: 'POST',
-                // Content-Type header is automatically set by browser for FormData
                 body: formData
             });
 
@@ -82,14 +88,45 @@ export function ScanDialog() {
         }
     };
 
+    const addFiles = (files: FileList | null) => {
+        if (!files) return;
+
+        const newFiles: File[] = [];
+        const newUrls: string[] = [];
+
+        Array.from(files).forEach(file => {
+            if (file.type.startsWith('image/')) {
+                newFiles.push(file);
+                newUrls.push(URL.createObjectURL(file));
+            }
+        });
+
+        if (newFiles.length > 0) {
+            setSelectedFiles(prev => [...prev, ...newFiles]);
+            setPreviewUrls(prev => [...prev, ...newUrls]);
+            setResult(null);
+        }
+    };
+
+    const removeFile = (index: number) => {
+        const newFiles = [...selectedFiles];
+        const newUrls = [...previewUrls];
+
+        // Revoke URL to prevent memory leaks
+        URL.revokeObjectURL(newUrls[index]);
+
+        newFiles.splice(index, 1);
+        newUrls.splice(index, 1);
+
+        setSelectedFiles(newFiles);
+        setPreviewUrls(newUrls);
+        setResult(null);
+    };
 
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            const file = e.target.files[0];
-            setSelectedFile(file);
-            setPreviewUrl(URL.createObjectURL(file));
-            setResult(null); // Reset previous result
-        }
+        addFiles(e.target.files);
+        // Reset input so same file can be selected again
+        if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
     const handleDragOver = (e: React.DragEvent) => {
@@ -98,54 +135,59 @@ export function ScanDialog() {
 
     const handleDrop = (e: React.DragEvent) => {
         e.preventDefault();
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-            const file = e.dataTransfer.files[0];
-            if (!file.type.startsWith('image/')) {
-                toast.error("Please upload an image file");
-                return;
-            }
-            setSelectedFile(file);
-            setPreviewUrl(URL.createObjectURL(file));
-            setResult(null);
-        }
+        addFiles(e.dataTransfer.files);
     };
 
     const handlePaste = async (e: React.ClipboardEvent) => {
         const items = e.clipboardData.items;
+        const dt = new DataTransfer();
+
         for (const item of items) {
             if (item.type.indexOf('image') !== -1) {
                 const file = item.getAsFile();
-                if (file) {
-                    setSelectedFile(file);
-                    setPreviewUrl(URL.createObjectURL(file));
-                    setResult(null);
-                }
+                if (file) dt.items.add(file);
             }
         }
+        addFiles(dt.files);
     };
 
     const handleAnalyze = async () => {
-        if (!selectedFile) return;
+        if (selectedFiles.length === 0) return;
 
         setIsAnalyzing(true);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
         try {
+            const filesToSend = selectedFiles.slice(0, 4);
+            if (selectedFiles.length > filesToSend.length) {
+                toast.info(`Using first ${filesToSend.length} charts for faster analysis.`);
+            }
             const formData = new FormData();
-            formData.append('file', selectedFile);
+            // Append all files with same key 'files' for List[UploadFile]
+            filesToSend.forEach(file => {
+                formData.append('files', file);
+            });
 
-            const res = await fetch('http://localhost:8000/api/analyze', {
+            const res = await fetch('/api/analyze', {
                 method: 'POST',
                 body: formData,
+                signal: controller.signal,
             });
 
             if (!res.ok) throw new Error("Analysis failed");
 
-            const data = await res.json();
+            const data: AnalysisResult = await res.json();
             setResult(data);
-            toast.success("Analysis Complete");
+            if (data.status === 'error' || data.error) {
+                toast.error(data.recommendation || data.error || "Analysis failed");
+            } else {
+                toast.success("Analysis Complete");
+            }
         } catch (err) {
             console.error(err);
             toast.error("Failed to analyze image");
         } finally {
+            clearTimeout(timeoutId);
             setIsAnalyzing(false);
         }
     };
@@ -158,7 +200,7 @@ export function ScanDialog() {
                     Scan Chart
                 </Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-5xl h-[90vh] flex flex-col p-0 gap-0" onPaste={handlePaste}>
+            <DialogContent className="sm:max-w-6xl h-[90vh] flex flex-col p-0 gap-0" onPaste={handlePaste}>
                 <DialogHeader className="px-6 py-4 border-b border-border bg-background z-10">
                     <DialogTitle className="flex items-center gap-2">
                         <ScanEye className="w-5 h-5 text-primary" />
@@ -166,16 +208,16 @@ export function ScanDialog() {
                     </DialogTitle>
                 </DialogHeader>
 
-                <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-2">
-                    {/* LEFT COLUMN: Upload & Visuals */}
-                    <div className="p-6 border-r border-border bg-secondary/10 flex flex-col gap-4 overflow-y-auto">
+                <div className="flex-1 overflow-hidden grid grid-cols-1 lg:grid-cols-12 h-full">
+                    {/* LEFT COLUMN: Upload & Thumbnails (3 cols) */}
+                    <div className="lg:col-span-3 p-4 border-r border-border bg-secondary/10 flex flex-col gap-4 overflow-y-auto">
                         {/* Upload Area */}
                         <div
                             className={cn(
-                                "border-2 border-dashed border-border rounded-lg flex flex-col items-center justify-center text-center cursor-pointer hover:bg-secondary/50 transition-colors relative transition-all duration-300",
-                                previewUrl ? "h-64 border-primary/50" : "h-64"
+                                "border-2 border-dashed border-border rounded-lg flex flex-col items-center justify-center text-center cursor-pointer hover:bg-secondary/50 transition-colors p-6 min-h-[150px]",
+                                isAnalyzing && "opacity-50 pointer-events-none"
                             )}
-                            onClick={() => !previewUrl && fileInputRef.current?.click()}
+                            onClick={() => fileInputRef.current?.click()}
                             onDragOver={handleDragOver}
                             onDrop={handleDrop}
                         >
@@ -184,142 +226,178 @@ export function ScanDialog() {
                                 ref={fileInputRef}
                                 className="hidden"
                                 accept="image/*"
+                                multiple
                                 onChange={handleFileSelect}
                             />
+                            <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center mb-2">
+                                <Upload className="w-6 h-6 text-primary" />
+                            </div>
+                            <p className="font-medium text-sm">Upload Charts</p>
+                            <p className="text-xs text-muted-foreground mt-1">Multi-select allowed</p>
+                        </div>
 
-                            {previewUrl ? (
-                                <div className="relative w-full h-full p-2">
-                                    <img src={previewUrl} alt="Preview" className="w-full h-full object-contain rounded-md" />
-                                    <Button
-                                        size="sm"
-                                        variant="destructive"
-                                        className="absolute top-4 right-4 h-8 px-3 text-xs shadow-lg"
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            setSelectedFile(null);
-                                            setPreviewUrl(null);
-                                            setResult(null);
-                                        }}
-                                    >
-                                        Remove Image
-                                    </Button>
-                                </div>
-                            ) : (
-                                <>
-                                    <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mb-4">
-                                        <Upload className="w-8 h-8 text-primary" />
+                        {/* Image Grid */}
+                        <div className="flex-1 overflow-y-auto space-y-3">
+                            {previewUrls.map((url, idx) => (
+                                <div key={idx} className="relative group rounded-lg overflow-hidden border border-border bg-black/20">
+                                    <img src={url} alt={`Chart ${idx + 1}`} className="w-full h-auto object-contain" />
+                                    {!isAnalyzing && (
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); removeFile(idx); }}
+                                            className="absolute top-2 right-2 p-1 bg-destructive text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
+                                        >
+                                            <X className="w-3 h-3" />
+                                        </button>
+                                    )}
+                                    <div className="absolute bottom-2 left-2 px-2 py-0.5 bg-black/60 text-white text-[10px] rounded">
+                                        Img {idx + 1}
                                     </div>
-                                    <p className="text-lg font-medium">Upload Chart Screenshot</p>
-                                    <p className="text-sm text-muted-foreground mt-2">Drag & drop or Click to browse</p>
-                                    <p className="text-xs text-muted-foreground mt-4 bg-secondary px-3 py-1 rounded-full">
-                                        Tip: Paste (Ctrl+V) directly
-                                    </p>
-                                </>
-                            )}
+                                </div>
+                            ))}
                         </div>
 
                         {/* Analyze Button */}
-                        {selectedFile && !result && (
-                            <Button size="lg" className="w-full gap-2 text-md py-6 shadow-lg shadow-primary/20" onClick={handleAnalyze} disabled={isAnalyzing}>
+                        {selectedFiles.length > 0 && !result && (
+                            <Button size="lg" className="w-full gap-2 shadow-lg shadow-primary/20 sticky bottom-0" onClick={handleAnalyze} disabled={isAnalyzing}>
                                 {isAnalyzing ? (
                                     <>
-                                        <Loader2 className="w-5 h-5 animate-spin" />
-                                        Analyzing Chart Patterns...
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        Analyzing...
                                     </>
                                 ) : (
                                     <>
-                                        <ScanEye className="w-5 h-5" />
-                                        Run AI Analysis
+                                        <ScanEye className="w-4 h-4" />
+                                        Run Analysis ({selectedFiles.length})
                                     </>
                                 )}
                             </Button>
                         )}
+                    </div>
 
-                        {/* Trade Signal Box (The "Side Box" Request) */}
-                        {result && (
-                            <div className="mt-4 p-4 rounded-xl border border-border bg-card shadow-sm space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500 delay-100">
-                                <div className="flex items-center justify-between pb-2 border-b border-border/50">
-                                    <h3 className="font-mono text-sm font-bold uppercase text-muted-foreground">Trade Intelligence</h3>
-                                    <Badge variant={result.sentiment === 'Bullish' ? 'default' : 'destructive'}>
-                                        {result.sentiment}
-                                    </Badge>
+                    {/* MIDDLE COLUMN: SUMMARY & ACTION (3 cols) - NEW REQUIREMENT */}
+                    <div className="lg:col-span-3 p-4 border-r border-border bg-card flex flex-col gap-4 overflow-y-auto">
+                        {result ? (
+                            <div className="space-y-6 animate-in fade-in slide-in-from-left-4 duration-500">
+                                {/* 1. Giant Action Badge */}
+                                <div className={cn(
+                                    "rounded-xl p-6 text-center border-2 shadow-lg",
+                                    result.action_type?.includes("CALL") ? "bg-green-500/10 border-green-500 text-green-500" :
+                                        result.action_type?.includes("PUT") ? "bg-red-500/10 border-red-500 text-red-500" :
+                                            "bg-yellow-500/10 border-yellow-500 text-yellow-500"
+                                )}>
+                                    <span className="block text-xs font-bold uppercase tracking-widest opacity-70 mb-2">Recommendation</span>
+                                    <h2 className="text-3xl font-black uppercase tracking-tight leading-none">
+                                        {result.action_type || result.recommendation.split(' ')[0]}
+                                    </h2>
                                 </div>
 
+                                {/* 2. Entry Zone */}
+                                <div className="space-y-1">
+                                    <label className="text-xs font-bold uppercase text-muted-foreground ml-1">Entry Zone</label>
+                                    <div className="p-3 bg-secondary rounded-lg border border-border font-mono text-lg font-bold text-center">
+                                        {result.entry_zone || "Watch Price Action"}
+                                    </div>
+                                </div>
+
+                                {/* 3. Targets & Stops */}
                                 <div className="grid grid-cols-2 gap-3">
-                                    <div className="p-3 bg-secondary/50 rounded-lg">
-                                        <span className="text-[10px] uppercase text-muted-foreground font-bold">Action</span>
-                                        <div className="text-lg font-bold text-primary mt-1">{result.recommendation.split(' ')[0]}</div>
+                                    <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/20">
+                                        <div className="flex items-center gap-1.5 text-green-600 dark:text-green-400 mb-1">
+                                            <Target className="w-3 h-3" />
+                                            <span className="text-[10px] font-bold uppercase">Target</span>
+                                        </div>
+                                        <div className="text-xl font-bold font-mono text-green-700 dark:text-green-300">
+                                            {result.target || "---"}
+                                        </div>
                                     </div>
-                                    <div className="p-3 bg-secondary/50 rounded-lg">
-                                        <span className="text-[10px] uppercase text-muted-foreground font-bold">Confidence</span>
-                                        <div className="text-lg font-bold mt-1">{(result.confidence * 100).toFixed(0)}%</div>
+                                    <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20">
+                                        <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400 mb-1">
+                                            <AlertCircle className="w-3 h-3" />
+                                            <span className="text-[10px] font-bold uppercase">Stop Loss</span>
+                                        </div>
+                                        <div className="text-xl font-bold font-mono text-red-700 dark:text-red-300">
+                                            {result.stop_loss || "---"}
+                                        </div>
                                     </div>
                                 </div>
 
-                                <div className="space-y-2">
-                                    <div className="flex items-center justify-between text-sm p-2 rounded bg-green-500/10 border border-green-500/20 text-green-700 dark:text-green-300">
-                                        <span className="font-semibold flex items-center gap-2"><Target className="w-3 h-3" /> Target</span>
-                                        <span className="font-mono">See Analysis</span>
+                                {/* 4. Confidence */}
+                                <div className="p-4 bg-secondary/30 rounded-lg">
+                                    <div className="flex justify-between items-end mb-2">
+                                        <span className="text-xs font-bold text-muted-foreground">AI Confidence</span>
+                                        <span className="text-xl font-bold">{(result.confidence * 100).toFixed(0)}%</span>
                                     </div>
-                                    <div className="flex items-center justify-between text-sm p-2 rounded bg-red-500/10 border border-red-500/20 text-red-700 dark:text-red-300">
-                                        <span className="font-semibold flex items-center gap-2"><AlertCircle className="w-3 h-3" /> Stop Loss</span>
-                                        <span className="font-mono">See Analysis</span>
+                                    <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
+                                        <div
+                                            className={cn("h-full transition-all duration-1000", result.confidence > 0.7 ? "bg-primary" : "bg-yellow-500")}
+                                            style={{ width: `${result.confidence * 100}%` }}
+                                        />
                                     </div>
                                 </div>
+
+                                {/* 5. Ticker Info */}
+                                {result.ticker_detected && (
+                                    <div className="p-3 border border-border rounded-lg text-center">
+                                        <span className="text-[10px] uppercase text-muted-foreground block">Detected Ticker</span>
+                                        <span className="font-bold font-mono text-lg">{result.ticker_detected}</span>
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-50 text-center p-4">
+                                <ScanEye className="w-12 h-12 mb-2" />
+                                <p className="text-sm">Analysis Summary will appear here</p>
                             </div>
                         )}
                     </div>
 
-                    {/* RIGHT COLUMN: Analysis & Chat */}
-                    <div className="flex flex-col h-full overflow-hidden bg-card">
+                    {/* RIGHT COLUMN: DETAILED ANALYSIS & CHAT (6 cols) */}
+                    <div className="lg:col-span-6 flex flex-col h-full bg-background">
                         {result ? (
                             <>
-                                {/* Scrollable Analysis Text */}
-                                <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                                    <div>
-                                        <h3 className="text-sm font-bold uppercase text-muted-foreground mb-3 flex items-center gap-2">
+                                <ScrollArea className="flex-1 p-6">
+                                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                                        <h3 className="section-header flex items-center gap-2 text-primary">
                                             <FileImage className="w-4 h-4" /> Comprehensive Analysis
                                         </h3>
-                                        <div className="prose prose-sm dark:prose-invert max-w-none text-foreground/90 leading-relaxed p-4 bg-secondary/20 rounded-lg border border-border/50">
+                                        <div className="p-4 bg-secondary/10 rounded-lg border-l-4 border-primary mt-4 whitespace-pre-wrap leading-relaxed">
                                             {result.analysis}
                                         </div>
-                                    </div>
 
-                                    <div>
-                                        <h3 className="text-sm font-bold uppercase text-muted-foreground mb-3">Detected Patterns</h3>
-                                        <div className="flex flex-wrap gap-2">
-                                            {result.patterns.map((p, i) => (
-                                                <Badge key={i} variant="outline" className="px-3 py-1 flex items-center gap-1.5 text-xs">
-                                                    <CheckCircle className="w-3 h-3 text-primary" />
-                                                    {p}
-                                                </Badge>
-                                            ))}
-                                        </div>
-                                    </div>
-
-                                    {/* Chat History */}
-                                    {chatHistory.length > 0 && (
-                                        <div className="border-t border-border pt-6">
-                                            <h3 className="text-sm font-bold uppercase text-muted-foreground mb-3">Q&A History</h3>
-                                            <div className="space-y-4">
-                                                {chatHistory.map((msg, i) => (
-                                                    <div key={i} className={cn("p-3 rounded-lg text-sm", msg.role === 'user' ? "bg-primary/10 ml-8" : "bg-secondary/30 mr-8")}>
-                                                        <span className="font-bold block text-[10px] uppercase opacity-50 mb-1">{msg.role === 'user' ? 'You' : 'AI Analyst'}</span>
-                                                        {msg.image && (
-                                                            <div className="mb-2">
-                                                                <img src={msg.image} alt="Attached context" className="h-20 rounded border border-border/50" />
-                                                            </div>
-                                                        )}
-                                                        {msg.content}
-                                                    </div>
+                                        <div className="mt-6">
+                                            <h4 className="text-xs font-bold uppercase text-muted-foreground mb-3">Detected Patterns</h4>
+                                            <div className="flex flex-wrap gap-2">
+                                                {result.patterns.map((p, i) => (
+                                                    <Badge key={i} variant="secondary" className="px-3 py-1 text-xs">
+                                                        <CheckCircle className="w-3 h-3 mr-1 text-primary" />
+                                                        {p}
+                                                    </Badge>
                                                 ))}
                                             </div>
                                         </div>
-                                    )}
-                                </div>
 
-                                {/* Chat Interface Input */}
-                                <div className="p-4 border-t border-border bg-secondary/10">
+                                        {/* Chat History */}
+                                        {chatHistory.length > 0 && (
+                                            <div className="mt-8 border-t border-border pt-6">
+                                                <h4 className="text-xs font-bold uppercase text-muted-foreground mb-4">Q&A History</h4>
+                                                <div className="space-y-4">
+                                                    {chatHistory.map((msg, i) => (
+                                                        <div key={i} className={cn("p-3 rounded-lg text-sm", msg.role === 'user' ? "bg-primary/10 ml-8" : "bg-secondary/50 mr-8")}>
+                                                            <span className="font-bold block text-[10px] uppercase opacity-50 mb-1">{msg.role === 'user' ? 'You' : 'AI Analyst'}</span>
+                                                            {msg.image && (
+                                                                <img src={msg.image} alt="Attached" className="h-20 rounded border border-border/50 mb-2" />
+                                                            )}
+                                                            {msg.content}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </ScrollArea>
+
+                                {/* Chat Input */}
+                                <div className="p-4 border-t border-border bg-secondary/5">
                                     <form
                                         className="flex gap-2 items-end"
                                         onSubmit={(e) => {
@@ -328,14 +406,14 @@ export function ScanDialog() {
                                         }}
                                     >
                                         <div className="flex-1 flex flex-col gap-2">
-                                            {/* Image Preview if selected */}
+                                            {/* Image Preview */}
                                             {chatImage && (
                                                 <div className="relative inline-block w-fit">
-                                                    <img src={URL.createObjectURL(chatImage)} alt="Preview" className="h-16 rounded border border-border" />
+                                                    <img src={URL.createObjectURL(chatImage)} alt="Preview" className="h-12 rounded border border-border" />
                                                     <button
                                                         type="button"
                                                         onClick={() => setChatImage(null)}
-                                                        className="absolute -top-2 -right-2 bg-destructive text-destructive-foreground rounded-full w-5 h-5 flex items-center justify-center text-xs"
+                                                        className="absolute -top-2 -right-2 bg-destructive text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px]"
                                                     >
                                                         ×
                                                     </button>
@@ -343,7 +421,6 @@ export function ScanDialog() {
                                             )}
 
                                             <div className="flex gap-2">
-                                                {/* Hidden File Input */}
                                                 <input
                                                     type="file"
                                                     ref={chatFileInputRef}
@@ -353,22 +430,19 @@ export function ScanDialog() {
                                                         if (e.target.files?.[0]) setChatImage(e.target.files[0]);
                                                     }}
                                                 />
-
-                                                {/* Attach Button */}
                                                 <Button
                                                     type="button"
                                                     size="icon"
-                                                    variant="outline"
-                                                    className="shrink-0"
+                                                    variant="ghost"
+                                                    className="shrink-0 text-muted-foreground"
                                                     onClick={() => chatFileInputRef.current?.click()}
-                                                    title="Attach Image"
                                                 >
                                                     <Paperclip className="w-4 h-4" />
                                                 </Button>
 
                                                 <input
-                                                    className="flex-1 bg-background border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
-                                                    placeholder="Ask a follow-up question..."
+                                                    className="flex-1 bg-transparent border-none text-sm focus:outline-none placeholder:text-muted-foreground/50"
+                                                    placeholder="Ask follow-up questions about this setup..."
                                                     value={chatQuery}
                                                     onChange={(e) => setChatQuery(e.target.value)}
                                                     disabled={isChatting}
@@ -376,17 +450,17 @@ export function ScanDialog() {
                                             </div>
                                         </div>
 
-                                        <Button size="sm" type="submit" disabled={isChatting || (!chatQuery.trim() && !chatImage)}>
+                                        <Button size="icon" type="submit" disabled={isChatting || (!chatQuery.trim() && !chatImage)} className="rounded-full h-8 w-8">
                                             {isChatting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                                         </Button>
                                     </form>
-                                    <p className="text-[10px] text-muted-foreground mt-2 text-center">AI can answer questions based on the chart analysis above.</p>
                                 </div>
                             </>
                         ) : (
-                            <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground p-10 text-center">
-                                <ScanEye className="w-12 h-12 mb-4 opacity-20" />
-                                <p>Upload a chart to view detailed analysis and trade setups here.</p>
+                            <div className="h-full flex flex-col items-center justify-center text-muted-foreground opacity-30 p-10">
+                                <FileImage className="w-16 h-16 mb-4" />
+                                <p className="text-lg font-medium">Detailed Technical Breakdown</p>
+                                <p className="text-sm">Upload charts to generate report</p>
                             </div>
                         )}
                     </div>

@@ -1,6 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
-import { blink } from '@/lib/blink';
-import { useAuth } from '@/hooks/use-auth';
+import { useState, useEffect } from 'react';
+import type { BrokerStatus, Portfolio } from './use-broker';
 
 export interface RiskState {
   dailyLoss: number;
@@ -11,11 +10,19 @@ export interface RiskState {
   isLoading: boolean;
 }
 
+const MAX_DAILY_LOSS = 5000;
+const MAX_TRADES = 3;
+
+interface RiskEngineInput {
+  status?: BrokerStatus | null;
+  portfolio?: Portfolio | null;
+}
+
 /**
- * Hook to manage risk rules and daily statistics
+ * Derives risk lock state from broker snapshots passed by the caller.
+ * This avoids creating a second polling stream from inside the risk hook.
  */
-export function useRiskEngine() {
-  const { user } = useAuth();
+export function useRiskEngine(input?: RiskEngineInput) {
   const [state, setState] = useState<RiskState>({
     dailyLoss: 0,
     tradesToday: 0,
@@ -25,72 +32,32 @@ export function useRiskEngine() {
     isLoading: true,
   });
 
-  const fetchStats = useCallback(async () => {
-    if (!user) return;
-
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      
-      // Get daily stats
-      const stats = await blink.db.dailyStats.list({
-        where: { user_id: user.id, trading_date: today },
-        limit: 1
-      });
-
-      // Get risk settings
-      const settingsList = await blink.db.riskSettings.list({
-        where: { user_id: user.id },
-        limit: 1
-      });
-
-      const settings = settingsList[0] || {
-        max_trades_per_day: 3,
-        stop_trading_after_losses: 2
-      };
-
-      if (stats.length > 0) {
-        const s = stats[0];
-        const tradesToday = Number(s.trades_count);
-        const consecutiveLosses = Number(s.consecutive_losses);
-        const isLocked = Number(s.is_locked) > 0;
-        
-        const limitReached = 
-          tradesToday >= Number(settings.max_trades_per_day) || 
-          consecutiveLosses >= Number(settings.stop_trading_after_losses);
-
-        setState({
-          dailyLoss: Number(s.current_drawdown),
-          tradesToday,
-          consecutiveLosses,
-          isDailyLimitReached: limitReached,
-          isLocked: isLocked || limitReached,
-          isLoading: false
-        });
-      } else {
-        // Create stats for today if none exist
-        await blink.db.dailyStats.create({
-          user_id: user.id,
-          trading_date: today,
-          trades_count: 0,
-          consecutive_losses: 0,
-          current_drawdown: 0,
-          is_locked: 0
-        });
-        
-        setState(prev => ({ ...prev, isLoading: false }));
-      }
-    } catch (error) {
-      console.error('Error fetching risk stats:', error);
-      setState(prev => ({ ...prev, isLoading: false }));
-    }
-  }, [user]);
-
   useEffect(() => {
-    fetchStats();
-  }, [fetchStats]);
+    const status = input?.status;
+    const portfolio = input?.portfolio;
+
+    if (!status) {
+      setState(prev => ({ ...prev, isLoading: true }));
+      return;
+    }
+
+    const currentPnL = status.pnl || 0;
+    const dailyLoss = currentPnL < 0 ? Math.abs(currentPnL) : 0;
+    const tradesToday = portfolio?.positions?.length || 0;
+    const limitReached = dailyLoss > MAX_DAILY_LOSS || tradesToday > MAX_TRADES;
+
+    setState({
+      dailyLoss,
+      tradesToday,
+      consecutiveLosses: 0,
+      isDailyLimitReached: limitReached,
+      isLocked: limitReached,
+      isLoading: false,
+    });
+  }, [input?.status, input?.portfolio]);
 
   return {
     ...state,
-    refresh: fetchStats
+    refresh: () => { /* no-op: state is derived from hook inputs */ }
   };
 }

@@ -14,6 +14,7 @@ interface OptionsSignal {
     entry_range: string;
     stop_loss: string | null;
     target: string | null;
+    direction?: string;
 }
 
 interface LatestSignal {
@@ -25,6 +26,7 @@ interface LatestSignal {
     confidence: number | null;
     stop_loss: number | null;
     take_profit: number | null;
+    direction?: string;
 }
 
 interface OptionsSignalCardProps {
@@ -41,13 +43,29 @@ export function OptionsSignalCard({ ticker, interval = '5m' }: OptionsSignalCard
     const [loading, setLoading] = useState(true);
 
     const fetchData = async () => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
         try {
-            const res = await fetch(`http://localhost:8000/api/intraday?ticker=${ticker}&interval=${interval}`);
+            const encodedTicker = encodeURIComponent(ticker);
+            const res = await fetch(`/api/intraday?ticker=${encodedTicker}&interval=${interval}`, {
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+
+            if (!res.ok) throw new Error("API Response not OK");
+
             const json = await res.json();
             setData(json);
-            setLoading(false);
         } catch (error) {
-            console.error('Error fetching intraday data:', error);
+            if (error.name === 'AbortError') {
+                console.error('Fetch aborted due to timeout');
+            } else {
+                console.error('Error fetching intraday data:', error);
+            }
+            // Keep previous data if available, or set error state?
+            // For now, just stop loading so user sees "No signals" or stale data
+        } finally {
             setLoading(false);
         }
     };
@@ -62,36 +80,52 @@ export function OptionsSignalCard({ ticker, interval = '5m' }: OptionsSignalCard
 
     if (loading) {
         return (
-            <Card className="shadow-lg">
-                <CardContent className="p-8 text-center">
-                    <div className="animate-pulse">Loading live signals...</div>
-                </CardContent>
+            <Card className="h-full border-border/40 bg-card/20 backdrop-blur-sm animate-pulse flex flex-col items-center justify-center p-8 gap-4">
+                <div className="relative">
+                    <div className="w-12 h-12 border-2 border-primary/20 rounded-full" />
+                    <div className="w-12 h-12 border-t-2 border-primary rounded-full absolute inset-0 animate-spin" />
+                </div>
+                <div className="text-center space-y-1">
+                    <p className="text-[10px] font-mono font-bold uppercase tracking-[0.3em] text-primary/60">C0MR4DE_TERMINAL_Link_Establishment</p>
+                    <p className="text-xs font-mono text-muted-foreground italic">Synchronizing neural feed...</p>
+                </div>
             </Card>
         );
     }
 
     if (!data || !data.latest_signal) {
         return (
-            <Card className="shadow-lg border-yellow-500/50">
-                <CardContent className="p-8 text-center">
-                    <AlertCircle className="w-12 h-12 mx-auto mb-4 text-yellow-500" />
-                    <p className="text-lg font-semibold">No signals available</p>
-                    <p className="text-sm text-muted-foreground mt-2">
-                        {data?.market_open ? 'Waiting for entry setup...' : 'Market is closed'}
+            <Card className="h-full border border-primary/20 bg-primary/5 flex flex-col items-center justify-center p-10 text-center space-y-5">
+                <div className="p-4 rounded-full bg-primary/10 border border-primary/20">
+                    <Clock className="w-8 h-8 text-primary/60" />
+                </div>
+                <div className="space-y-2">
+                    <h3 className="text-sm font-mono font-black uppercase tracking-widest text-primary">Awaiting Intelligence</h3>
+                    <p className="text-[10px] font-mono leading-relaxed text-muted-foreground/80 max-w-[200px] mx-auto">
+                        Neural core is active and scanning global liquidity pools. Signals will materialize upon high-conviction pattern detection.
                     </p>
-                </CardContent>
+                </div>
+                <Badge variant="outline" className="text-[9px] font-mono border-primary/20 text-primary/40 uppercase tracking-tighter">
+                    Engine: C0MR4DE TERMINAL v2.0
+                </Badge>
             </Card>
         );
     }
 
     const { latest_signal, options, market_open } = data;
     const action = latest_signal.action || 'WAIT';
-    const isBullish = action === 'ENTER NOW' || action === 'HOLD';
+
+    // Determine direction from API data or fall back to Option Type
+    const direction = latest_signal.direction || options?.direction || (options?.type === 'CE' ? 'LONG' : 'SHORT');
+    const isBullish = direction === 'LONG';
 
     const getCardStyle = () => {
         switch (action) {
-            case 'ENTER NOW': return 'border-l-8 border-l-green-500 bg-green-500/5 shadow-xl';
-            case 'EXIT NOW': return 'border-l-8 border-l-red-500 bg-red-500/5 shadow-xl';
+            case 'ENTER NOW':
+                return isBullish
+                    ? 'border-l-8 border-l-green-500 bg-green-500/5 shadow-xl'
+                    : 'border-l-8 border-l-red-500 bg-red-500/5 shadow-xl';
+            case 'EXIT NOW': return 'border-l-8 border-l-orange-500 bg-orange-500/5 shadow-xl';
             case 'HOLD': return 'border-l-8 border-l-blue-500 bg-blue-500/5 shadow-lg';
             default: return 'border-l-4 border-l-gray-300 bg-gray-100/50 dark:bg-gray-800/20';
         }
@@ -99,8 +133,8 @@ export function OptionsSignalCard({ ticker, interval = '5m' }: OptionsSignalCard
 
     const getActionBadge = () => {
         const styles = {
-            'ENTER NOW': 'bg-green-600 text-white animate-pulse',
-            'EXIT NOW': 'bg-red-600 text-white animate-pulse',
+            'ENTER NOW': isBullish ? 'bg-green-600 text-white animate-pulse' : 'bg-red-600 text-white animate-pulse',
+            'EXIT NOW': 'bg-orange-600 text-white animate-pulse',
             'HOLD': 'bg-blue-600 text-white',
             'WAIT': 'bg-gray-400 text-white'
         };
@@ -108,21 +142,33 @@ export function OptionsSignalCard({ ticker, interval = '5m' }: OptionsSignalCard
     };
 
     return (
-        <Card className={cn('shadow-lg transition-all duration-300', getCardStyle())}>
+        <Card className={cn('border border-border transition-all duration-500 overflow-hidden shadow-sm',
+            action === 'ENTER NOW' ? 'border-primary/50' : '',
+            getCardStyle()
+        )}>
             <CardHeader className="pb-3">
                 <div className="flex justify-between items-start">
                     <div className="flex-1">
                         {options && action === 'ENTER NOW' ? (
                             <>
-                                <CardTitle className="text-3xl font-bold flex items-center gap-2">
-                                    {isBullish ? <TrendingUp className="w-8 h-8 text-green-600" /> : <TrendingDown className="w-8 h-8 text-red-600" />}
-                                    BUY {ticker.replace('^', '')} {options.recommended_strike} {options.type}
+                                <CardTitle className="text-4xl font-black flex items-center gap-8">
+                                    <div className={cn("p-4 rounded-xl", isBullish ? "bg-primary/10" : "bg-destructive/10")}>
+                                        {isBullish ? <TrendingUp className="w-12 h-12 text-primary" /> : <TrendingDown className="w-12 h-12 text-destructive" />}
+                                    </div>
+                                    <div className="flex flex-col">
+                                        <span className={cn("text-[10px] font-mono font-bold uppercase tracking-[0.4em] opacity-60 mb-2", isBullish ? "text-primary" : "text-destructive")}>
+                                            {isBullish ? "ALLOCATE: LONG" : "ALLOCATE: SHORT"}
+                                        </span>
+                                        <span className="terminal-text break-all leading-tight tracking-tighter">
+                                            {ticker.replace('^', '')} {options.recommended_strike} {options.type}
+                                        </span>
+                                    </div>
                                 </CardTitle>
-                                <p className="text-sm text-muted-foreground mt-1">Expiry: {options.expiry}</p>
+                                <p className="text-[10px] text-muted-foreground font-mono mt-3 opacity-50">EXPIRY: {options.expiry}</p>
                             </>
                         ) : (
-                            <CardTitle className="text-2xl font-bold">
-                                {ticker.replace('^', '')} - {action}
+                            <CardTitle className="text-xl font-mono font-bold terminal-text">
+                                {ticker.replace('^', '')} » {action}
                             </CardTitle>
                         )}
                     </div>

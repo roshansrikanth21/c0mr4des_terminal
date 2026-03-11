@@ -6,8 +6,18 @@ import { createClient } from '@blinkdotnew/sdk';
  * projectId and publishableKey are automatically injected into the environment
  * by the Blink platform. We use these to initialize the client with managed auth.
  */
-export const blink = createClient({
-  projectId: import.meta.env.VITE_BLINK_PROJECT_ID,
-  publishableKey: import.meta.env.VITE_BLINK_PUBLISHABLE_KEY,
-  auth: { mode: 'managed' },
-});
+const blinkProjectId = import.meta.env.VITE_BLINK_PROJECT_ID;
+const blinkPublishableKey = import.meta.env.VITE_BLINK_PUBLISHABLE_KEY;
+const blinkExplicitlyEnabled = String(import.meta.env.VITE_ENABLE_BLINK_AUTH || '').toLowerCase() === 'true';
+
+export const blink = blinkExplicitlyEnabled && blinkProjectId && blinkPublishableKey
+  ? createClient({
+      projectId: blinkProjectId,
+      publishableKey: blinkPublishableKey,
+      auth: { mode: 'managed' },
+    })
+  : null;
+
+export function isBlinkAvailable() {
+  return Boolean(blink);
+}

@@ -7,9 +7,11 @@ import { AlertTriangle, TrendingDown, Target } from 'lucide-react';
 import { formatCurrency } from '@/lib/market-config';
 
 interface RiskMetrics {
-    var_percent: number;
-    es_percent: number;
-    confidence_level: number;
+    risk_metrics: {
+        var_percent: number;
+        es_percent: number;
+        confidence_level: number;
+    }
 }
 
 interface RiskAnalysisCardProps {
@@ -31,8 +33,8 @@ export function RiskAnalysisCard({ metrics, isLoading }: RiskAnalysisCardProps) 
         );
     }
 
-    const varVal = metrics?.var_percent || 0;
-    const esVal = metrics?.es_percent || 0;
+    const varVal = metrics?.risk_metrics?.var_percent || 0;
+    const esVal = metrics?.risk_metrics?.es_percent || 0;
 
     // Risk Level Logic
     let riskLevel = "LOW";

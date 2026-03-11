@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { MarketRegime, RegimeStatus } from '@/types/trading';
 
 // This URL points to your Python Backend
-const API_URL = 'http://localhost:8000/api/regime';
+const API_URL = '/api/regime';
 
 interface UseRegimeEngineReturn extends RegimeStatus {
   isLoading: boolean;
@@ -53,9 +53,9 @@ export function useRegimeEngine(ticker: string = '^NSEI'): UseRegimeEngineReturn
       }
     };
 
-    // Fetch immediately, then every 5 seconds
+    // Fetch immediately, then every 20 seconds to reduce backend load.
     fetchData();
-    const interval = setInterval(fetchData, 5000);
+    const interval = setInterval(fetchData, 20000);
     return () => clearInterval(interval);
   }, [ticker]); // Re-run when ticker changes
 

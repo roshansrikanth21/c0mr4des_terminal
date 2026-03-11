@@ -6,7 +6,10 @@ import { Label } from '@/components/ui/label';
 import { blink } from '@/lib/blink';
 import { useAuth } from '@/hooks/use-auth';
 import { toast } from 'sonner';
-import { ShieldAlert, Save } from 'lucide-react';
+import { ShieldAlert, Save, Layout, RotateCcw } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'; // Assumes you have this ui component, if not use standard div or Radix
+import { Switch } from '@/components/ui/switch';
+import { useDashboardStore } from '@/hooks/use-dashboard-store';
 
 export function Settings() {
   const { user } = useAuth();
@@ -18,11 +21,13 @@ export function Settings() {
     stopTradingAfterLosses: 2
   });
 
+  const { isEditMode, toggleEditMode, resetLayout } = useDashboardStore();
+
   useEffect(() => {
     async function fetchSettings() {
       if (!user) return;
       try {
-        const list = await blink.db.riskSettings.list({
+        const list = await (blink.db as any).riskSettings.list({
           where: { user_id: user.id },
           limit: 1
         });
@@ -47,20 +52,20 @@ export function Settings() {
   const handleSave = async () => {
     if (!user) return;
     try {
-      const list = await blink.db.riskSettings.list({
+      const list = await (blink.db as any).riskSettings.list({
         where: { user_id: user.id },
         limit: 1
       });
 
       if (list.length > 0) {
-        await blink.db.riskSettings.update(list[0].id, {
+        await (blink.db as any).riskSettings.update(list[0].id, {
           max_loss_per_trade_pct: settings.maxLossPerTradePct,
           max_loss_per_day_pct: settings.maxLossPerDayPct,
           max_trades_per_day: settings.maxTradesPerDay,
           stop_trading_after_losses: settings.stopTradingAfterLosses
         });
       } else {
-        await blink.db.riskSettings.create({
+        await (blink.db as any).riskSettings.create({
           user_id: user.id,
           max_loss_per_trade_pct: settings.maxLossPerTradePct,
           max_loss_per_day_pct: settings.maxLossPerDayPct,
@@ -75,81 +80,137 @@ export function Settings() {
     }
   };
 
+  const handleResetLayout = () => {
+    if (confirm("Are you sure you want to reset the dashboard layout to default?")) {
+      resetLayout();
+      toast.success("Dashboard layout reset to default.");
+    }
+  };
+
   if (isLoading) return <div className="p-10 text-center font-mono animate-pulse">Initializing Security Protocol...</div>;
 
   return (
-    <div className="max-w-2xl mx-auto space-y-8">
+    <div className="max-w-4xl mx-auto space-y-8 pb-20">
       <div>
-        <h1 className="text-3xl font-bold tracking-tighter mb-2 uppercase">Risk Configuration</h1>
-        <p className="text-muted-foreground text-sm">Strict enforcement of capital preservation rules.</p>
+        <h1 className="text-3xl font-bold tracking-tighter mb-2 uppercase">System Configuration</h1>
+        <p className="text-muted-foreground text-sm">Manage risk protocols and interface customization.</p>
       </div>
 
-      <div className="bg-destructive/5 border border-destructive/20 p-4 rounded-sm mb-6 flex gap-4">
-        <ShieldAlert className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
-        <p className="text-xs text-destructive leading-relaxed font-medium">
-          WARNING: These parameters are non-negotiable once a session is active. Changes made will apply to the next trading session.
-        </p>
-      </div>
+      <Tabs defaultValue="risk" className="w-full">
+        <TabsList className="grid w-full grid-cols-2 mb-8">
+          <TabsTrigger value="risk">Risk Management</TabsTrigger>
+          <TabsTrigger value="customization">Interface Customization</TabsTrigger>
+        </TabsList>
 
-      <Card className="border-border">
-        <CardHeader>
-          <CardTitle className="text-sm font-mono uppercase tracking-widest">Global Parameters</CardTitle>
-          <CardDescription>Configure absolute limits for strategy execution.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-2">
-              <Label htmlFor="maxLossTrade" className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Max Loss / Trade (%)</Label>
-              <Input 
-                id="maxLossTrade" 
-                type="number" 
-                step="0.1"
-                value={settings.maxLossPerTradePct}
-                onChange={(e) => setSettings({ ...settings, maxLossPerTradePct: parseFloat(e.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="maxLossDay" className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Max Loss / Day (%)</Label>
-              <Input 
-                id="maxLossDay" 
-                type="number" 
-                step="0.1"
-                value={settings.maxLossPerDayPct}
-                onChange={(e) => setSettings({ ...settings, maxLossPerDayPct: parseFloat(e.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="maxTrades" className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Max Trades / Day</Label>
-              <Input 
-                id="maxTrades" 
-                type="number" 
-                value={settings.maxTradesPerDay}
-                onChange={(e) => setSettings({ ...settings, maxTradesPerDay: parseInt(e.target.value) })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="stopLosses" className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Stop after X Losses</Label>
-              <Input 
-                id="stopLosses" 
-                type="number" 
-                value={settings.stopTradingAfterLosses}
-                onChange={(e) => setSettings({ ...settings, stopTradingAfterLosses: parseInt(e.target.value) })}
-              />
-            </div>
+        <TabsContent value="risk" className="space-y-6">
+          <div className="bg-destructive/5 border border-destructive/20 p-4 rounded-sm mb-6 flex gap-4">
+            <ShieldAlert className="w-5 h-5 text-destructive shrink-0 mt-0.5" />
+            <p className="text-xs text-destructive leading-relaxed font-medium">
+              WARNING: These parameters are non-negotiable once a session is active. Changes made will apply to the next trading session.
+            </p>
           </div>
 
-          <div className="pt-6 border-t border-border">
-            <Button onClick={handleSave} className="w-full h-12">
-              <Save className="w-4 h-4 mr-2" />
-              Store Security Protocol
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+          <Card className="border-border">
+            <CardHeader>
+              <CardTitle className="text-sm font-mono uppercase tracking-widest">Global Parameters</CardTitle>
+              <CardDescription>Configure absolute limits for strategy execution.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <Label htmlFor="maxLossTrade" className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Max Loss / Trade (%)</Label>
+                  <Input
+                    id="maxLossTrade"
+                    type="number"
+                    step="0.1"
+                    value={settings.maxLossPerTradePct}
+                    onChange={(e) => setSettings({ ...settings, maxLossPerTradePct: parseFloat(e.target.value) })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="maxLossDay" className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Max Loss / Day (%)</Label>
+                  <Input
+                    id="maxLossDay"
+                    type="number"
+                    step="0.1"
+                    value={settings.maxLossPerDayPct}
+                    onChange={(e) => setSettings({ ...settings, maxLossPerDayPct: parseFloat(e.target.value) })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="maxTrades" className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Max Trades / Day</Label>
+                  <Input
+                    id="maxTrades"
+                    type="number"
+                    value={settings.maxTradesPerDay}
+                    onChange={(e) => setSettings({ ...settings, maxTradesPerDay: parseInt(e.target.value) })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="stopLosses" className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Stop after X Losses</Label>
+                  <Input
+                    id="stopLosses"
+                    type="number"
+                    value={settings.stopTradingAfterLosses}
+                    onChange={(e) => setSettings({ ...settings, stopTradingAfterLosses: parseInt(e.target.value) })}
+                  />
+                </div>
+              </div>
+
+              <div className="pt-6 border-t border-border">
+                <Button onClick={handleSave} className="w-full h-12">
+                  <Save className="w-4 h-4 mr-2" />
+                  Store Security Protocol
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="customization" className="space-y-6">
+          <Card className="border-border">
+            <CardHeader>
+              <CardTitle className="text-sm font-mono uppercase tracking-widest flex items-center gap-2">
+                <Layout className="w-4 h-4" />
+                Dashboard Layout
+              </CardTitle>
+              <CardDescription>Customize your workspace. Enable edit mode to resize and rearrange widgets.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-8">
+              <div className="flex items-center justify-between p-4 border border-border rounded-lg bg-secondary/10">
+                <div className="space-y-1">
+                  <Label className="text-base font-bold">Edit Mode</Label>
+                  <p className="text-xs text-muted-foreground">Enable to drag, drop, and resize dashboard widgets.</p>
+                </div>
+                <Switch checked={isEditMode} onCheckedChange={toggleEditMode} />
+              </div>
+
+              <div className="flex items-center justify-between p-4 border border-border rounded-lg bg-secondary/10">
+                <div className="space-y-1">
+                  <Label className="text-base font-bold text-muted-foreground">Reset Layout</Label>
+                  <p className="text-xs text-muted-foreground">Restore the default dashboard arrangement.</p>
+                </div>
+                <Button variant="outline" onClick={handleResetLayout} className="border-dashed">
+                  <RotateCcw className="w-4 h-4 mr-2" />
+                  Reset to Default
+                </Button>
+              </div>
+
+              <div className="p-4 bg-primary/5 border border-primary/20 rounded-md">
+                <p className="text-[10px] font-mono text-primary uppercase mb-2">Pro Tip</p>
+                <p className="text-sm text-muted-foreground">
+                  Go to the Dashboard while <strong>Edit Mode</strong> is active to customize your view.
+                  Your layout is automatically saved to your local device.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       <div className="pt-10 text-center">
         <p className="text-[10px] font-mono text-muted-foreground uppercase tracking-[0.2em] leading-relaxed">
-          The goal of EDGE-OPS is not to make you smart, but to keep you disciplined.<br />
+          The goal of C0MR4DE TERMINAL is not to make you smart, but to keep you disciplined.<br />
           If you can't follow your own rules, the market will follow its rules on your account.
         </p>
       </div>

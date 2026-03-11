@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-02-09T20:17:36.398897",
+  "regime": {
+    "primary_regime": "NEUTRAL",
+    "all_regimes": [],
+    "confidence": 0.0
+  },
+  "ou_results": null,
+  "mst_results": null,
+  "integrated_signals": {
+    "all_signals": [],
+    "high_confidence_signals": [],
+    "signal_count": 0,
+    "high_conf_count": 0
+  },
+  "risk_assessment": {
+    "composite_risk_score": 0.5,
+    "position_size_recommendation": "MEDIUM",
+    "max_capital_allocation": 0.1,
+    "risk_level": "MEDIUM"
+  },
+  "options_strategies": []
+}
