@@ -45,12 +45,13 @@ export default defineConfig({
     host: true,
     allowedHosts: true,
     proxy: {
+      // Backend port is configurable so it can coexist with JARVIS (which owns :8000).
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: process.env.C0MR4DES_API || 'http://127.0.0.1:8100',
         changeOrigin: true,
       },
       '/auth': {
-        target: 'http://127.0.0.1:8000',
+        target: process.env.C0MR4DES_API || 'http://127.0.0.1:8100',
         changeOrigin: true,
       },
     },
