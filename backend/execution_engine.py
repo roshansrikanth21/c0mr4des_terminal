@@ -7,7 +7,7 @@ from datetime import datetime
 from backend.broker.base_broker import BaseBroker
 from backend.broker.paper_broker import PaperBroker
 from backend.broker.angel_one_broker import AngelOneBroker
-from backend.database import SessionLocal
+from backend.database import SessionLocal, init_db
 from backend.models import Trade
 from backend.services.execution_quality_service import execution_quality_service
 from backend.services.ops_control_service import ops_control_service
@@ -24,6 +24,7 @@ class ExecutionEngine:
     def _recover_active_trades_from_db(self):
         """Restore active filled trades from SQLite DB on server restart"""
         try:
+            init_db()
             db = SessionLocal()
             trades = db.query(Trade).filter(Trade.status == "FILLED").all()
             for trade in trades:

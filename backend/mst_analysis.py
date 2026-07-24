@@ -6,12 +6,30 @@ Shows how Nifty 50 stocks are interconnected
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from scipy.sparse.csgraph import minimum_spanning_tree
-from scipy.spatial.distance import pdist, squareform
-import networkx as nx
-import plotly.graph_objects as go
+try:
+    from scipy.sparse.csgraph import minimum_spanning_tree
+    from scipy.spatial.distance import pdist, squareform
+except ImportError:
+    minimum_spanning_tree = None
+    pdist = None
+    squareform = None
+
+try:
+    import networkx as nx
+except ImportError:
+    nx = None
+
+try:
+    import plotly.graph_objects as go
+except ImportError:
+    go = None
+
 from datetime import datetime, timedelta
-import statsmodels.api as sm
+
+try:
+    import statsmodels.api as sm
+except ImportError:
+    sm = None
 
 class MinimumSpanningTreeAnalysis:
     """

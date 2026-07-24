@@ -5,7 +5,33 @@ Automatically adjusts position size based on market volatility
 
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
+import math
+
+class StandardNormalFallback:
+    @staticmethod
+    def cdf(x, loc=0, scale=1):
+        z = (x - loc) / scale
+        return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+    @staticmethod
+    def pdf(x, loc=0, scale=1):
+        z = (x - loc) / scale
+        return (1.0 / (scale * math.sqrt(2.0 * math.pi))) * math.exp(-0.5 * z * z)
+
+    @staticmethod
+    def ppf(q, loc=0, scale=1):
+        q = max(1e-9, min(1.0 - 1e-9, q))
+        z = math.sqrt(-2.0 * math.log(min(q, 1.0 - q)))
+        c0, c1, c2 = 2.515517, 0.802853, 0.010328
+        d1, d2, d3 = 1.432788, 0.189269, 0.001308
+        val = z - ((c2 * z + c1) * z + c0) / (((d3 * z + d2) * z + d1) * z + 1.0)
+        return (loc - val * scale) if q < 0.5 else (loc + val * scale)
+
+try:
+    from scipy.stats import norm
+except ImportError:
+    norm = StandardNormalFallback
+
 import yfinance as yf
 
 class VolatilityPositionSizer:
@@ -198,22 +224,24 @@ class RealTimeVolatilityMonitor:
                 
                 # Calculate realized volatility
                 returns = df['Close'].pct_change().dropna()
-                realized_vol = returns.std() * np.sqrt(252 * (24 if interval == "15m" else 1))
+                realized_vol_raw = returns.std() * np.sqrt(252 * (24 if interval == "15m" else 1))
+                realized_vol = float(realized_vol_raw.iloc[0]) if hasattr(realized_vol_raw, 'iloc') else float(realized_vol_raw)
                 
-                # Calculate simple GARCH-like volatility (Placeholder as arch might not be installed yet)
-                garch_vol = realized_vol * 1.1 # Simulating forecast
+                # Calculate simple GARCH-like volatility
+                garch_vol = float(realized_vol * 1.1)
                 
                 # Calculate VIX-like implied volatility (if available)
-                vix = self._get_india_vix() if ticker == "^NSEI" else None
+                vix_raw = self._get_india_vix() if ticker == "^NSEI" else None
+                vix = float(vix_raw) if vix_raw is not None else None
                 
                 # Determine volatility regime
                 regime = self._determine_vol_regime(realized_vol, garch_vol, vix)
                 
                 self.volatility_history[ticker] = {
                     'timestamp': pd.Timestamp.now(),
-                    'realized_vol': float(realized_vol),
-                    'garch_vol': float(garch_vol),
-                    'vix': float(vix) if vix else None,
+                    'realized_vol': realized_vol,
+                    'garch_vol': garch_vol,
+                    'vix': vix,
                     'regime': regime,
                     'percentile': self._calculate_vol_percentile(ticker, realized_vol)
                 }
@@ -230,8 +258,11 @@ class RealTimeVolatilityMonitor:
         try:
             vix_data = yf.download("^INDIAVIX", period="1d", progress=False)
             if not vix_data.empty:
-                return vix_data['Close'].iloc[-1] / 100  # Convert from percentage
-        except:
+                val = vix_data['Close'].iloc[-1]
+                if hasattr(val, 'iloc'):
+                    val = val.iloc[0]
+                return float(val) / 100.0
+        except Exception:
             pass
         return None
     

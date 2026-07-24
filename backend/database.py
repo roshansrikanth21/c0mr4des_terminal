@@ -20,3 +20,8 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def init_db():
+    """Create all database tables if they do not exist."""
+    from backend import models
+    Base.metadata.create_all(bind=engine)

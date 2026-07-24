@@ -1546,8 +1546,12 @@ def generate_content_with_fallback(prompt, image=None):
     ]
 
     if client is None:
-        raise RuntimeError(
-            "Gemini client is not initialized. Install `google-genai` and set GEMINI_API_KEY."
+        class FallbackAIResponse:
+            def __init__(self, text):
+                self.text = text
+        return FallbackAIResponse(
+            "C0MR4DE Intelligence Engine (Offline Mode): Gemini API key is not configured. "
+            "Please configure your GEMINI_API_KEY under Settings -> API Credentials to activate full LLM reasoning."
         )
 
     last_error = None

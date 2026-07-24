@@ -4,8 +4,34 @@ Calculates Value at Risk, Expected Shortfall, and Profit Probabilities
 """
 
 import numpy as np
-import pandas as pd
-from scipy.stats import norm, t
+import math
+
+class StandardNormalFallback:
+    @staticmethod
+    def cdf(x, loc=0, scale=1):
+        z = (x - loc) / scale
+        return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
+
+    @staticmethod
+    def pdf(x, loc=0, scale=1):
+        z = (x - loc) / scale
+        return (1.0 / (scale * math.sqrt(2.0 * math.pi))) * math.exp(-0.5 * z * z)
+
+    @staticmethod
+    def ppf(q, loc=0, scale=1):
+        q = max(1e-9, min(1.0 - 1e-9, q))
+        z = math.sqrt(-2.0 * math.log(min(q, 1.0 - q)))
+        c0, c1, c2 = 2.515517, 0.802853, 0.010328
+        d1, d2, d3 = 1.432788, 0.189269, 0.001308
+        val = z - ((c2 * z + c1) * z + c0) / (((d3 * z + d2) * z + d1) * z + 1.0)
+        return (loc - val * scale) if q < 0.5 else (loc + val * scale)
+
+try:
+    from scipy.stats import norm, t
+except ImportError:
+    norm = StandardNormalFallback
+    t = StandardNormalFallback
+
 from datetime import datetime, timedelta
 import yfinance as yf
 

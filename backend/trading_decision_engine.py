@@ -57,9 +57,9 @@ class IntegratedTradingDecisionEngine:
         Run all analyses and generate integrated trading decision
         """
         print(f"\n{'='*80}")
-        print(f"🤖 INTEGRATED TRADING DECISION ENGINE")
+        print(f"[ENGINE] INTEGRATED TRADING DECISION ENGINE")
         print(f"{'='*80}")
-        print(f"Ticker: {self.ticker} | Capital: ₹{self.capital:,.2f}")
+        print(f"Ticker: {self.ticker} | Capital: INR {self.capital:,.2f}")
         
         # 1. Fetch Data
         df = self._get_market_data()
@@ -67,7 +67,7 @@ class IntegratedTradingDecisionEngine:
             return {"error": "Data fetch failed"}
             
         # 2. Run Modules
-        print("\n📊 RUNNING QUANT ANALYSES:")
+        print("\n[QUANT] RUNNING QUANT ANALYSES:")
         
         print("   • Momentum analysis...")
         momentum_plan = self.momentum_system.generate_trading_plan(df)
@@ -104,7 +104,7 @@ class IntegratedTradingDecisionEngine:
         # 4. Execute if requested
         execution_status = None
         if execute and action != 'HOLD':
-            print(f"\n🚀 AUTOMATED EXECUTION TRIGGERED: {action}")
+            print(f"\n[EXECUTE] AUTOMATED EXECUTION TRIGGERED: {action}")
             execution_status = self.executor.execute_decision(decision, trading_plan)
             print(f"   Status: {execution_status['status']}")
             if execution_status.get('reason'):
@@ -134,11 +134,11 @@ class IntegratedTradingDecisionEngine:
                 
                 if df.empty:
                     # Fallback to download if history fails
-                    print(f"   ⚠️ History empty for {self.ticker}, trying download...")
+                    print(f"   [WARN] History empty for {self.ticker}, trying download...")
                     df = yf.download(self.ticker, period="1y", interval="1d", progress=False)
             
             if df.empty:
-                print(f"   ⚠️ Warning: No data found for {self.ticker}")
+                print(f"   [WARN] Warning: No data found for {self.ticker}")
                 return None
             
             # Data service already standardizes columns; legacy path may return MultiIndex
@@ -153,12 +153,12 @@ class IntegratedTradingDecisionEngine:
                 df.rename(columns={'Price': 'Close'}, inplace=True)
                 
             if 'Close' not in df.columns:
-                print(f"   ❌ Error: 'Close' column missing. Available: {df.columns.tolist()}")
+                print(f"   [ERROR] Error: 'Close' column missing. Available: {df.columns.tolist()}")
                 return None
                 
             return df
         except Exception as e:
-            print(f"   ❌ Critical error fetching {self.ticker}: {e}")
+            print(f"   [ERROR] Critical error fetching {self.ticker}: {e}")
             return None
 
     def _aggregate_signals(self, momentum, regime, ou, vol):
@@ -234,14 +234,14 @@ class IntegratedTradingDecisionEngine:
 
     def _print_decision_summary(self, decision, plan):
         print(f"\n{'='*80}")
-        print(f"🎯 FINAL DECISION: {decision['action']} (Confidence: {decision['confidence']:.1%})")
+        print(f"[DECISION] FINAL DECISION: {decision['action']} (Confidence: {decision['confidence']:.1%})")
         print(f"{'='*80}")
         if plan.get('action') != 'HOLD':
-            print(f"   Entry Level: ₹{plan['entry']:.2f}")
-            print(f"   Stop Loss:   ₹{plan['sl']:.2f}")
-            print(f"   Target:      ₹{plan['tp']:.2f}")
+            print(f"   Entry Level: INR {plan['entry']:.2f}")
+            print(f"   Stop Loss:   INR {plan['sl']:.2f}")
+            print(f"   Target:      INR {plan['tp']:.2f}")
             print(f"   Strategy:    {plan['strategy']}")
-            print(f"   Pos Size:    ₹{plan['size']['position_value']:,.2f}")
+            print(f"   Pos Size:    INR {plan['size']['position_value']:,.2f}")
         else:
             print("   Action: No clear trade. Staying in cash.")
         print(f"{'='*80}\n")
