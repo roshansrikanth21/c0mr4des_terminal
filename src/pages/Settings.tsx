@@ -11,6 +11,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Switch } from '@/components/ui/switch';
 import { useDashboardStore } from '@/hooks/use-dashboard-store';
 
+import { Skeleton } from '@/components/ui/skeleton';
+
+const LOCAL_RISK_SETTINGS_KEY = 'c0mr4de_risk_settings';
+
 export function Settings() {
   const { user } = useAuth();
   const [isLoading, setIsLoading] = useState(true);
@@ -74,59 +78,49 @@ export function Settings() {
   }, []);
 
   useEffect(() => {
-    async function fetchSettings() {
-      if (!user) return;
+    function loadSettings() {
       try {
-        const list = await (blink.db as any).riskSettings.list({
-          where: { user_id: user.id },
-          limit: 1
-        });
-        if (list.length > 0) {
-          const s = list[0];
+        const raw = localStorage.getItem(LOCAL_RISK_SETTINGS_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
           setSettings({
-            maxLossPerTradePct: Number(s.max_loss_per_trade_pct),
-            maxLossPerDayPct: Number(s.max_loss_per_day_pct),
-            maxTradesPerDay: Number(s.max_trades_per_day),
-            stopTradingAfterLosses: Number(s.stop_trading_after_losses)
+            maxLossPerTradePct: Number(parsed.maxLossPerTradePct || 1),
+            maxLossPerDayPct: Number(parsed.maxLossPerDayPct || 2),
+            maxTradesPerDay: Number(parsed.maxTradesPerDay || 3),
+            stopTradingAfterLosses: Number(parsed.stopTradingAfterLosses || 2)
           });
         }
       } catch (error) {
-        console.error('Error fetching settings:', error);
+        console.warn('Error loading risk settings:', error);
       } finally {
         setIsLoading(false);
       }
     }
-    fetchSettings();
-  }, [user]);
+    loadSettings();
+  }, []);
 
   const handleSave = async () => {
-    if (!user) return;
     try {
-      const list = await (blink.db as any).riskSettings.list({
-        where: { user_id: user.id },
-        limit: 1
-      });
-
-      if (list.length > 0) {
-        await (blink.db as any).riskSettings.update(list[0].id, {
-          max_loss_per_trade_pct: settings.maxLossPerTradePct,
-          max_loss_per_day_pct: settings.maxLossPerDayPct,
-          max_trades_per_day: settings.maxTradesPerDay,
-          stop_trading_after_losses: settings.stopTradingAfterLosses
-        });
-      } else {
-        await (blink.db as any).riskSettings.create({
-          user_id: user.id,
-          max_loss_per_trade_pct: settings.maxLossPerTradePct,
-          max_loss_per_day_pct: settings.maxLossPerDayPct,
-          max_trades_per_day: settings.maxTradesPerDay,
-          stop_trading_after_losses: settings.stopTradingAfterLosses
-        });
+      localStorage.setItem(LOCAL_RISK_SETTINGS_KEY, JSON.stringify(settings));
+      if (user && isBlinkAvailable()) {
+        try {
+          const list = await (blink!.db as any).riskSettings.list({
+            where: { user_id: user.id },
+            limit: 1
+          });
+          if (list.length > 0) {
+            await (blink!.db as any).riskSettings.update(list[0].id, {
+              max_loss_per_trade_pct: settings.maxLossPerTradePct,
+              max_loss_per_day_pct: settings.maxLossPerDayPct,
+              max_trades_per_day: settings.maxTradesPerDay,
+              stop_trading_after_losses: settings.stopTradingAfterLosses
+            });
+          }
+        } catch (e) {}
       }
       toast.success('Risk parameters updated successfully.');
     } catch (error) {
       toast.error('Failed to update parameters.');
-      console.error(error);
     }
   };
 
@@ -137,7 +131,20 @@ export function Settings() {
     }
   };
 
-  if (isLoading) return <div className="p-10 text-center font-mono animate-pulse">Initializing Security Protocol...</div>;
+  if (isLoading) {
+    return (
+      <div className="max-w-4xl mx-auto space-y-8 pb-20">
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-64 bg-primary/10" />
+          <Skeleton className="h-4 w-96 bg-muted/20" />
+        </div>
+        <div className="space-y-6">
+          <Skeleton className="h-12 w-full bg-primary/5 rounded-lg" />
+          <Skeleton className="h-64 w-full bg-muted/10 rounded-lg" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 pb-20">
