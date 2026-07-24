@@ -2,7 +2,11 @@ import os
 import logging
 from typing import Dict, List
 from .base_broker import BaseBroker
-import pyotp
+try:
+    import pyotp
+except ImportError:
+    pyotp = None
+
 try:
     from SmartApi import SmartConnect # type: ignore
     ANGEL_ONE_AVAILABLE = True
@@ -20,23 +24,22 @@ class AngelOneBroker(BaseBroker):
     """
     
     def __init__(self):
-        self.api_key = os.getenv("ANGEL_API_KEY")
-        self.client_id = os.getenv("ANGEL_CLIENT_ID")
-        self.password = os.getenv("ANGEL_PASSWORD")
-        self.totp_key = os.getenv("ANGEL_TOTP_KEY")
+        self.api_key = os.getenv("ANGEL_API_KEY") or os.getenv("ANGEL_ONE_API_KEY")
+        self.client_id = os.getenv("ANGEL_CLIENT_ID") or os.getenv("ANGEL_ONE_CLIENT_ID")
+        self.password = os.getenv("ANGEL_PASSWORD") or os.getenv("ANGEL_ONE_PASSWORD")
+        self.totp_key = os.getenv("ANGEL_TOTP_KEY") or os.getenv("ANGEL_ONE_TOTP_KEY")
         self.smart_api = None
         self.session = None
         self.token_map = {}
         self._load_token_map()
         
     def _load_token_map(self):
-        """Load instrument token map for symbol resolution"""
+        """Load instrument token map for symbol resolution with segment tuple mapping"""
         import requests
         import json
         token_path = os.path.join(os.path.dirname(__file__), 'angel_tokens.json')
         
         try:
-            # Download if not exists or if older than 24h
             needs_download = True
             if os.path.exists(token_path):
                 from datetime import datetime, timedelta
@@ -57,9 +60,9 @@ class AngelOneBroker(BaseBroker):
             if os.path.exists(token_path):
                 with open(token_path, 'r') as f:
                     raw_tokens = json.load(f)
-                    # Map symbol to token for fast lookup (Normalize to upper)
-                    self.token_map = {str(t['symbol']).upper(): t for t in raw_tokens}
-                    logging.info(f"Loaded {len(self.token_map)} Angel One tokens")
+                    # Map (symbol, exchange) to token for fast lookup to avoid collisions
+                    self.token_map = {(str(t['symbol']).upper(), str(t['exch_seg']).upper()): t for t in raw_tokens}
+                    logging.info(f"Loaded {len(raw_tokens)} Angel One tokens into map")
             else:
                 logging.warning("Angel token map file not found. Symbol resolution will fail.")
         except Exception as e:
@@ -67,16 +70,20 @@ class AngelOneBroker(BaseBroker):
             logging.error(f"Failed to load Angel token map: {e}")
             traceback.print_exc()
 
-    def _get_token_info(self, symbol: str) -> Dict:
+    def _get_token_info(self, symbol: str, exchange: str = "NSE") -> Dict:
         """Find token and exchange for a given symbol"""
         # Common translations: NIFTY -> Nifty 50, etc.
         lookup = symbol.upper()
-        if lookup == "NIFTY": lookup = "NIFTY 50"
+        if lookup in ("NIFTY", "^NSEI"):
+            lookup = "NIFTY 50"
         
         # Try direct or with -EQ for NSE
         for s in [lookup, f"{lookup}-EQ", f"{lookup}-NSE"]:
-            if s in self.token_map:
-                return self.token_map[s]
+            # Try to match in specified exchange or common segments
+            exchanges_to_try = [exchange.upper()] if exchange else ["NSE", "NFO", "BSE", "MCX", "NCDEX", "CDS"]
+            for exch in exchanges_to_try:
+                if (s, exch) in self.token_map:
+                    return self.token_map[(s, exch)]
         return {}
 
     def connect(self) -> bool:
@@ -85,6 +92,10 @@ class AngelOneBroker(BaseBroker):
             logging.error("Angel One credentials missing in .env")
             return False
             
+        if not pyotp:
+            logging.error("pyotp library not installed. Cannot generate TOTP for Angel One login.")
+            return False
+
         try:
             self.smart_api = SmartConnect(api_key=self.api_key)
             totp = pyotp.TOTP(self.totp_key).now()

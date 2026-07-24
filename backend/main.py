@@ -2802,6 +2802,111 @@ def get_memory_research_snapshot(
         return {"status": "error", "message": str(e)}
 
 
+@app.get("/api/credentials")
+def get_credentials():
+    """Returns current configuration status of API keys (masked for privacy)"""
+    def _mask(val: Optional[str]) -> str:
+        if not val or "your_" in val or len(val) < 6:
+            return ""
+        return val[:3] + "..." + val[-3:]
+
+    angel_key = os.getenv("ANGEL_API_KEY") or os.getenv("ANGEL_ONE_API_KEY")
+    angel_client = os.getenv("ANGEL_CLIENT_ID") or os.getenv("ANGEL_ONE_CLIENT_ID")
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    news_key = os.getenv("NEWS_API_KEY")
+
+    return {
+        "status": "success",
+        "angel_one": {
+            "is_configured": bool(angel_key and "your_" not in angel_key and angel_client and "your_" not in angel_client),
+            "client_id": _mask(angel_client),
+            "api_key": _mask(angel_key),
+        },
+        "gemini": {
+            "is_configured": bool(gemini_key and "your_" not in gemini_key),
+            "api_key": _mask(gemini_key),
+        },
+        "news_api": {
+            "is_configured": bool(news_key and "your_" not in news_key),
+            "api_key": _mask(news_key),
+        }
+    }
+
+@app.post("/api/credentials")
+def update_credentials(payload: dict = Body(default={})):
+    """Dynamically update API keys in environment and persist to backend/.env"""
+    try:
+        env_updates = {}
+        if payload.get("angel_api_key"):
+            val = str(payload["angel_api_key"]).strip()
+            os.environ["ANGEL_API_KEY"] = val
+            os.environ["ANGEL_ONE_API_KEY"] = val
+            env_updates["ANGEL_ONE_API_KEY"] = val
+            env_updates["ANGEL_API_KEY"] = val
+
+        if payload.get("angel_client_id"):
+            val = str(payload["angel_client_id"]).strip()
+            os.environ["ANGEL_CLIENT_ID"] = val
+            os.environ["ANGEL_ONE_CLIENT_ID"] = val
+            env_updates["ANGEL_ONE_CLIENT_ID"] = val
+            env_updates["ANGEL_CLIENT_ID"] = val
+
+        if payload.get("angel_password"):
+            val = str(payload["angel_password"]).strip()
+            os.environ["ANGEL_PASSWORD"] = val
+            os.environ["ANGEL_ONE_PASSWORD"] = val
+            env_updates["ANGEL_ONE_PASSWORD"] = val
+            env_updates["ANGEL_PASSWORD"] = val
+
+        if payload.get("angel_totp_key"):
+            val = str(payload["angel_totp_key"]).strip()
+            os.environ["ANGEL_TOTP_KEY"] = val
+            os.environ["ANGEL_ONE_TOTP_KEY"] = val
+            env_updates["ANGEL_ONE_TOTP_KEY"] = val
+            env_updates["ANGEL_TOTP_KEY"] = val
+
+        if payload.get("gemini_api_key"):
+            val = str(payload["gemini_api_key"]).strip()
+            os.environ["GEMINI_API_KEY"] = val
+            env_updates["GEMINI_API_KEY"] = val
+
+        if payload.get("news_api_key"):
+            val = str(payload["news_api_key"]).strip()
+            os.environ["NEWS_API_KEY"] = val
+            env_updates["NEWS_API_KEY"] = val
+
+        # Persist to backend/.env file
+        env_path = os.path.join(os.path.dirname(__file__), ".env")
+        lines = []
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+        new_lines = []
+        updated_keys = set()
+        for line in lines:
+            if "=" in line and not line.strip().startswith("#"):
+                k, _ = line.split("=", 1)
+                k = k.strip()
+                if k in env_updates:
+                    new_lines.append(f"{k}={env_updates[k]}\n")
+                    updated_keys.add(k)
+                else:
+                    new_lines.append(line)
+            else:
+                new_lines.append(line)
+
+        for k, v in env_updates.items():
+            if k not in updated_keys:
+                new_lines.append(f"{k}={v}\n")
+
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+
+        return {"status": "success", "message": "API credentials updated and persisted successfully."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.post("/api/fusion/decision")
 async def get_fusion_decision(payload: dict = Body(default={})):
     """

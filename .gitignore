@@ -43,3 +43,8 @@ env/
 build_log.txt
 test_output.txt
 nifty_mst_visualization.html
+
+# Explicit backend rules
+backend/.env
+backend/broker/angel_tokens.json
+*.pkl

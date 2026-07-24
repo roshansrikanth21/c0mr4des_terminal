@@ -7,7 +7,10 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
-from scipy.stats import norm
+try:
+    from scipy.stats import norm
+except ImportError:
+    norm = None
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -258,8 +261,8 @@ class MarkovRegimeSwitching:
         volatility = returns.rolling(window=20).std().dropna()
         if volatility.empty: return {}
         
-        low_vol_threshold = volatility.quantile(0.33)
-        high_vol_threshold = volatility.quantile(0.67)
+        low_vol_threshold = volatility.expanding(min_periods=20).quantile(0.33)
+        high_vol_threshold = volatility.expanding(min_periods=20).quantile(0.67)
         
         regimes = pd.Series(index=volatility.index, data='NORMAL')
         regimes[volatility < low_vol_threshold] = 'LOW_VOL'

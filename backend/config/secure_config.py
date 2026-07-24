@@ -4,7 +4,11 @@ Uses system keyring for secure storage and Fernet encryption.
 """
 
 import os
-import keyring
+try:
+    import keyring
+except ImportError:
+    keyring = None
+
 from cryptography.fernet import Fernet
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, field

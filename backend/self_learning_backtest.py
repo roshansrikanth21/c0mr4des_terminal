@@ -10,9 +10,18 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import json
 import pickle
-from scipy.optimize import minimize
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
+try:
+    from scipy.optimize import minimize
+except ImportError:
+    minimize = None
+
+try:
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.preprocessing import StandardScaler
+except ImportError:
+    RandomForestClassifier = None
+    StandardScaler = None
+
 import warnings
 from backend.ict_smart_money import ICTSmartMoney
 warnings.filterwarnings('ignore')
@@ -35,7 +44,7 @@ class SelfLearningBacktester:
         # Initialize models
         self.strategy_params = self._load_default_params()
         self.ml_model = None
-        self.scaler = StandardScaler()
+        self.scaler = StandardScaler() if StandardScaler else None
         
         # Learning history
         self.learning_history = []
@@ -218,7 +227,7 @@ class SelfLearningBacktester:
         
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42
+            X, y, test_size=0.2, shuffle=False
         )
         
         # Scale features
@@ -407,7 +416,8 @@ class SelfLearningBacktester:
                     'entry_price': entry_price,
                     'stop_loss': stop_loss,
                     'target': target,
-                    'entry_idx': i
+                    'entry_idx': i,
+                    'entry_time': current_time
                 }
             
             elif position:
@@ -434,7 +444,9 @@ class SelfLearningBacktester:
                     pnl = (exit_price - position['entry_price']) * 50  # 1 lot
                     trades.append({
                         'pnl': pnl,
-                        'exit_reason': exit_reason
+                        'exit_reason': exit_reason,
+                        'entry_time': position['entry_time'],
+                        'exit_time': current_time
                     })
                     capital += pnl
                     position = None
@@ -677,8 +689,13 @@ class SelfLearningBacktester:
         
         # VWAP
         typical_price = (data['High'] + data['Low'] + data['Close']) / 3
-        # Fix: Ensure cumsum can handle first values NaN
-        data['VWAP'] = (typical_price * data['Volume']).cumsum() / data['Volume'].cumsum()
+        if hasattr(data.index, 'date'):
+            cum_vol = data['Volume'].groupby(data.index.date).cumsum().replace(0, 1)
+            cum_pv = (typical_price * data['Volume']).groupby(data.index.date).cumsum()
+            data['VWAP'] = cum_pv / cum_vol
+        else:
+            cum_vol = data['Volume'].cumsum().replace(0, 1)
+            data['VWAP'] = (typical_price * data['Volume']).cumsum() / cum_vol
         
         # ATR
         high_low = data['High'] - data['Low']
@@ -793,9 +810,15 @@ class SelfLearningBacktester:
         if len(losses) > 0 and losses['pnl'].sum() != 0:
             profit_factor = abs(wins['pnl'].sum() / losses['pnl'].sum())
         
-        # Sharpe ratio (simplified)
-        returns = df_trades['pnl'] / 100000  # Normalized
-        sharpe = returns.mean() / returns.std() * np.sqrt(252) if returns.std() > 0 else 0
+        # Sharpe ratio
+        if 'entry_time' in df_trades.columns:
+            df_trades['entry_time'] = pd.to_datetime(df_trades['entry_time'])
+            daily_pnl = df_trades.groupby(df_trades['entry_time'].dt.date)['pnl'].sum()
+            returns = daily_pnl / 100000
+            sharpe = returns.mean() / returns.std() * np.sqrt(252) if returns.std() > 0 else 0
+        else:
+            returns = df_trades['pnl'] / 100000  # Normalized
+            sharpe = returns.mean() / returns.std() * np.sqrt(252) if returns.std() > 0 else 0
         
         self.performance_metrics = {
             'total_trades': total_trades,

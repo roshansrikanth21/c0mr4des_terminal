@@ -171,7 +171,8 @@ class WalkForwardBacktester:
             pnl = position * next_ret - trade_cost
 
             total_trades += int(np.sum(changes > 0))
-            all_returns.extend(pnl.tolist())
+            pnl_series = pd.Series(pnl, index=test_slice.index)
+            all_returns.append(pnl_series)
 
             for r in pnl:
                 equity.append(equity[-1] * (1.0 + float(r)))
@@ -195,11 +196,14 @@ class WalkForwardBacktester:
         if not all_returns:
             return {"status": "error", "message": "Walk-forward produced no evaluable folds"}
 
-        ret_series = pd.Series(all_returns)
+        ret_series = pd.concat(all_returns)
+        # Handle overlaps if step_size < test_window
+        ret_series = ret_series[~ret_series.index.duplicated(keep='first')]
         equity_curve = pd.Series(equity)
 
-        mean_ret = float(ret_series.mean())
-        std_ret = float(ret_series.std()) if float(ret_series.std()) > 0 else 0.0
+        daily_returns = ret_series.groupby(ret_series.index.date).sum()
+        mean_ret = float(daily_returns.mean())
+        std_ret = float(daily_returns.std()) if float(daily_returns.std()) > 0 else 0.0
         sharpe = float((mean_ret / std_ret) * np.sqrt(252)) if std_ret > 0 else 0.0
 
         total_return = float(equity_curve.iloc[-1] - 1.0)

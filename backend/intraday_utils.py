@@ -22,10 +22,13 @@ def load_params():
         "sma_period": 21
     }
 
-def is_market_open():
+def is_market_open(allow_after_hours=False):
     """
-    Check if NSE is currently open (9:30 AM - 3:30 PM IST, Mon-Fri)
+    Check if NSE is currently open (9:15 AM - 3:30 PM IST, Mon-Fri)
     """
+    if allow_after_hours:
+        return True
+
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
     
@@ -34,10 +37,11 @@ def is_market_open():
         return False
     
     # Market hours: 9:15 AM to 3:30 PM
-    # For debugging/testing, we'll return True to allow system to run
-    # In production, uncomment the time check
-    return True 
-    # return market_open <= current_time <= market_close
+    current_time = now.time()
+    market_open = time(9, 15)
+    market_close = time(15, 30)
+    
+    return market_open <= current_time <= market_close
 
 def calculate_vwap(high, low, close, volume):
     """
@@ -52,11 +56,18 @@ def calculate_vwap(high, low, close, volume):
     if volume.sum() == 0:
         return typical_price
         
-    cum_vol = volume.cumsum()
-    # Avoid division by zero in cumulative sum
-    cum_vol = cum_vol.replace(0, 1) 
-    
-    vwap = (typical_price * volume).cumsum() / cum_vol
+    if hasattr(volume.index, 'date'):
+        # Group by date to reset cumsum every day
+        cum_vol = volume.groupby(volume.index.date).cumsum()
+        cum_vol = cum_vol.replace(0, 1) # Avoid division by zero
+        cum_pv = (typical_price * volume).groupby(volume.index.date).cumsum()
+        vwap = cum_pv / cum_vol
+    else:
+        cum_vol = volume.cumsum()
+        # Avoid division by zero in cumulative sum
+        cum_vol = cum_vol.replace(0, 1) 
+        vwap = (typical_price * volume).cumsum() / cum_vol
+        
     # Keep the output numerically stable for downstream UI/strategy consumers.
     return vwap.clip(lower=low, upper=high)
 

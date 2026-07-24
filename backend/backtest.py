@@ -322,18 +322,24 @@ class Backtester:
         if not df_trades.empty:
             returns = df_trades['pnl'] / df_trades['entry_price']
             
-            # Simple Annualization Factor (assuming 252 trading days) - approximation
-            sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
+            # Resample to daily returns for Sharpe/Sortino
+            df_trades['entry_time'] = pd.to_datetime(df_trades['entry_time'])
+            daily_returns = df_trades.groupby(df_trades['entry_time'].dt.date).apply(
+                lambda x: sum(x['pnl']) / self.initial_capital
+            )
             
-            downside_returns = returns[returns < 0]
-            sortino = (returns.mean() / downside_returns.std()) * np.sqrt(252) if not downside_returns.empty and downside_returns.std() != 0 else 0
+            # Simple Annualization Factor (assuming 252 trading days)
+            sharpe = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252) if daily_returns.std() != 0 else 0
             
-            cumulative = (1 + returns).cumprod()
+            downside_returns = daily_returns[daily_returns < 0]
+            sortino = (daily_returns.mean() / downside_returns.std()) * np.sqrt(252) if not downside_returns.empty and downside_returns.std() != 0 else 0
+            
+            cumulative = (1 + daily_returns).cumprod()
             max_dd = 0
             calmar = 0
             if not cumulative.empty:
                 max_dd = (cumulative / cumulative.expanding().max() - 1).min()
-                calmar = returns.mean() / abs(max_dd) if max_dd != 0 else 0
+                calmar = daily_returns.mean() / abs(max_dd) if max_dd != 0 else 0
             
             expectancy = (returns > 0).mean() * returns[returns > 0].mean() + \
                          (returns <= 0).mean() * returns[returns <= 0].mean()

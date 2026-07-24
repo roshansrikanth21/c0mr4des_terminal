@@ -21,7 +21,57 @@ export function Settings() {
     stopTradingAfterLosses: 2
   });
 
+  const [apiKeys, setApiKeys] = useState({
+    angel_client_id: '',
+    angel_password: '',
+    angel_api_key: '',
+    angel_totp_key: '',
+    gemini_api_key: '',
+    news_api_key: ''
+  });
+  const [isSavingKeys, setIsSavingKeys] = useState(false);
+
+  const handleSaveApiKeys = async () => {
+    setIsSavingKeys(true);
+    try {
+      const res = await fetch('/api/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(apiKeys)
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        toast.success('API Credentials updated & persisted successfully!');
+      } else {
+        toast.error(data.message || 'Failed to save API credentials.');
+      }
+    } catch (e: any) {
+      toast.error('Error connecting to backend API.');
+    } finally {
+      setIsSavingKeys(false);
+    }
+  };
+
   const { isEditMode, toggleEditMode, resetLayout } = useDashboardStore();
+
+  useEffect(() => {
+    async function fetchCredentialsStatus() {
+      try {
+        const res = await fetch('/api/credentials');
+        const data = await res.json();
+        if (data.status === 'success') {
+          setApiKeys(prev => ({
+            ...prev,
+            angel_client_id: data.angel_one.client_id || '',
+            angel_api_key: data.angel_one.api_key || '',
+            gemini_api_key: data.gemini.api_key || '',
+            news_api_key: data.news_api.api_key || ''
+          }));
+        }
+      } catch (e) {}
+    }
+    fetchCredentialsStatus();
+  }, []);
 
   useEffect(() => {
     async function fetchSettings() {
@@ -96,11 +146,101 @@ export function Settings() {
         <p className="text-muted-foreground text-sm">Manage risk protocols and interface customization.</p>
       </div>
 
-      <Tabs defaultValue="risk" className="w-full">
-        <TabsList className="grid w-full grid-cols-2 mb-8">
+      <Tabs defaultValue="credentials" className="w-full">
+        <TabsList className="grid w-full grid-cols-3 mb-8">
+          <TabsTrigger value="credentials">API & Broker Credentials</TabsTrigger>
           <TabsTrigger value="risk">Risk Management</TabsTrigger>
           <TabsTrigger value="customization">Interface Customization</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="credentials" className="space-y-6">
+          <Card className="border-border">
+            <CardHeader>
+              <CardTitle className="text-sm font-mono uppercase tracking-widest flex items-center gap-2">
+                Broker & AI Model Keys
+              </CardTitle>
+              <CardDescription>Configure live broker authentication and intelligence model keys directly from the terminal.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="space-y-4">
+                <h3 className="text-xs font-mono font-bold uppercase text-primary tracking-wider">Angel One SmartAPI Trading Keys</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="angel_client_id" className="text-[10px] font-mono uppercase text-muted-foreground">Angel Client ID</Label>
+                    <Input
+                      id="angel_client_id"
+                      placeholder="e.g. AAAQ749757"
+                      value={apiKeys.angel_client_id}
+                      onChange={(e) => setApiKeys({ ...apiKeys, angel_client_id: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="angel_password" className="text-[10px] font-mono uppercase text-muted-foreground">Angel Password / Pin</Label>
+                    <Input
+                      id="angel_password"
+                      type="password"
+                      placeholder="••••••••"
+                      value={apiKeys.angel_password}
+                      onChange={(e) => setApiKeys({ ...apiKeys, angel_password: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="angel_api_key" className="text-[10px] font-mono uppercase text-muted-foreground">SmartAPI Key</Label>
+                    <Input
+                      id="angel_api_key"
+                      placeholder="e.g. 96vGptbK..."
+                      value={apiKeys.angel_api_key}
+                      onChange={(e) => setApiKeys({ ...apiKeys, angel_api_key: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="angel_totp_key" className="text-[10px] font-mono uppercase text-muted-foreground">TOTP Secret Key (2FA)</Label>
+                    <Input
+                      id="angel_totp_key"
+                      type="password"
+                      placeholder="32-character TOTP Secret Key"
+                      value={apiKeys.angel_totp_key}
+                      onChange={(e) => setApiKeys({ ...apiKeys, angel_totp_key: e.target.value })}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-4 border-t border-border space-y-4">
+                <h3 className="text-xs font-mono font-bold uppercase text-primary tracking-wider">AI Models & News Feeds</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="gemini_api_key" className="text-[10px] font-mono uppercase text-muted-foreground">Google Gemini API Key</Label>
+                    <Input
+                      id="gemini_api_key"
+                      type="password"
+                      placeholder="AIzaSy..."
+                      value={apiKeys.gemini_api_key}
+                      onChange={(e) => setApiKeys({ ...apiKeys, gemini_api_key: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="news_api_key" className="text-[10px] font-mono uppercase text-muted-foreground">News API Key</Label>
+                    <Input
+                      id="news_api_key"
+                      type="password"
+                      placeholder="e.g. 066028..."
+                      value={apiKeys.news_api_key}
+                      onChange={(e) => setApiKeys({ ...apiKeys, news_api_key: e.target.value })}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-6 border-t border-border">
+                <Button onClick={handleSaveApiKeys} disabled={isSavingKeys} className="w-full h-12">
+                  <Save className="w-4 h-4 mr-2" />
+                  {isSavingKeys ? "Saving Credentials..." : "Save & Sync Credentials"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="risk" className="space-y-6">
           <div className="bg-destructive/5 border border-destructive/20 p-4 rounded-sm mb-6 flex gap-4">

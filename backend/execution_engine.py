@@ -18,7 +18,29 @@ class ExecutionEngine:
         self.broker = broker or PaperBroker()
         self.active_trades = {}
         self.trade_history = []
+        self._recover_active_trades_from_db()
         logging.info(f"Execution Engine initialized with {type(self.broker).__name__}")
+        
+    def _recover_active_trades_from_db(self):
+        """Restore active filled trades from SQLite DB on server restart"""
+        try:
+            db = SessionLocal()
+            trades = db.query(Trade).filter(Trade.status == "FILLED").all()
+            for trade in trades:
+                if trade.ticker not in self.active_trades:
+                    self.active_trades[trade.ticker] = {
+                        'id': str(trade.id),
+                        'ticker': trade.ticker,
+                        'action': trade.action,
+                        'entry_price': trade.price,
+                        'quantity': trade.quantity,
+                        'timestamp': trade.timestamp.isoformat() if hasattr(trade, 'timestamp') and trade.timestamp else datetime.now().isoformat()
+                    }
+            db.close()
+            if self.active_trades:
+                logging.info(f"Recovered {len(self.active_trades)} active trades from DB.")
+        except Exception as e:
+            logging.error(f"Failed to recover active trades: {e}")
         
     def _log_trade_to_db(self, symbol: str, action: str, quantity: float, price: float, trade_id: str = None):
         """Persist trade execution to SQLite DB"""
@@ -151,10 +173,21 @@ class ExecutionEngine:
             order_type = str(order_params.get('type', 'MARKET')).upper()
             expected_price = price
             if order_type == "MARKET":
-                try:
-                    expected_price = float(self.broker.get_quote(symbol) or 0.0)
-                except Exception:
-                    expected_price = 0.0
+                is_option = any(x in str(symbol).upper() for x in ['CE', 'PE', 'OPT'])
+                if is_option and expected_price > 0:
+                    order_type = 'LIMIT'
+                    if action == 'BUY':
+                        price = round(expected_price * 1.05, 2)
+                    else:
+                        price = round(expected_price * 0.95, 2)
+                else:
+                    try:
+                        expected_price = float(self.broker.get_quote(symbol) or 0.0)
+                        if is_option and expected_price > 0:
+                            order_type = 'LIMIT'
+                            price = round(expected_price * 1.05, 2) if action == 'BUY' else round(expected_price * 0.95, 2)
+                    except Exception:
+                        expected_price = 0.0
             routing = routing_service.get_execution_directive(ticker=str(symbol or "UNKNOWN"))
             auto_switch = None
             if routing.get("directive") == "prefer_alternate" and ops_control_service.can_auto_switch():
@@ -299,11 +332,25 @@ class ExecutionEngine:
         
         logging.info(f"Executing {action} for {ticker} | Qty: {quantity}")
         
+        order_type = 'MARKET'
+        price = plan.get('entry', 0.0)
+        
+        # Slippage bounds / price protection for option trades
+        is_option = any(x in broker_symbol.upper() for x in ['CE', 'PE', 'OPT'])
+        if is_option and price > 0:
+            order_type = 'LIMIT'
+            # 5% slippage bound
+            if action == 'BUY':
+                price = round(price * 1.05, 2)
+            else:
+                price = round(price * 0.95, 2)
+
         order_result = self.broker.place_order(
             symbol=broker_symbol,
             quantity=quantity,
             side='BUY' if action == 'BUY' else 'SELL',
-            order_type='MARKET'
+            order_type=order_type,
+            price=price
         )
         
         status = order_result.get('status')

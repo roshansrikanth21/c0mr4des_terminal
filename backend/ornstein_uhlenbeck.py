@@ -5,8 +5,12 @@ Ideal for Nifty/Sensex range-bound markets
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
-from scipy.stats import norm
+try:
+    from scipy.optimize import minimize
+    from scipy.stats import norm
+except ImportError:
+    minimize = None
+    norm = None
 import yfinance as yf
 
 class OrnsteinUhlenbeckStrategy:
@@ -23,10 +27,12 @@ class OrnsteinUhlenbeckStrategy:
         self.sigma = None  # Volatility
         self.half_life = None  # Time for deviation to halve
     
-    def calibrate_ou_parameters(self, prices, dt=1/252):
+    def calibrate_ou_parameters(self, prices, dt=1/252, window=None):
         """
         Calibrate OU parameters using MLE (Maximum Likelihood Estimation)
         """
+        if window is not None and len(prices) > window:
+            prices = prices[-window:]
         if len(prices) < 2:
             return None
             
@@ -83,13 +89,12 @@ class OrnsteinUhlenbeckStrategy:
             'volatility_annual': float(sigma * np.sqrt(1/dt)) if dt > 0 else 0.0
         }
     
-    def calculate_z_score(self, prices):
+    def calculate_z_score(self, prices, window=None):
         """
         Calculate Z-score for mean reversion trading
         Z = (X - μ) / (σ / √(2θ))
         """
-        if self.mu is None or self.sigma is None or self.theta is None:
-            self.calibrate_ou_parameters(prices)
+        self.calibrate_ou_parameters(prices, window=window)
         
         current_price = prices[-1]
         
@@ -114,11 +119,11 @@ class OrnsteinUhlenbeckStrategy:
             'half_life_days': float(self.half_life * 252) if self.half_life else 0 
         }
     
-    def generate_ou_signals(self, prices, entry_z=1.5, exit_z=0.5):
+    def generate_ou_signals(self, prices, entry_z=1.5, exit_z=0.5, window=60):
         """
         Generate mean reversion trading signals
         """
-        z_data = self.calculate_z_score(prices)
+        z_data = self.calculate_z_score(prices, window=window)
         z_score = z_data['z_score']
         current_price = float(prices.iloc[-1]) if hasattr(prices, 'iloc') else float(prices[-1])
         
@@ -242,11 +247,11 @@ class RealTimeOUTrading:
             # Use float conversion to ensure scalar
             prices = prices.astype(float)
             
-            # Calibrate OU parameters
-            params = self.ou_model.calibrate_ou_parameters(prices)
+            # Calibrate OU parameters with trailing window
+            params = self.ou_model.calibrate_ou_parameters(prices, window=60)
             
             # Generate signals
-            signals_data = self.ou_model.generate_ou_signals(prices)
+            signals_data = self.ou_model.generate_ou_signals(prices, window=60)
             
             # Forecast
             forecast = self.ou_model.forecast_price_path(prices[-1], days_ahead=5)
@@ -258,7 +263,7 @@ class RealTimeOUTrading:
                 'current_price': float(prices[-1]),
                 'ou_parameters': params,
                 'signals': signals_data['signals'],
-                'z_score_info': self.ou_model.calculate_z_score(prices),
+                'z_score_info': self.ou_model.calculate_z_score(prices, window=60),
                 'forecast': forecast,
                 'market_regime': self._determine_regime(params, prices)
             }
