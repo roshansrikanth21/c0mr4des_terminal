@@ -1,0 +1,17 @@
+{
+  "decision": {
+    "action": "HOLD",
+    "confidence": 0.35,
+    "action_scores": {
+      "BUY": 0.0,
+      "SELL": 0.25,
+      "HOLD": 0.35
+    },
+    "ticker": "^NSEI",
+    "price": 23869.599609375,
+    "timestamp": "2026-07-24T19:39:14.399838"
+  },
+  "plan": {
+    "action": "HOLD"
+  }
+}

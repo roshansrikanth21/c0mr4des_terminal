@@ -12,6 +12,7 @@ const LiveOps = lazy(() => import('@/pages/LiveOps').then((m) => ({ default: m.L
 const MemoryLab = lazy(() => import('@/pages/MemoryLab').then((m) => ({ default: m.MemoryLab })));
 const History = lazy(() => import('@/pages/History').then((m) => ({ default: m.History })));
 const Settings = lazy(() => import('@/pages/Settings').then((m) => ({ default: m.Settings })));
+const SocialIntel = lazy(() => import('@/pages/SocialIntel').then((m) => ({ default: m.SocialIntel })));
 
 function RouteFallback() {
   return (
@@ -61,6 +62,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/live-ops" element={<LiveOps />} />
+            <Route path="/social-radar" element={<SocialIntel />} />
             <Route path="/memory-lab" element={<MemoryLab />} />
             <Route path="/history" element={<History />} />
             <Route path="/settings" element={<Settings />} />

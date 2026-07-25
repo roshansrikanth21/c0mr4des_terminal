@@ -12,6 +12,7 @@ import {
   PlaySquare,
   RadioTower,
   DatabaseZap,
+  Radio,
   Sun,
   Moon
 } from 'lucide-react';
@@ -43,6 +44,7 @@ export function Shell({ children }: ShellProps) {
 
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
+    { label: 'Social Radar', icon: Radio, path: '/social-radar' },
     { label: 'Backtest', icon: PlaySquare, path: '/backtest' },
     { label: 'Live Ops', icon: RadioTower, path: '/live-ops' },
     { label: 'Memory Lab', icon: DatabaseZap, path: '/memory-lab' },

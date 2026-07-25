@@ -2806,6 +2806,27 @@ def get_memory_research_snapshot(
         return {"status": "error", "message": str(e)}
 
 
+@app.get("/api/social/intel")
+def get_social_intel(ticker: str = ""):
+    """Returns real-time scraped social media trade calls from Twitter/X, Reddit, and StockTwits"""
+    try:
+        from backend.services.social_crawler_service import social_crawler_service
+        data = social_crawler_service.crawl_social_sources(ticker=ticker)
+        return {"status": "success", "count": len(data), "data": data}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/social/scan")
+def trigger_social_scan(payload: dict = Body(default={})):
+    """Triggers an active scan across Twitter/X, Reddit, and StockTwits profilers"""
+    try:
+        from backend.services.social_crawler_service import social_crawler_service
+        ticker = payload.get("ticker", "")
+        data = social_crawler_service.crawl_social_sources(ticker=ticker)
+        return {"status": "success", "message": f"Scraped {len(data)} social intelligence posts.", "data": data}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/credentials")
 def get_credentials():
     """Returns current configuration status of API keys (masked for privacy)"""
