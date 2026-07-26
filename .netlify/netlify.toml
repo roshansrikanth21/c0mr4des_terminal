@@ -1,3 +1,4 @@
+redirectsOrigin = "config"
 plugins = []
 headers = []
 
@@ -7,8 +8,8 @@ headers = []
 
 [build]
 publish = "C:\\Users\\rosha\\.gemini\\antigravity\\scratch\\c0mr4des_terminal\\dist"
-publishOrigin = "ui"
-commandOrigin = "ui"
+publishOrigin = "config"
+commandOrigin = "config"
 command = "npm run build"
 
 [build.environment]
