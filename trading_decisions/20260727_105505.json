@@ -1,0 +1,90 @@
+{
+  "timestamp": "2026-07-27T10:55:05.835575",
+  "decision": {
+    "action": "HOLD",
+    "confidence": 0.20833333333333334,
+    "action_scores": {
+      "BUY": 0.1,
+      "SELL": 0.0,
+      "HOLD": 0.125,
+      "REDUCE_EXPOSURE": 0.105
+    },
+    "signals": [
+      {
+        "type": "MOMENTUM",
+        "action": "HOLD",
+        "confidence": 0.5,
+        "weight": 0.25,
+        "weighted_score": 0.125
+      },
+      {
+        "type": "REGIME",
+        "action": "BUY",
+        "confidence": 0.5,
+        "regime": "RISK_ON",
+        "weight": 0.2,
+        "weighted_score": 0.1
+      },
+      {
+        "type": "VOLATILITY",
+        "action": "REDUCE_EXPOSURE",
+        "confidence": 0.7,
+        "regime": "NORMAL",
+        "weight": 0.15,
+        "weighted_score": 0.105
+      }
+    ],
+    "current_price": 21113.855165058707,
+    "timestamp": "2026-07-27T10:55:05.835575"
+  },
+  "trading_plan": {
+    "action": "HOLD",
+    "entry_price": 21113.855165058707,
+    "stop_loss": null,
+    "targets": [],
+    "position_size": {
+      "position_value": 99999.99999999999,
+      "position_weight": 0.09999999999999999,
+      "instrument_volatility": 0.2,
+      "target_volatility_contribution": 0.02,
+      "max_allowed_volatility": 0.02,
+      "volatility_scaling_factor": 0.7499999999999999,
+      "risk_adjusted_size": "LARGE"
+    },
+    "options_strategy": {
+      "name": "NO_NEW_POSITIONS",
+      "delta_range": [
+        0,
+        0
+      ],
+      "expiry_preference": "WEEKLY",
+      "regime_appropriate": true
+    },
+    "risk_management": {
+      "max_loss_per_trade": 10000.0,
+      "position_sizing_method": "VOLATILITY_TARGETING",
+      "hedging_recommended": true,
+      "exit_criteria": [
+        "TIME_EXIT: Exit after 5 trading days if targets not reached",
+        "REGIME_CHANGE: Exit if market regime shifts to opposite of trade direction"
+      ]
+    },
+    "monitoring_plan": {
+      "check_interval": "1h",
+      "reassessment_triggers": [
+        "Major economic data release (GDP, inflation, RBI policy)",
+        "Significant change in India VIX (>20% move)",
+        "Price reaches stop loss or first target",
+        "Change in market regime detection",
+        "3 days have passed since entry"
+      ],
+      "auto_exit_conditions": [
+        "Stop loss hit",
+        "First target reached (trail stop to entry)",
+        "Time limit exceeded (5 trading days)",
+        "Portfolio drawdown exceeds 2%",
+        "Market-wide circuit breaker triggered"
+      ]
+    }
+  }
+}

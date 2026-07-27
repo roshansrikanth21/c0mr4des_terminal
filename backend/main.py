@@ -2827,6 +2827,30 @@ def trigger_social_scan(payload: dict = Body(default={})):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/quant/integrated-decision")
+def get_integrated_decision(ticker: str = "^NSEI", capital: float = 1000000.0):
+    """Runs IntegratedTradingDecisionEngine across momentum, volatility sizing, regime detection, OU mean reversion, and MST analysis"""
+    try:
+        from backend.trading_decision_engine import IntegratedTradingDecisionEngine
+        engine = IntegratedTradingDecisionEngine(ticker=ticker, capital=capital)
+        results = engine.run_comprehensive_analysis()
+        return {"status": "success", "data": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/quant/integrated-decision")
+def post_integrated_decision(payload: dict = Body(default={})):
+    """Triggers IntegratedTradingDecisionEngine with custom payload"""
+    try:
+        ticker = payload.get("ticker", "^NSEI")
+        capital = float(payload.get("capital", 1000000.0))
+        from backend.trading_decision_engine import IntegratedTradingDecisionEngine
+        engine = IntegratedTradingDecisionEngine(ticker=ticker, capital=capital)
+        results = engine.run_comprehensive_analysis()
+        return {"status": "success", "data": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/credentials")
 def get_credentials():
     """Returns current configuration status of API keys (masked for privacy)"""

@@ -3,36 +3,53 @@ Volatility-based position sizing system
 Automatically adjusts position size based on market volatility
 """
 
+import math
 import numpy as np
 import pandas as pd
-import math
-
-class StandardNormalFallback:
-    @staticmethod
-    def cdf(x, loc=0, scale=1):
-        z = (x - loc) / scale
-        return 0.5 * (1.0 + math.erf(z / math.sqrt(2.0)))
-
-    @staticmethod
-    def pdf(x, loc=0, scale=1):
-        z = (x - loc) / scale
-        return (1.0 / (scale * math.sqrt(2.0 * math.pi))) * math.exp(-0.5 * z * z)
-
-    @staticmethod
-    def ppf(q, loc=0, scale=1):
-        q = max(1e-9, min(1.0 - 1e-9, q))
-        z = math.sqrt(-2.0 * math.log(min(q, 1.0 - q)))
-        c0, c1, c2 = 2.515517, 0.802853, 0.010328
-        d1, d2, d3 = 1.432788, 0.189269, 0.001308
-        val = z - ((c2 * z + c1) * z + c0) / (((d3 * z + d2) * z + d1) * z + 1.0)
-        return (loc - val * scale) if q < 0.5 else (loc + val * scale)
+import yfinance as yf
 
 try:
     from scipy.stats import norm
 except ImportError:
-    norm = StandardNormalFallback
+    class norm:
+        @staticmethod
+        def ppf(q):
+            # Normal distribution percent point function approximation (Winitzki)
+            if q <= 0 or q >= 1:
+                return 0.0
+            if q == 0.5:
+                return 0.0
+            if q > 0.5:
+                p = 1 - q
+                sign = 1
+            else:
+                p = q
+                sign = -1
+            t = np.sqrt(-2.0 * np.log(p))
+            c0, c1, c2 = 2.515517, 0.802853, 0.010328
+            d1, d2, d3 = 1.432788, 0.189269, 0.001308
+            num = c0 + t * (c1 + t * c2)
+            den = 1.0 + t * (d1 + t * (d2 + t * d3))
+            return sign * (t - num / den)
 
-import yfinance as yf
+        @staticmethod
+        def cdf(x):
+            return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+def _extract_series(df: pd.DataFrame, col_name: str) -> pd.Series:
+    """Helper to extract a 1D Series from a DataFrame whether columns are flat or MultiIndex."""
+    if col_name in df.columns:
+        res = df[col_name]
+        if isinstance(res, pd.DataFrame):
+            return res.iloc[:, 0]
+        return res
+    for col in df.columns:
+        if isinstance(col, tuple) and col[0].lower() == col_name.lower():
+            res = df[col]
+            if isinstance(res, pd.DataFrame):
+                return res.iloc[:, 0]
+            return res
+    raise KeyError(f"Column '{col_name}' not found in DataFrame columns: {df.columns}")
 
 class VolatilityPositionSizer:
     """
@@ -55,17 +72,12 @@ class VolatilityPositionSizer:
         """
         Calculate optimal position size using volatility targeting
         """
-        # Base position size using inverse volatility weighting
         base_weight = self.target_volatility / instrument_volatility if instrument_volatility > 0 else 0
-        
-        # Cap the position size
         max_weight = self.max_position_vol / instrument_volatility if instrument_volatility > 0 else 0
         weight = min(base_weight, max_weight)
         
-        # Calculate dollar amount
         position_value = self.capital * weight
         
-        # Adjust for portfolio diversification if correlation matrix provided
         if correlation_matrix is not None and current_positions is not None:
             position_value = self._adjust_for_correlation(
                 position_value, instrument_volatility, 
@@ -91,12 +103,11 @@ class VolatilityPositionSizer:
         count = 0
         
         for pos_name, pos_data in current_positions.items():
-            if pos_name in correlation_matrix.columns:
-                correlation = correlation_matrix.loc['NEW', pos_name]  # Assuming 'NEW' is the new position
-                pos_vol = pos_data['volatility']
-                pos_weight = pos_data['weight']
+            if hasattr(correlation_matrix, 'columns') and pos_name in correlation_matrix.columns:
+                correlation = correlation_matrix.loc['NEW', pos_name] if 'NEW' in correlation_matrix.index else 0
+                pos_vol = pos_data.get('volatility', 0.2)
+                pos_weight = pos_data.get('weight', 0.05)
                 
-                # Correlation impact
                 correlation_impact = correlation * pos_weight * pos_vol
                 total_correlation_impact += correlation_impact
                 count += 1
@@ -104,14 +115,13 @@ class VolatilityPositionSizer:
         if count > 0:
             avg_correlation_impact = total_correlation_impact / count
             
-            # Reduce position if it increases portfolio risk too much
-            if avg_correlation_impact > 0.3:  # Highly correlated
+            if avg_correlation_impact > 0.3:
                 adjustment_factor = 0.5
-            elif avg_correlation_impact > 0.1:  # Moderately correlated
+            elif avg_correlation_impact > 0.1:
                 adjustment_factor = 0.7
-            elif avg_correlation_impact < -0.3:  # Negatively correlated (diversifying)
+            elif avg_correlation_impact < -0.3:
                 adjustment_factor = 1.5
-            elif avg_correlation_impact < -0.1:  # Slightly diversifying
+            elif avg_correlation_impact < -0.1:
                 adjustment_factor = 1.2
             else:
                 adjustment_factor = 1.0
@@ -125,14 +135,10 @@ class VolatilityPositionSizer:
         """
         Calculate stop loss based on volatility
         """
-        # Calculate daily volatility
         daily_vol = instrument_volatility / np.sqrt(252)
-        
-        # Calculate expected move for given confidence level
         z_score = norm.ppf(confidence_level)
         expected_move = daily_vol * z_score * np.sqrt(time_horizon * 252)
         
-        # Stop loss levels
         stop_loss_long = entry_price * (1 - expected_move)
         stop_loss_short = entry_price * (1 + expected_move)
         
@@ -150,25 +156,19 @@ class VolatilityPositionSizer:
         """
         Calculate position size for options considering Greeks
         """
-        # Delta-adjusted equivalent position
-        delta_exposure = option_delta * self.capital / 100  # Assuming 100 shares per option
+        delta_exposure = option_delta * self.capital / 100
+        vega_risk = option_vega * underlying_volatility * 0.01
         
-        # Vega risk adjustment
-        vega_risk = option_vega * underlying_volatility * 0.01  # 1% vol change impact
-        
-        # Calculate risk-adjusted position size
         base_size = self.calculate_position_size(underlying_volatility)
         base_value = base_size['position_value']
         
-        # Adjust for option-specific risks
         adjustment_factors = {
-            'delta_adjustment': min(1.0, abs(option_delta)),
-            'vega_adjustment': max(0.5, 1 - abs(vega_risk) / 100) if abs(vega_risk) < 100 else 0.5,
-            'time_decay_adjustment': 0.8  # Conservative for theta risk
+            'delta_adjustment': float(min(1.0, abs(option_delta))),
+            'vega_adjustment': float(max(0.5, 1 - abs(vega_risk) / 100)),
+            'time_decay_adjustment': 0.8
         }
         
-        total_adjustment = np.prod(list(adjustment_factors.values()))
-        
+        total_adjustment = float(np.prod(list(adjustment_factors.values())))
         option_position_value = base_value * total_adjustment
         contract_count = option_position_value / option_price if option_price > 0 else 0
         
@@ -181,7 +181,6 @@ class VolatilityPositionSizer:
             'total_adjustment': float(total_adjustment)
         }
 
-# Real-time volatility monitor
 class RealTimeVolatilityMonitor:
     """
     Monitor market volatility and adjust positions in real-time
@@ -198,50 +197,26 @@ class RealTimeVolatilityMonitor:
         """
         for ticker in self.tickers:
             try:
-                # Get recent data
-                print(f"   • Fetching volatility for {ticker}...")
                 df = yf.download(ticker, period="5d", interval=interval, progress=False)
                 
-                if df.empty:
-                    print(f"   ⚠️ Warning: No data for {ticker}")
+                if len(df) < 20:
                     continue
                 
-                # Universal column extraction
-                if isinstance(df.columns, pd.MultiIndex):
-                    if ticker in df.columns.levels[1] if len(df.columns.levels) > 1 else False:
-                         df.columns = df.columns.get_level_values(0)
-                    elif ticker in df.columns.levels[0]:
-                         df = df[ticker]
-                    else:
-                         df.columns = df.columns.get_level_values(-1)
+                close_series = _extract_series(df, 'Close')
+                returns = close_series.pct_change().dropna()
+                realized_vol = float(returns.std() * np.sqrt(252 * (24 if interval == "15m" else 1)))
                 
-                if 'Close' not in df.columns and 'Price' in df.columns:
-                    df.rename(columns={'Price': 'Close'}, inplace=True)
+                garch_vol = float(self._calculate_garch_volatility(returns))
                 
-                if 'Close' not in df.columns or len(df) < 5:
-                    print(f"   ⚠️ Warning: Insufficient data columns for {ticker}")
-                    continue
+                vix = self._get_india_vix() if ticker == "^NSEI" else None
                 
-                # Calculate realized volatility
-                returns = df['Close'].pct_change().dropna()
-                realized_vol_raw = returns.std() * np.sqrt(252 * (24 if interval == "15m" else 1))
-                realized_vol = float(realized_vol_raw.iloc[0]) if hasattr(realized_vol_raw, 'iloc') else float(realized_vol_raw)
-                
-                # Calculate simple GARCH-like volatility
-                garch_vol = float(realized_vol * 1.1)
-                
-                # Calculate VIX-like implied volatility (if available)
-                vix_raw = self._get_india_vix() if ticker == "^NSEI" else None
-                vix = float(vix_raw) if vix_raw is not None else None
-                
-                # Determine volatility regime
                 regime = self._determine_vol_regime(realized_vol, garch_vol, vix)
                 
                 self.volatility_history[ticker] = {
                     'timestamp': pd.Timestamp.now(),
-                    'realized_vol': realized_vol,
-                    'garch_vol': garch_vol,
-                    'vix': vix,
+                    'realized_vol': float(realized_vol),
+                    'garch_vol': float(garch_vol),
+                    'vix': float(vix) if vix else None,
                     'regime': regime,
                     'percentile': self._calculate_vol_percentile(ticker, realized_vol)
                 }
@@ -253,15 +228,27 @@ class RealTimeVolatilityMonitor:
         
         return self.volatility_history
     
+    def _calculate_garch_volatility(self, returns, p=1, q=1):
+        """
+        Simple GARCH(1,1) volatility estimation with fallback
+        """
+        try:
+            from arch import arch_model
+            model = arch_model(returns * 100, vol='Garch', p=p, q=q, dist='normal')
+            result = model.fit(disp='off')
+            forecast = result.forecast(horizon=1)
+            garch_vol = np.sqrt(forecast.variance.values[-1, 0]) / 100
+            return garch_vol * np.sqrt(252)
+        except Exception:
+            return float(returns.std() * np.sqrt(252))
+    
     def _get_india_vix(self):
         """Get India VIX data"""
         try:
             vix_data = yf.download("^INDIAVIX", period="1d", progress=False)
             if not vix_data.empty:
-                val = vix_data['Close'].iloc[-1]
-                if hasattr(val, 'iloc'):
-                    val = val.iloc[0]
-                return float(val) / 100.0
+                close_series = _extract_series(vix_data, 'Close')
+                return float(close_series.iloc[-1] / 100)
         except Exception:
             pass
         return None
@@ -311,7 +298,7 @@ class RealTimeVolatilityMonitor:
                     'strategy_recommendation': 'Directional options (calls/puts) or futures',
                     'risk_level': 'LOW'
                 }
-            elif regime == "HIGH_VOLATILITY" or regime == "EXTREME_VOLATILITY":
+            elif regime in ["HIGH_VOLATILITY", "EXTREME_VOLATILITY"]:
                 rec = {
                     'ticker': ticker,
                     'action': 'REDUCE_POSITION',
@@ -320,7 +307,7 @@ class RealTimeVolatilityMonitor:
                     'strategy_recommendation': 'Non-directional strategies (straddles, strangles)',
                     'risk_level': 'HIGH'
                 }
-            else:  # NORMAL or ELEVATED
+            else:
                 rec = {
                     'ticker': ticker,
                     'action': 'MAINTAIN',
