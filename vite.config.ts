@@ -11,11 +11,8 @@ export default defineConfig({
           if (!id.includes('node_modules')) {
             return;
           }
-          if (id.includes('@blinkdotnew')) {
-            return 'blink-sdk';
-          }
-          if (id.includes('@react-three') || id.includes('/three/')) {
-            return 'three-stack';
+          if (id.includes('lightweight-charts')) {
+            return 'candles';
           }
           if (id.includes('recharts') || id.includes('plotly') || id.includes('d3')) {
             return 'charts';
@@ -50,8 +47,9 @@ export default defineConfig({
         target: process.env.C0MR4DES_API || 'http://127.0.0.1:8100',
         changeOrigin: true,
       },
-      '/auth': {
-        target: process.env.C0MR4DES_API || 'http://127.0.0.1:8100',
+      '/ws': {
+        target: (process.env.C0MR4DES_API || 'http://127.0.0.1:8100').replace(/^http/, 'ws'),
+        ws: true,
         changeOrigin: true,
       },
     },

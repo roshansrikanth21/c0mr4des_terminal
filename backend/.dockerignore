@@ -1,6 +1,0 @@
-__pycache__
-*.pyc
-*.log
-data
-.venv
-.env

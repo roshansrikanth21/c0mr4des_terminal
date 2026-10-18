@@ -48,3 +48,7 @@ nifty_mst_visualization.html
 backend/.env
 backend/broker/angel_tokens.json
 *.pkl
+
+# Runtime data (personal, never commit)
+data/
+.claude/
