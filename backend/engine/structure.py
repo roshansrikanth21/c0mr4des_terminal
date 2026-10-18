@@ -112,6 +112,35 @@ def key_levels(intraday: pd.DataFrame, daily: pd.DataFrame, step: int) -> list[d
     return levels
 
 
+def htf_levels(intraday: pd.DataFrame, daily: pd.DataFrame) -> list[dict]:
+    """Higher-timeframe highs/lows: previous week, confirmed daily swings, confirmed 1-hour swings.
+
+    Big players defend these; price often stalls or reverses at them. Only data before the
+    current bar is used (daily/weekly strictly before today, 1h swings confirmed by later bars).
+    """
+    out: list[dict] = []
+    today = intraday.index[-1].date()
+    past = daily[daily.index.date < today] if not daily.empty else daily
+    if len(past) >= 6:
+        wk = past.copy()
+        wk["week"] = [d.isocalendar()[1] for d in wk.index.date]
+        cur_week = pd.Timestamp(today).isocalendar()[1]
+        prev = wk[wk["week"] != cur_week]
+        if len(prev):
+            last_week = prev[prev["week"] == prev["week"].iloc[-1]]
+            out.append({"name": "Prev Week High", "price": float(last_week["high"].max()), "weight": 3})
+            out.append({"name": "Prev Week Low", "price": float(last_week["low"].min()), "weight": 3})
+        dpiv = swings(past.tail(60), k=2, min_atr=0.8)
+        for p in dpiv[-6:]:
+            out.append({"name": f"Daily Swing {'High' if p['type'] == 'H' else 'Low'}", "price": p["price"], "weight": 3})
+    h1 = intraday.resample("60min", offset="15min").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+    if len(h1) > 20:
+        for p in swings(h1.iloc[:-1].tail(120), k=2, min_atr=0.8)[-6:]:
+            out.append({"name": f"1H Swing {'High' if p['type'] == 'H' else 'Low'}", "price": p["price"], "weight": 2})
+    return out
+
+
 def swing_zones(piv: list[dict], atr_value: float) -> list[dict]:
     """Cluster swing prices into support/resistance zones; more touches = stronger."""
     prices = sorted(p["price"] for p in piv)

@@ -7,7 +7,8 @@ import { getJSON, inr, type Symbol } from '@/lib/api';
 
 interface BT {
   instrument: string; source: string; trades: number; summary: string; win_rate?: number; avg_r?: number;
-  expectancy_per_lot?: number; net_pnl_per_lot?: number; profit_factor?: number | null; max_drawdown_per_lot?: number;
+  expectancy_per_lot?: number; net_pnl_per_lot?: number; winners?: number; losers?: number; total_profit?: number;
+  total_loss?: number; avg_win?: number; avg_loss?: number; biggest_win?: number; biggest_loss?: number; profit_factor?: number | null; max_drawdown_per_lot?: number;
   by_exit?: Record<string, number>; from?: string; to?: string; equity?: { time: string; equity: number }[];
   trade_list?: { time: string; verdict: string; entry: number; exit: number; reason: string; points: number; r: number; pnl_per_lot: number }[];
 }
@@ -30,7 +31,7 @@ export function Backtest() {
         <p className="text-sm text-muted-foreground mt-2 max-w-3xl">
           Replays the exact live engine bar-by-bar over the last ~60 days of real 5-minute candles. No future data, entries at the
           next candle's open, stop checked before target, square-off 15:15, full charges and 1 point slippage. News is not replayed.
-          Option P&amp;L is approximated with delta 0.5. Use it to sanity-check, not to prove an edge.
+          Option P&amp;L uses Black-Scholes on the real index move with that day's real India VIX and time to expiry (so theta is included), plus slippage. Use it to sanity-check, not to prove an edge.
         </p>
       </div>
       <div className="flex items-center gap-3">
@@ -50,8 +51,10 @@ export function Backtest() {
           {res.trades > 0 && (
             <>
               <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-                {[['Trades', res.trades], ['Win rate', `${res.win_rate}%`], ['Avg R', res.avg_r],
-                  ['Per trade', inr(res.expectancy_per_lot || 0)], ['Profit factor', res.profit_factor ?? '--'], ['Max DD', inr(res.max_drawdown_per_lot || 0)]].map(([k, v]) => (
+                {[['Trades', res.trades], ['Win rate', `${res.win_rate}%`], ['Net / lot', inr(res.net_pnl_per_lot || 0)],
+                  ['Per trade', inr(res.expectancy_per_lot || 0)], ['Profit factor', res.profit_factor ?? '--'], ['Max DD', inr(res.max_drawdown_per_lot || 0)],
+                  ['Winners', `${res.winners} · ${inr(res.total_profit || 0)}`], ['Avg win', inr(res.avg_win || 0)], ['Biggest win', inr(res.biggest_win || 0)],
+                  ['Losers', `${res.losers} · ${inr(res.total_loss || 0)}`], ['Avg loss', inr(res.avg_loss || 0)], ['Biggest loss', inr(res.biggest_loss || 0)]].map(([k, v]) => (
                   <div key={String(k)} className="border border-border rounded-md p-3 bg-card/40">
                     <div className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">{k}</div>
                     <div className="text-lg font-mono font-bold mt-1">{v}</div>

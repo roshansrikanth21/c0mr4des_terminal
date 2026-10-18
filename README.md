@@ -50,10 +50,19 @@ holidays are in `backend/engine/config.py`. Check the lot sizes every quarter.
 
 ## Honest numbers
 
-`/backtest` replays the exact live engine bar by bar on the last ~60 days of real 5-minute data, with
-next-bar fills, full charges and slippage. On the data it was built with, NIFTY came out roughly
-break-even to slightly positive and SENSEX slightly negative. **That is not an edge yet.** Watch the
-Signal Log for a few weeks of live market before you trade real size.
+`/backtest` replays the exact live engine bar by bar on real 5-minute NIFTY/SENSEX data (last ~60 days):
+next-bar fills, the strike the engine would pick priced with Black-Scholes from the real index move, that
+day's real India VIX and time to expiry (so theta is included), 0.5% slippage per side and full charges.
+Run on 27 Jul to 16 Oct 2026, 1 lot per trade, with multi-timeframe levels on:
+
+| | Trades | Winners (profit) | Losers (loss) | Net | Profit factor |
+|---|---|---|---|---|---|
+| NIFTY | 46 | 18 (+₹26,191) | 28 (−₹24,181) | **+₹2,010** | 1.08 |
+| SENSEX | 57 | 21 (+₹28,497) | 36 (−₹28,205) | **+₹292** | 1.01 |
+
+Multi-timeframe highs and lows (previous week, daily swings, 1-hour swings) improved both: NIFTY went from +₹1,070
+to +₹2,010, and SENSEX went from −₹8,167 to +₹292 with its drawdown roughly halved. **That is break-even, not an edge**,
+and 50 trades is too few to prove anything. Watch the Signal Log in a live market before you trade size.
 
 ## Layout
 

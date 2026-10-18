@@ -176,3 +176,14 @@ def test_evaluate_blocks_entries_when_market_closed():
     daily = df.resample("1D").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
     r = evaluate(df, daily, 50, session={"can_enter": False, "phase": "closed"})
     assert r["verdict"] == "NO TRADE"
+
+
+def test_htf_levels_use_only_past_data():
+    df = session_bars(5, drift=1.0)
+    daily = df.resample("1D").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+    lv = structure.htf_levels(df, daily)
+    today = df.index[-1].date()
+    today_high = df[df.index.date == today]["high"].max()
+    names = {x["name"] for x in lv}
+    assert "Prev Week High" in names or any(n.startswith("1H Swing") for n in names)
+    assert all(x["price"] != today_high or x["name"].startswith("1H") for x in lv)
