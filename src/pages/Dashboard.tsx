@@ -12,11 +12,11 @@ import { useAnalysis, type Analysis, type Symbol } from '@/lib/api';
 import { useDashboardStore, type DashboardTab } from '@/hooks/use-dashboard-store';
 import { CandleChart } from '@/components/CandleChart';
 import {
-  GlobalPanel, NewsPanel, OptionPanel, ReasonsPanel, StructurePanel, TimelinePanel, VerdictPanel,
+  GlobalPanel, NewsPanel, OptionPanel, OrbPanel, PaperPanel, ReasonsPanel, StructurePanel, TimelinePanel, VerdictPanel,
 } from '@/components/terminal/Panels';
 
 const ResponsiveGrid: any = Responsive;
-const MOBILE_ORDER = ['verdict', 'chart', 'option', 'reasons', 'timeline', 'structure', 'global', 'news'];
+const MOBILE_ORDER = ['verdict', 'orb', 'chart', 'option', 'paper', 'reasons', 'timeline', 'structure', 'global', 'news'];
 
 /** Narrow screens: one column, conclusion first. */
 function stacked(layout: readonly { i: string; h: number }[], cols: number) {
@@ -33,12 +33,14 @@ export function Dashboard() {
   const { isEditMode, toggleEditMode, resetPanelScales, resetLayout } = useDashboardStore();
   const { data, error, live, updatedAt } = useAnalysis(symbol);
   const lastVerdict = useRef<string | null>(null);
+  const lastGen = useRef<string | null>(null);
 
   useEffect(() => { localStorage.setItem('symbol', symbol); lastVerdict.current = null; }, [symbol]);
 
   // React to the live market: notify when the verdict flips during market hours.
   useEffect(() => {
-    if (!data) return;
+    if (!data || data.generated_at === lastGen.current) return;
+    lastGen.current = data.generated_at;
     const v = data.verdict;
     if (lastVerdict.current && lastVerdict.current !== v && data.session.is_open) {
       const fn = v === 'BUY' ? toast.success : v === 'SELL' ? toast.error : toast.message;
@@ -48,6 +50,10 @@ export function Dashboard() {
       }
     }
     lastVerdict.current = v;
+    for (const ev of data.paper?.events ?? []) {
+      if (ev.type === 'paper_entry' && ev.trade) toast.message(`Paper ENTRY ${ev.trade.side} ${ev.trade.strike}`, { description: `${ev.trade.symbol} @ ₹${ev.trade.entry_premium}` });
+      if (ev.type === 'paper_exit' && ev.trade) (ev.trade.pnl! >= 0 ? toast.success : toast.error)(`Paper EXIT ${ev.trade.symbol}: ₹${ev.trade.pnl}`, { description: ev.trade.reason });
+    }
   }, [data, symbol]);
 
   useEffect(() => {
@@ -217,6 +223,8 @@ function DashboardGrid({ tab, symbol, data }: { tab: DashboardTab; symbol: Symbo
     structure: <StructurePanel a={data} />,
     global: <GlobalPanel a={data} />,
     news: <NewsPanel />,
+    paper: <PaperPanel a={data} />,
+    orb: <OrbPanel a={data} />,
   };
 
   const gridItemClass = cn(

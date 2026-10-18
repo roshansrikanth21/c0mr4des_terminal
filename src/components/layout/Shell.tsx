@@ -41,7 +41,7 @@ export function Shell({ children }: ShellProps) {
     { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
     { label: 'News Radar', icon: Radio, path: '/news' },
     { label: 'Backtest', icon: PlaySquare, path: '/backtest' },
-    { label: 'Signal Log', icon: History, path: '/signals' },
+    { label: 'Trade Journal', icon: History, path: '/signals' },
     { label: 'Risk Settings', icon: Settings, path: '/settings' },
   ];
 

@@ -187,3 +187,36 @@ def test_htf_levels_use_only_past_data():
     names = {x["name"] for x in lv}
     assert "Prev Week High" in names or any(n.startswith("1H Swing") for n in names)
     assert all(x["price"] != today_high or x["name"].startswith("1H") for x in lv)
+
+
+def test_paper_trader_lifecycle(tmp_path, monkeypatch):
+    from backend.engine import trader
+    monkeypatch.setattr(trader, "PAPER_FILE", tmp_path / "paper.json")
+    pt = trader.PaperTrader()
+    settings = {"capital": 100000, "risk_per_trade_pct": 1, "max_trades_per_day": 3, "max_daily_loss_pct": 3}
+    base = {"instrument": {"key": "NIFTY"}, "session": {"is_open": True}, "vix": {"value": 14}, "chain": None,
+            "score": 0.6, "reasons": [{"text": "x"}], "spot_live": 23000.0, "price": 23000.0}
+    opt = {"side": "BUY CE", "symbol_hint": "NIFTY 27 OCT 23000 CE", "strike": 23000, "option_type": "CE",
+           "expiry": "2026-10-27", "quantity": 65, "lots": 1, "premium": 150.0, "premium_source": "model",
+           "premium_stop": 120.0, "premium_target": 210.0, "greeks": {"delta": 0.5}}
+    a = {**base, "generated_at": "2026-10-21T10:00:00+05:30", "verdict": "BUY", "option": opt,
+         "plan": {"direction": 1, "stop": 22950.0, "target": 23100.0}}
+    assert pt.on_analysis(a, settings)["events"][0]["type"] == "paper_entry"
+    b = {**a, "generated_at": "2026-10-21T10:30:00+05:30", "verdict": "NO TRADE", "spot_live": 23110.0, "price": 23110.0}
+    ev = pt.on_analysis(b, settings)["events"][0]
+    assert ev["type"] == "paper_exit" and ev["trade"]["reason"] == "target" and ev["trade"]["pnl"] > 0
+    assert not pt.state["open"]
+    assert pt.summary()["by_strategy"]["Engine"]["trades"] == 1
+
+
+def test_orb_breakout_rules():
+    from backend.engine import orb
+    closes = [23000, 23010, 23020, 23005, 23015, 23010] + [23012, 23015, 23060]  # breakout on the last bar
+    df = make_bars(closes, start="2026-10-21 09:15", spread=5)
+    now = df.index[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    r = orb.evaluate(df, prev_close=22950, now=now)
+    assert r["verdict"] == "BUY" and r["stop"] == pytest.approx(df.iloc[:6].low.min())
+    r2 = orb.evaluate(df, prev_close=23100, now=now)  # breakout, but below yesterday's close -> filtered
+    assert r2["verdict"] == "NO TRADE"
+    early = orb.evaluate(df.iloc[:4], prev_close=22950, now=df.index[3].to_pydatetime())
+    assert early["status"] == "forming"

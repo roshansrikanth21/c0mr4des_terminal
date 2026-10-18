@@ -9,11 +9,13 @@ const defaultLayouts: Record<DashboardTab, Layout> = {
   terminal: [
     { i: 'chart', x: 0, y: 0, w: 8, h: 5 },
     { i: 'verdict', x: 8, y: 0, w: 4, h: 5 },
-    { i: 'reasons', x: 0, y: 5, w: 5, h: 4 },
-    { i: 'option', x: 5, y: 5, w: 3, h: 4 },
-    { i: 'timeline', x: 8, y: 5, w: 4, h: 4 },
-    { i: 'structure', x: 0, y: 9, w: 6, h: 4 },
-    { i: 'news', x: 6, y: 9, w: 6, h: 4 },
+    { i: 'orb', x: 0, y: 5, w: 4, h: 4 },
+    { i: 'option', x: 4, y: 5, w: 4, h: 4 },
+    { i: 'paper', x: 8, y: 5, w: 4, h: 4 },
+    { i: 'reasons', x: 0, y: 9, w: 6, h: 4 },
+    { i: 'timeline', x: 6, y: 9, w: 6, h: 4 },
+    { i: 'structure', x: 0, y: 13, w: 6, h: 4 },
+    { i: 'news', x: 6, y: 13, w: 6, h: 4 },
   ],
   context: [
     { i: 'global', x: 0, y: 0, w: 4, h: 5 },
@@ -51,7 +53,7 @@ export const useDashboardStore = create<DashboardState>()(
       resetLayout: (tab) => set((s) => ({ layouts: tab ? { ...s.layouts, [tab]: defaultLayouts[tab] } : defaultLayouts })),
     }),
     {
-      name: 'dashboard-layout-v3',
+      name: 'dashboard-layout-v5',
       partialize: (s) => ({ layouts: s.layouts, panelScales: s.panelScales }),
     },
   ),

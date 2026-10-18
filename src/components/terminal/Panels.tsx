@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import {
-  ArrowDownRight, ArrowUpRight, Ban, CalendarClock, CircleDot, Clock, ExternalLink, Globe2, Layers, Newspaper,
+  ArrowDownRight, Bot, ArrowUpRight, Ban, CalendarClock, CircleDot, Clock, ExternalLink, Globe2, Layers, Newspaper,
   ShieldAlert, Target, TrendingDown, TrendingUp,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { ago, getJSON, inr, num, signalColor, type Analysis, type NewsItem } from '@/lib/api';
+import { ago, getJSON, inr, num, signalColor, type Analysis, type NewsItem, type PaperSummary } from '@/lib/api';
 
 export function PanelTitle({ icon: Icon, children, right }: { icon: any; children: React.ReactNode; right?: React.ReactNode }) {
   return (
@@ -141,6 +142,7 @@ export function OptionPanel({ a }: { a: Analysis | null }) {
       </div>
       <p className="text-[10px] text-muted-foreground mt-2">Premium: {o.premium_source}. Charges round trip ≈ {inr(o.charges_round_trip)}. Exit everything by {a.session.square_off_by}.</p>
       {o.note && <p className="text-xs text-amber-500 mt-2">{o.note}</p>}
+      <LiveOrderButton a={a} />
     </div>
   );
 }
@@ -308,6 +310,131 @@ export function NewsPanel() {
     <div className="h-full p-4 overflow-y-auto custom-scrollbar">
       <PanelTitle icon={Newspaper}>Market-moving news</PanelTitle>
       <NewsList items={items} compact />
+    </div>
+  );
+}
+
+/* ---------------- PAPER AUTOPILOT ---------------- */
+export function PaperPanel({ a }: { a: Analysis | null }) {
+  const [sum, setSum] = useState<PaperSummary | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => getJSON<PaperSummary>('/api/paper').then((r) => alive && setSum(r)).catch(() => undefined);
+    load();
+    const id = window.setInterval(load, 15000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, [a?.generated_at]);
+  if (!sum) return <Empty />;
+  const opens = sum.open.filter((p) => !a || p.instrument === a.instrument.key);
+  return (
+    <div className="h-full p-4 overflow-y-auto custom-scrollbar">
+      <PanelTitle icon={Bot} right={<span className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">paper · auto</span>}>
+        Autopilot
+      </PanelTitle>
+      <div className="grid grid-cols-3 gap-2">
+        <Stat label="Today P&L" value={inr(sum.today.pnl)} className={sum.today.pnl >= 0 ? 'text-green-500' : 'text-red-500'} />
+        <Stat label="Trades" value={`${sum.today.trades} (${sum.today.wins} won)`} />
+        <Stat label="All-time" value={inr(sum.all_time.pnl)} className={sum.all_time.pnl >= 0 ? 'text-green-500' : 'text-red-500'} />
+      </div>
+      {Object.keys(sum.by_strategy || {}).length > 0 && (
+        <div className="flex gap-3 mt-2 text-[10px] font-mono text-muted-foreground">
+          {Object.entries(sum.by_strategy).map(([k, v]) => (
+            <span key={k}>{k}: <span className={v.pnl >= 0 ? 'text-green-500' : 'text-red-500'}>{inr(v.pnl)}</span> ({v.wins}/{v.trades})</span>
+          ))}
+        </div>
+      )}
+      {opens.length ? opens.map((open) => (
+        <div key={open.slot || open.opened_at} className={cn('mt-3 rounded-md border p-3', open.dir > 0 ? 'border-green-500/40 bg-green-500/5' : 'border-red-500/40 bg-red-500/5')}>
+          <div className="flex justify-between items-center">
+            <span className="text-sm font-black">{open.side} {open.strike} <span className="text-[9px] font-mono text-muted-foreground uppercase">{open.strategy}</span></span>
+            <span className={cn('text-sm font-mono font-bold', (open.unrealized ?? 0) >= 0 ? 'text-green-500' : 'text-red-500')}>{inr(open.unrealized ?? 0)}</span>
+          </div>
+          <div className="text-[10px] font-mono text-muted-foreground mt-1">
+            {open.symbol} · {open.quantity} qty · in {num(open.entry_premium)} → now {num(open.mark)}
+          </div>
+          <div className="text-[10px] font-mono text-muted-foreground">index stop {num(open.index_stop, 0)} · target {num(open.index_target, 0)} · since {new Date(open.opened_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
+        </div>
+      )) : (
+        <p className="text-xs text-muted-foreground mt-3">No open paper position. The autopilot paper-trades three strategies separately (Engine, Opening Range breakout, First-30 rule) and exits on stop, target or 15:15.</p>
+      )}
+      {sum.closed.slice(0, 4).map((t) => (
+        <div key={t.opened_at + t.instrument} className="flex justify-between text-[11px] font-mono mt-1.5">
+          <span className="text-muted-foreground">{new Date(t.opened_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} {t.instrument} {t.side} · {t.strategy} · {t.reason}</span>
+          <span className={(t.pnl ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}>{inr(t.pnl ?? 0)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------- LIVE ORDER (explicit click, server re-checks caps) ---------------- */
+export function LiveOrderButton({ a }: { a: Analysis }) {
+  const [enabled, setEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { getJSON<{ live_trading: boolean; connected: boolean }>('/api/broker/status').then((r) => setEnabled(r.live_trading)).catch(() => undefined); }, []);
+  const o = a.option;
+  if (!enabled || !o || a.verdict === 'NO TRADE' || o.lots < 1) return null;
+  const limit = Math.round(o.premium * 1.01 * 20) / 20;
+  const place = async () => {
+    const msg = `REAL ORDER via Angel One\n\nBUY ${o.lots} lot(s) = ${o.quantity} qty\n${o.symbol_hint}\nLIMIT ₹${limit}\nMax loss ≈ ${inr(o.max_loss)}\n\nYou must manage the exit yourself. Place it?`;
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try {
+      const r = await getJSON<{ ok: boolean; error?: string }>('/api/orders/place', 20000, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: a.instrument.key, expiry: o.expiry, strike: o.strike, option_type: o.option_type, lots: o.lots, side: 'BUY', limit_price: limit, confirm: true }),
+      });
+      r.ok ? toast.success('Order sent to Angel One') : toast.error(r.error || 'Order rejected');
+    } catch (e) { toast.error((e as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <button onClick={place} disabled={busy}
+      className={cn('w-full mt-3 py-2.5 rounded-md text-xs font-mono font-black uppercase tracking-widest border',
+        o.option_type === 'CE' ? 'border-green-500 text-green-500 hover:bg-green-500/10' : 'border-red-500 text-red-500 hover:bg-red-500/10')}>
+      {busy ? 'Sending...' : `Place real order · ${o.lots} lot @ ₹${limit}`}
+    </button>
+  );
+}
+
+
+/* ---------------- OPENING RANGE PLAYBOOK ---------------- */
+export function OrbPanel({ a }: { a: Analysis | null }) {
+  const o = a?.orb;
+  if (!a || !o) return <Empty />;
+  const tone = o.verdict === 'BUY' ? 'text-green-500' : o.verdict === 'SELL' ? 'text-red-500' : 'text-foreground';
+  const pos = o.range_high && o.range_low ? Math.max(0, Math.min(100, ((a.price - o.range_low) / (o.range_high - o.range_low)) * 100)) : null;
+  return (
+    <div className="h-full p-4 overflow-y-auto custom-scrollbar">
+      <PanelTitle icon={Target} right={<span className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">{o.status}</span>}>
+        Opening range playbook
+      </PanelTitle>
+      <div className={cn('text-3xl font-black tracking-tighter', tone)}>{o.verdict}</div>
+      <p className="text-xs leading-relaxed mt-1">{o.text}</p>
+      {o.range_high && o.range_low && (
+        <div className="mt-3">
+          <div className="flex justify-between text-[10px] font-mono text-muted-foreground"><span>Low {num(o.range_low, 0)}</span><span>{num(o.range_points, 0)} pts</span><span>High {num(o.range_high, 0)}</span></div>
+          <div className="relative h-2 mt-1 rounded-full bg-secondary">
+            {pos !== null && <div className="absolute -top-1 w-1 h-4 bg-primary rounded-sm" style={{ left: `calc(${pos}% - 2px)` }} />}
+          </div>
+          {o.prev_close && <div className="text-[10px] font-mono text-muted-foreground mt-1.5">Yesterday's close {num(o.prev_close, 0)} · price is {a.price > o.prev_close ? 'above (only BUY breaks count)' : 'below (only SELL breaks count)'}</div>}
+        </div>
+      )}
+      {o.option && o.verdict !== 'NO TRADE' && (
+        <div className="mt-3 text-xs font-mono">
+          <span className={o.option.option_type === 'CE' ? 'text-green-500' : 'text-red-500'}>{o.option.side} {o.option.strike}</span>
+          {' '}@ ~{inr(o.option.premium, 1)} · {o.option.lots} lot · stop {num(o.stop, 0)} · target {num(o.target, 0)}
+        </div>
+      )}
+      {a.first30 && (
+        <div className="mt-3 border-t border-border pt-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono font-black uppercase tracking-widest">First-30 rule</span>
+            <span className={cn('text-xs font-black', a.first30.verdict === 'BUY' ? 'text-green-500' : a.first30.verdict === 'SELL' ? 'text-red-500' : 'text-muted-foreground')}>{a.first30.verdict}</span>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">{a.first30.text}</p>
+        </div>
+      )}
+      <p className="text-[10px] text-muted-foreground mt-3">Lab (Jul-Oct 2026): breakout NIFTY 56% winners PF 2.6, SENSEX 46% PF 1.7; first-30 rule PF 2.6-2.9 at ~31% winners. Most profit came in the falling Sep-Oct market. On probation.</p>
     </div>
   );
 }

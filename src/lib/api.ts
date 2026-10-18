@@ -48,7 +48,30 @@ export interface Analysis {
   option: OptionPlan | null; pcr: number | null;
   news: { bias: number; count: number; text: string; drivers: { title: string; direction: number; why: string; source: string }[] };
   global: { bias: number; text: string; cues: Cue[] };
-  candles: Candle[]; broker_connected: boolean;
+  candles: Candle[]; broker_connected: boolean; spot_live?: number;
+  orb?: OrbSignal; first30?: OrbSignal;
+  paper?: { events: { type: string; reason?: string; trade?: PaperTrade }[]; open: PaperTrade[] };
+}
+
+export interface OrbSignal {
+  name: string; verdict: Verdict; direction: number; status: string; text: string;
+  range_high?: number; range_low?: number; range_points?: number; prev_close?: number | null;
+  trigger_time?: string; entry?: number; stop?: number; target?: number; option?: OptionPlan | null;
+}
+
+export interface PaperTrade {
+  slot?: string; strategy?: string;
+  instrument: string; dir: number; side: string; symbol: string; strike: number; option_type: 'CE' | 'PE'; expiry: string;
+  quantity: number; lots: number; entry_premium: number; premium_source: string; premium_stop: number; premium_target: number;
+  entry_spot: number; index_stop: number; index_target: number; opened_at: string; score: number; mark?: number;
+  unrealized?: number; closed_at?: string; exit_spot?: number; exit_premium?: number; reason?: string; charges?: number; pnl?: number;
+}
+
+export interface PaperSummary {
+  open: PaperTrade[]; today: { trades: number; pnl: number; wins: number };
+  by_strategy: Record<string, { trades: number; wins: number; pnl: number }>;
+  all_time: { trades: number; pnl: number; wins: number; win_rate: number | null }; closed: PaperTrade[];
+  live_trading_enabled: boolean; broker_connected: boolean;
 }
 
 export async function getJSON<T>(url: string, timeout = 30000, init?: RequestInit): Promise<T> {

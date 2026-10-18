@@ -7,7 +7,7 @@ import threading
 from datetime import date, datetime
 from pathlib import Path
 
-from . import macro, options, timeline
+from . import macro, options, orb, timeline
 from .config import IST, INSTRUMENTS, RISK_DEFAULTS
 from .data import angel, closed_bars, get_candles
 from .news import radar
@@ -68,6 +68,19 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     plan = result["plan"]
     option = options.plan_trade(key, plan["direction"], result["price"], expiry, vix["value"] if vix else None,
                                 plan["risk_points"], plan["target_points"], settings, chain, now)
+    prev = daily[daily.index.date < now.date()]
+    orb_sig = orb.evaluate(df5, float(prev["close"].iloc[-1]) if len(prev) else None, now)
+    if not sess["can_enter"] and orb_sig["verdict"] != "NO TRADE":
+        orb_sig["verdict"] = "NO TRADE"
+    orb_sig["option"] = options.plan_trade(key, orb_sig["direction"], result["price"], expiry, vix["value"] if vix else None,
+                                           orb_sig.get("risk_points") or 0, orb_sig.get("target_points") or 0,
+                                           settings, chain, now) if orb_sig["direction"] else None
+    f30 = orb.first30(df5, now)
+    if not sess["is_open"] and f30["verdict"] != "NO TRADE":
+        f30["verdict"] = "NO TRADE"
+    f30["option"] = options.plan_trade(key, f30["direction"], result["price"], expiry, vix["value"] if vix else None,
+                                       f30.get("risk_points") or 0, f30.get("target_points") or 0,
+                                       settings, chain, now) if f30["direction"] else None
     minutes_left = max(sess["minutes_to_close"], 30)
     em = options.expected_move(result["price"], vix["value"] if vix else None, minutes_left)
 
@@ -88,9 +101,22 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         "session": sess, "vix": vix, "expected_move_rest_of_day": round(em, 1) if em else None,
         **result, "reasons": reasons, "option": option, "pcr": options.pcr(chain), "chain": chain,
         "news": news, "global": cues, "candles": chart_payload(raw5), "broker_connected": angel.api is not None,
+        "spot_live": _spot_ltp(inst) or float(raw5["close"].iloc[-1]), "orb": orb_sig, "first30": f30,
     }
     _log_signal(key, out)
     return out
+
+
+def _spot_ltp(inst) -> float | None:
+    """Freshest spot price: Angel One LTP when connected (real time), else None."""
+    api = angel.api
+    if api is None:
+        return None
+    try:
+        res = api.ltpData(inst.angel_exchange, inst.key if inst.key != "NIFTY" else "Nifty 50", inst.angel_spot_token)
+        return float(res["data"]["ltp"])
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _log_signal(key: str, out: dict) -> None:

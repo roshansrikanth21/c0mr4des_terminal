@@ -19,6 +19,7 @@ from pydantic import BaseModel
 load_dotenv(Path(__file__).with_name(".env"))
 
 from .engine import backtest, macro, service, timeline  # noqa: E402
+from .engine.trader import live_enabled, paper, place_live_order  # noqa: E402
 from .engine.config import INSTRUMENTS  # noqa: E402
 from .engine.data import angel, get_candles  # noqa: E402
 from .engine.news import radar  # noqa: E402
@@ -36,11 +37,37 @@ async def _news_loop():
         await asyncio.sleep(90)
 
 
+LATEST: dict[str, dict] = {}
+LATEST_AT: dict[str, float] = {}
+
+
+async def _analyze_and_trade(key: str) -> dict:
+    a = await asyncio.to_thread(service.analyze, key)
+    a["paper"] = await asyncio.to_thread(paper.on_analysis, a, service.load_settings())
+    LATEST[key], LATEST_AT[key] = a, time.time()
+    for ev in a["paper"]["events"]:
+        log.info("PAPER %s %s", key, ev)
+    return a
+
+
+async def _market_loop():
+    """One engine loop for everyone: refresh both indices, run the paper autopilot, cache for clients."""
+    while True:
+        for key in INSTRUMENTS:
+            try:
+                await _analyze_and_trade(key)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("analysis failed for %s: %s", key, exc)
+        open_now = timeline.session(key="NIFTY")["is_open"]
+        await asyncio.sleep(15 if open_now else 300)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    task = asyncio.create_task(_news_loop())
+    tasks = [asyncio.create_task(_news_loop()), asyncio.create_task(_market_loop())]
     yield
-    task.cancel()
+    for t in tasks:
+        t.cancel()
 
 
 app = FastAPI(title="C0MR4DE Terminal", version="2.0", lifespan=lifespan)
@@ -64,10 +91,45 @@ def health():
 
 @app.get("/api/signal")
 async def signal(symbol: str = "NIFTY"):
+    key = _sym(symbol)
+    if key in LATEST and time.time() - LATEST_AT[key] < 20:
+        return LATEST[key]
     try:
-        return await asyncio.to_thread(service.analyze, _sym(symbol))
+        return await _analyze_and_trade(key)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@app.get("/api/paper")
+def paper_summary():
+    return paper.summary()
+
+
+@app.post("/api/paper/reset")
+def paper_reset():
+    paper.reset()
+    return paper.summary()
+
+
+class OrderReq(BaseModel):
+    symbol: str
+    expiry: str
+    strike: float
+    option_type: str
+    lots: int
+    side: str = "BUY"
+    limit_price: float
+    confirm: bool = False
+
+
+@app.post("/api/orders/place")
+def place_order(req: OrderReq):
+    if not req.confirm:
+        raise HTTPException(400, "Order not confirmed.")
+    if req.option_type not in ("CE", "PE") or req.side not in ("BUY", "SELL"):
+        raise HTTPException(400, "Bad order parameters.")
+    return place_live_order(_sym(req.symbol), req.expiry, req.strike, req.option_type, req.lots, req.side,
+                            req.limit_price, service.load_settings())
 
 
 @app.get("/api/candles")
@@ -137,7 +199,7 @@ def signals_log(limit: int = 100):
 
 @app.get("/api/broker/status")
 def broker_status():
-    return {"configured": angel.configured(), "connected": angel.api is not None,
+    return {"configured": angel.configured(), "connected": angel.api is not None, "live_trading": live_enabled(),
             "note": "Read-only market data. This app never places orders." if angel.configured()
             else "Add ANGEL_API_KEY, ANGEL_CLIENT_ID, ANGEL_PASSWORD (MPIN) and ANGEL_TOTP_KEY to backend/.env "
                  "for real-time candles and live option prices. Without it, data comes from Yahoo (delayed)."}
@@ -147,14 +209,12 @@ def broker_status():
 async def ws(socket: WebSocket, symbol: str = "NIFTY"):
     await socket.accept()
     key = _sym(symbol)
+    sent = 0.0
     try:
         while True:
-            try:
-                data = await asyncio.to_thread(service.analyze, key)
-                await socket.send_json({"type": "signal", "data": data})
-            except RuntimeError as exc:
-                await socket.send_json({"type": "error", "message": str(exc)})
-            sess = timeline.session(key=key)
-            await asyncio.sleep(15 if sess["is_open"] else 120)
+            if LATEST_AT.get(key, 0) > sent:
+                sent = LATEST_AT[key]
+                await socket.send_json({"type": "signal", "data": LATEST[key]})
+            await asyncio.sleep(2)
     except (WebSocketDisconnect, RuntimeError):
         return

@@ -64,6 +64,30 @@ Multi-timeframe highs and lows (previous week, daily swings, 1-hour swings) impr
 to +₹2,010, and SENSEX went from −₹8,167 to +₹292 with its drawdown roughly halved. **That is break-even, not an edge**,
 and 50 trades is too few to prove anything. Watch the Signal Log in a live market before you trade size.
 
+## Live test checklist (prototype)
+
+1. Rotate your Angel One credentials (the old ones leaked), then put the NEW ones in `backend/.env` (see `.env.example`).
+   Without them everything still works on Yahoo's delayed data.
+2. Run `start.bat` before 09:15. Leave it running all session.
+3. The **Autopilot** paper-trades three strategies separately, at live prices, with all charges:
+   - **Engine**: the full candle/structure/trend/news model (up to 3 trades/day)
+   - **Opening Range**: first 5-minute close outside the 09:15-09:45 range, with yesterday's close as a filter (1/day)
+   - **First-30**: your rule. The first 30 minutes went up = BUY, down = SELL, stop at mid-range, hold to 15:15 (1/day)
+4. After 15:30 open **Trade Journal** for each trade (entry, exit, why, charges, P&L) and the per-strategy scoreboard.
+5. Real orders stay off unless you set `LIVE_TRADING=true`. Even then, it's one confirmed click per order and you manage exits.
+
+Strategy lab (real 5m data, Jul to Oct 2026, 1 lot, modelled option premiums plus costs):
+
+| Strategy | NIFTY net / win% | SENSEX net / win% |
+|---|---|---|
+| Opening Range breakout + prev-close filter | +₹53.4k / 56% | +₹30.3k / 46% |
+| First-30 direction, stop at mid-range | +₹48.5k / 31% | +₹57.3k / 31% |
+| First-30 direction, stop at range | +₹35.4k / 39% | +₹44.5k / 40% |
+| Engine | +₹5.6k / 42% | +₹5.1k / 41% |
+| Engine, SELL-only | +₹0.9k / 38% | - |
+
+Most of the profit came in the falling Sep-Oct half, and sells carried it. Treat these rules as on probation.
+
 ## Layout
 
 ```
