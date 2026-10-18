@@ -1,17 +1,13 @@
 import React from 'react';
-import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
 import {
   LayoutDashboard,
   History,
   Settings,
-  LogOut,
   ShieldCheck,
   Menu,
   X,
   PlaySquare,
-  RadioTower,
-  DatabaseZap,
   Radio,
   Sun,
   Moon
@@ -24,7 +20,6 @@ interface ShellProps {
 }
 
 export function Shell({ children }: ShellProps) {
-  const { user, logout } = useAuth();
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
   const [theme, setTheme] = React.useState<'light' | 'dark'>(() => {
@@ -44,11 +39,9 @@ export function Shell({ children }: ShellProps) {
 
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
-    { label: 'Social Radar', icon: Radio, path: '/social-radar' },
+    { label: 'News Radar', icon: Radio, path: '/news' },
     { label: 'Backtest', icon: PlaySquare, path: '/backtest' },
-    { label: 'Live Ops', icon: RadioTower, path: '/live-ops' },
-    { label: 'Memory Lab', icon: DatabaseZap, path: '/memory-lab' },
-    { label: 'History', icon: History, path: '/history' },
+    { label: 'Signal Log', icon: History, path: '/signals' },
     { label: 'Risk Settings', icon: Settings, path: '/settings' },
   ];
 
@@ -85,23 +78,12 @@ export function Shell({ children }: ShellProps) {
         </nav>
 
         <div className="p-6 border-t border-border">
-          <div className="border border-border p-3 mb-4 rounded-md flex items-center bg-accent/30">
-            <div className="w-8 h-8 rounded-md bg-primary/10 flex items-center justify-center text-primary font-bold text-xs border border-border">
-              {user?.email?.charAt(0).toUpperCase()}
-            </div>
-            <div className="ml-3 overflow-hidden">
-              <p className="text-[10px] font-mono font-bold truncate">{user?.email}</p>
-              <p className="text-[9px] text-muted-foreground uppercase tracking-widest leading-none mt-1">Operator</p>
-            </div>
+          <div className="border border-border p-3 rounded-md bg-accent/30">
+            <p className="text-[10px] font-mono font-bold uppercase tracking-widest">Decision support</p>
+            <p className="text-[9px] text-muted-foreground leading-relaxed mt-1">
+              Signals are probabilities, not promises. You place every order yourself. Not financial advice.
+            </p>
           </div>
-          <Button
-            variant="ghost"
-            className="w-full justify-start text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all rounded-md"
-            onClick={logout}
-          >
-            <LogOut className="w-4 h-4 mr-2" />
-            <span className="text-xs font-bold font-mono uppercase tracking-widest">Logout</span>
-          </Button>
         </div>
       </aside>
 
@@ -135,14 +117,6 @@ export function Shell({ children }: ShellProps) {
                 <span className="text-xs font-bold tracking-tight uppercase font-mono">{item.label}</span>
               </Link>
             ))}
-            <Button
-              variant="ghost"
-              className="w-full justify-start text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-all rounded-md"
-              onClick={logout}
-            >
-              <LogOut className="w-4 h-4 mr-2" />
-              <span className="text-xs font-bold font-mono uppercase tracking-widest">Logout</span>
-            </Button>
           </nav>
         </div>
       )}

@@ -1,43 +1,65 @@
-# AI Market Analyser - Institutional Trading System
+# C0MR4DE Terminal
 
-Professional-grade market analysis platform for Indian Equities and Options, featuring institutional quant models, ICT Smart Money concepts, and AI-driven visual analysis.
+Intraday decision support for **NIFTY 50 and SENSEX index options**. It reads live candles,
+understands candle structure, patterns, market structure, trend, time of day and expiry, scans
+news and social feeds for anything that moves Indian indices, and ends with one word:
 
-## 🚀 Quick Start (Windows)
+- **BUY**: buy a Call (CE)
+- **SELL**: buy a Put (PE)
+- **NO TRADE**: the evidence is mixed or the setup isn't there; it still shows which way it leans
 
-1. **Setup Core**:
-   ```bash
-   # Create virtual environment if needed
-   python -m venv .venv
-   .venv\Scripts\activate
-   pip install -r backend/requirements.txt
-   npm install
-   ```
+Every conclusion comes with the reasons in plain English, a trade plan (strike, premium stop and target,
+index stop and target, lots sized to your risk) and the reasons it would refuse to trade.
 
-2. **Configure**:
-   Add your `GEMINI_API_KEY` to `backend/.env`.
+> Decision support, not financial advice. It never places orders. You do.
 
-3. **Launch**:
-   Double-click `run_system.bat` to start the Backend, Frontend, and Live Assistant.
+## Run it
 
-## 📊 System Components
+```bat
+start.bat
+```
 
-- **Backend API (Port 8000)**: FastAPI server with OU Process, MST, and ICT logic.
-- **Frontend Dashboard (Port 3000)**: React interface with real-time charts and signals.
-- **Live Trading Assistant**: Background market monitor and signal generator.
-- **Institutional Quant Engine**: Wasserstein Drift, Monte Carlo, and Bayesian Inference.
+Or by hand:
 
-## 📱 Access Points
+```bash
+python -m venv .venv && .venv\Scripts\pip install -r backend\requirements.txt
+.venv\Scripts\python -m uvicorn backend.app:app --port 8100
+npm install && npm run dev        # http://localhost:5173
+```
 
-- **Dashboard**: [http://localhost:3000](http://localhost:3000)
-- **API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+Data comes from **Yahoo Finance** by default, delayed by a few minutes. For real-time candles and live option
+premiums and OI, copy `backend/.env.example` to `backend/.env` and add your Angel One SmartAPI keys.
 
-## 🔧 Features Verified
+## How it decides
 
-- [x] **ICT/SMC Engine**: FVG, Order Blocks, BOS detection.
-- [x] **Quant Core**: Wasserstein Regime Shifts, Entropy, A-Vol.
-- [x] **Robust Data**: yfinance MultiIndex handling and 7-day retry logic.
-- [x] **Dark Mode**: Persistent theme toggle in the UI.
-- [x] **Broker Ready**: Angel One integration layer implemented.
+| Factor | Weight | What it looks at |
+|---|---|---|
+| Trend (15m) | 2.5 | 20/50 EMA, Supertrend, ADX strength, +DI/-DI |
+| Structure (5m) | 2.0 | Confirmed swings, HH/HL vs LH/LL, break of structure / change of character |
+| Momentum (5m) | 1.5 | Wilder RSI, 9/21 EMA, regression slope and its R² |
+| Candles | 1.5 | 18 patterns, counted only with the right prior trend and boosted at support/resistance |
+| Levels | 1.0 | Previous day H/L/C, CPR, 15-min opening range, swing zones, round numbers |
+| News | 0.75 | Keyword-scored headlines with recency decay; social posts weighted at 40% |
+| Global cues | 0.5 | S&P/Nasdaq futures, Nikkei, Hang Seng, Brent, USD/INR, DXY, US 10Y, gold |
 
----
-*For detailed backtesting or docker deployment, see the source code scripts or docker-compose.yml.*
+**Gates (anything here forces NO TRADE):** outside 09:30–15:00, score below threshold (stricter at midday and on expiry afternoon), trading against the 15m trend, no trend and no breakout, no fresh trigger candle, price stretched more than 1.5 ATR from the 9 EMA, or reward:risk below 1.5.
+
+Constants (Oct 2026): NIFTY lot 65, strike step 50, weekly expiry **Tuesday**; SENSEX lot 20, step 100,
+expiry **Thursday**. When expiry falls on a holiday, it moves to the previous trading day. The 2026
+holidays are in `backend/engine/config.py`. Check the lot sizes every quarter.
+
+## Honest numbers
+
+`/backtest` replays the exact live engine bar by bar on the last ~60 days of real 5-minute data, with
+next-bar fills, full charges and slippage. On the data it was built with, NIFTY came out roughly
+break-even to slightly positive and SENSEX slightly negative. **That is not an edge yet.** Watch the
+Signal Log for a few weeks of live market before you trade real size.
+
+## Layout
+
+```
+backend/app.py          FastAPI: /api/signal, /api/candles, /api/news, /api/global, /api/backtest, /ws
+backend/engine/         config, data, indicators, candles, structure, timeline, options, news, macro, signal, backtest
+backend/tests/          offline tests (pytest)
+src/                    React UI: Dashboard, News Radar, Backtest, Signal Log, Risk Settings
+```

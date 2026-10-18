@@ -210,17 +210,3 @@
     transform: translateY(0);
   }
 }
-
-/* Aggressive Blink Branding Removal */
-#blink-badge,
-.blink-badge,
-a[href*="blink.new"],
-iframe[src*="blink"],
-div[style*="fixed"]>a[href*="blink"],
-div[style*="absolute"]>a[href*="blink"] {
-  display: none !important;
-  visibility: hidden !important;
-  opacity: 0 !important;
-  pointer-events: none !important;
-  z-index: -9999 !important;
-}
