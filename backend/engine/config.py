@@ -57,9 +57,10 @@ CHARGES = {
 }
 
 # Risk defaults (overridable from the Settings page)
+# Small-account defaults (Rs 10k): one NIFTY lot costs ~Rs 7k, an average loss is ~Rs 1.7k (17%).
 RISK_DEFAULTS = {
-    "capital": 100000.0,
-    "risk_per_trade_pct": 1.0,
-    "max_trades_per_day": 3,
-    "max_daily_loss_pct": 3.0,
+    "capital": 10000.0,
+    "risk_per_trade_pct": 25.0,
+    "max_trades_per_day": 2,
+    "max_daily_loss_pct": 25.0,
 }

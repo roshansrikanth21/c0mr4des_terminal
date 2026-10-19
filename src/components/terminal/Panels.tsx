@@ -60,6 +60,12 @@ export function VerdictPanel({ a }: { a: Analysis | null }) {
           style={{ width: `${Math.min(50, Math.abs(a.score) * 50)}%` }} />
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">{a.summary}</p>
+      {a.shock?.active && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 space-y-1.5">
+          <div className="text-[10px] font-mono font-black uppercase tracking-widest text-amber-500">Shock mode · {a.shock.reasons.join(' · ')}</div>
+          {a.shock.playbook.map((t) => <p key={t} className="text-xs leading-snug">{t}</p>)}
+        </div>
+      )}
       {a.gates.length > 0 && (
         <div className="space-y-1.5">
           <div className="text-[9px] font-mono uppercase tracking-widest text-amber-500">Why not trading</div>
@@ -355,7 +361,7 @@ export function PaperPanel({ a }: { a: Analysis | null }) {
           <div className="text-[10px] font-mono text-muted-foreground">index stop {num(open.index_stop, 0)} · target {num(open.index_target, 0)} · since {new Date(open.opened_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
         </div>
       )) : (
-        <p className="text-xs text-muted-foreground mt-3">No open paper position. The autopilot paper-trades three strategies separately (Engine, Opening Range breakout, First-30 rule) and exits on stop, target or 15:15.</p>
+        <p className="text-xs text-muted-foreground mt-3">No open paper position. The autopilot paper-trades three strategies separately (First-Hour breakout = main, Engine, First-30) and exits on stop, target or 15:15.</p>
       )}
       {sum.closed.slice(0, 4).map((t) => (
         <div key={t.opened_at + t.instrument} className="flex justify-between text-[11px] font-mono mt-1.5">
@@ -406,7 +412,7 @@ export function OrbPanel({ a }: { a: Analysis | null }) {
   return (
     <div className="h-full p-4 overflow-y-auto custom-scrollbar">
       <PanelTitle icon={Target} right={<span className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">{o.status}</span>}>
-        Opening range playbook
+        First-hour breakout
       </PanelTitle>
       <div className={cn('text-3xl font-black tracking-tighter', tone)}>{o.verdict}</div>
       <p className="text-xs leading-relaxed mt-1">{o.text}</p>
@@ -434,7 +440,7 @@ export function OrbPanel({ a }: { a: Analysis | null }) {
           <p className="text-xs text-muted-foreground mt-1">{a.first30.text}</p>
         </div>
       )}
-      <p className="text-[10px] text-muted-foreground mt-3">Lab (Jul-Oct 2026): breakout NIFTY 56% winners PF 2.6, SENSEX 46% PF 1.7; first-30 rule PF 2.6-2.9 at ~31% winners. Most profit came in the falling Sep-Oct market. On probation.</p>
+      <p className="text-[10px] text-muted-foreground mt-3">Evidence: 2 years of NIFTY (Nov 2023 - Oct 2026), 549 trades, 44% winners, profit factor 1.41, profitable in 11 of 13 quarters (modelled premiums). Without expiry days PF 1.15. The First-30 rule is weaker (PF 1.11) and is kept only for comparison.</p>
     </div>
   );
 }

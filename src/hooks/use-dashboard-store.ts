@@ -53,7 +53,7 @@ export const useDashboardStore = create<DashboardState>()(
       resetLayout: (tab) => set((s) => ({ layouts: tab ? { ...s.layouts, [tab]: defaultLayouts[tab] } : defaultLayouts })),
     }),
     {
-      name: 'dashboard-layout-v5',
+      name: 'dashboard-layout-v6',
       partialize: (s) => ({ layouts: s.layouts, panelScales: s.panelScales }),
     },
   ),

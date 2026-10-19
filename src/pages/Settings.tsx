@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { getJSON, inr } from '@/lib/api';
 import { setTheme, setViewMode, useAppearance } from '@/lib/appearance';
 
-interface Risk { capital: number; risk_per_trade_pct: number; max_trades_per_day: number; max_daily_loss_pct: number }
+interface Risk { capital: number; risk_per_trade_pct: number; max_trades_per_day: number; max_daily_loss_pct: number; autopilot_instruments?: string[] }
 interface Broker { configured: boolean; connected: boolean; note: string }
 
 const FIELDS: [keyof Risk, string, string][] = [
@@ -58,6 +58,10 @@ export function Settings() {
                 className="h-10 px-3 rounded-md border border-input bg-transparent font-mono text-sm" />
             </div>
           ))}
+          <Choice label="Autopilot trades" help="With a small account, trade one index. NIFTY has the best 2-year record and cheaper lots."
+            value={(risk.autopilot_instruments || ['NIFTY']).join('+')}
+            options={[['NIFTY', 'NIFTY only'], ['SENSEX', 'SENSEX only'], ['NIFTY+SENSEX', 'Both']]}
+            onChange={(v) => setRisk({ ...risk, autopilot_instruments: v.split('+') })} />
           <div className="text-xs text-muted-foreground font-mono">
             Max risk per trade: {inr(risk.capital * risk.risk_per_trade_pct / 100)} · daily stop: {inr(risk.capital * risk.max_daily_loss_pct / 100)}
           </div>

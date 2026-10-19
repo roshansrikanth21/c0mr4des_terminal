@@ -64,6 +64,21 @@ Multi-timeframe highs and lows (previous week, daily swings, 1-hour swings) impr
 to +₹2,010, and SENSEX went from −₹8,167 to +₹292 with its drawdown roughly halved. **That is break-even, not an edge**,
 and 50 trades is too few to prove anything. Watch the Signal Log in a live market before you trade size.
 
+## 2-year evidence (what the live autopilot trades)
+
+Tested on real hourly NIFTY/SENSEX bars, Nov 2023 to Oct 2026, 1 lot. Option premiums are modelled from real index moves, real India VIX and real time to expiry (theta included), with slippage and full charges.
+
+| Strategy | NIFTY | SENSEX |
+|---|---|---|
+| **First-hour breakout, 2R** (main) | 549 trades, 44% won, PF 1.41, **+₹2.07L**, 11/13 quarters up | PF 1.32, +₹1.71L, 12/13 quarters up |
+| First-hour direction (the First-30 idea at 1 hour) | PF 1.11, +₹66k, drawdown −₹85k | PF 1.17 |
+| 5 EMA (Power of Stocks), 60 days | sell-only PF 1.26, both sides PF 0.98 | sell-only PF 1.13 |
+| TJR sweep → BOS → FVG, 60 days | 14 trades, PF 1.68 | PF 0.29 (loses) |
+
+Caveat: about 70% of the first-hour profit came on expiry days, where modelled premiums are least reliable. Without expiry days NIFTY is PF 1.15 (+₹65k). With ₹10k, one lot is ~70% of the account and the worst historical drawdown (−₹28.7k) is about 3x the account.
+
+Shock days (NIFTY daily 2008-2026): after India VIX jumps 15%+ in a day, NIFTY rose the next day 60% of the time. After −3% days it was higher 20 days later 64% of the time. The app shows a Shock-mode playbook on those days.
+
 ## Live test checklist (prototype)
 
 1. Rotate your Angel One credentials (the old ones leaked), then put the NEW ones in `backend/.env` (see `.env.example`).

@@ -70,10 +70,12 @@ class PaperTrader:
         """Run every strategy in its own paper slot so they can be compared live."""
         key = a["instrument"]["key"]
         events = []
+        if key not in settings.get("autopilot_instruments", ["NIFTY"]):
+            return {"events": [], "open": []}
         events += self._process(f"{key}|engine", "Engine", a.get("verdict"), a.get("option"), a.get("plan"), a, settings,
                                 settings["max_trades_per_day"])
         orb = a.get("orb") or {}
-        events += self._process(f"{key}|orb", "Opening Range", orb.get("verdict"), orb.get("option"),
+        events += self._process(f"{key}|orb", "First-Hour", orb.get("verdict"), orb.get("option"),
                                 {"direction": orb.get("direction", 0), "stop": orb.get("stop"), "target": orb.get("target")},
                                 a, settings, 1)
         f30 = a.get("first30") or {}

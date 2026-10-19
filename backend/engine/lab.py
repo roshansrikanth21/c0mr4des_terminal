@@ -184,6 +184,55 @@ def tjr_sweep(day, ctx, rr=2.0, max_trades=2, wait=6):
     return out
 
 
+def five_ema(day, ctx, rr=3.0, max_trades=3, sell_only=False):
+    """Power of Stocks (Subasish Pani) 5 EMA method, as publicly taught.
+    SELL (5m): alert candle entirely ABOVE the 5 EMA (low > EMA). A later candle breaking the alert
+    candle's low triggers the sell; if another candle stays fully above the EMA first, it becomes the new alert.
+    Stop = alert high, target = rr x risk.
+    BUY (15m): alert candle entirely BELOW the 5 EMA (high < EMA); break of its high = buy; stop = alert low.
+    """
+    end = ctx["day_start"] + len(day)
+    hist = ctx["hist"].iloc[max(0, end - 600):end]
+    ema5 = hist["close"].ewm(span=5, adjust=False).mean().reindex(day.index)
+    out, busy = [], -1
+    alert = None
+    for i in range(len(day) - 1):
+        t = day.index[i].time()
+        if alert and i > alert["i"] and day.low.iloc[i] < alert["low"] and T930 <= t < T1500 and i > busy:
+            risk = alert["high"] - alert["low"]
+            fill = min(alert["low"], float(day.open.iloc[i]))
+            out.append({"i": i, "fill": fill, "dir": -1, "stop": alert["high"], "target": fill - rr * risk})
+            busy = i + 3
+            alert = None
+            if len(out) >= max_trades:
+                return out
+            continue
+        if day.low.iloc[i] > ema5.iloc[i]:
+            alert = {"i": i, "high": float(day.high.iloc[i]), "low": float(day.low.iloc[i])}
+    if sell_only:
+        return out
+    # BUY side on 15-minute candles
+    h15 = hist.resample("15min").agg({"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+    e15 = h15["close"].ewm(span=5, adjust=False).mean()
+    d15 = h15[h15.index.date == day.index[0].date()]
+    balert = None
+    for ts, b in d15.iterrows():
+        if balert is not None:
+            # trigger on any 5m bar after the alert 15m candle closes that breaks its high
+            later = day[(day.index >= ts) & (day.index < ts + pd.Timedelta(minutes=15))]
+            hit = later[later.high > balert["high"]]
+            if len(hit) and T930 <= hit.index[0].time() < T1500 and len(out) < max_trades:
+                i = day.index.get_loc(hit.index[0])
+                risk = balert["high"] - balert["low"]
+                fill = max(balert["high"], float(day.open.iloc[i]))
+                out.append({"i": i, "fill": fill, "dir": 1, "stop": balert["low"], "target": fill + rr * risk})
+                balert = None
+                continue
+        if b.high < e15.loc[ts]:
+            balert = {"high": float(b.high), "low": float(b.low)}
+    return out
+
+
 def first30_plus_engine(day, ctx, **kw):
     """Engine trades only in the direction the first 30 minutes chose."""
     f = first30_direction(day, ctx)

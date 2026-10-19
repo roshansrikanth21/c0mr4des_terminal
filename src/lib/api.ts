@@ -50,6 +50,7 @@ export interface Analysis {
   global: { bias: number; text: string; cues: Cue[] };
   candles: Candle[]; broker_connected: boolean; spot_live?: number;
   orb?: OrbSignal; first30?: OrbSignal;
+  shock?: { active: boolean; reasons: string[]; playbook: string[] } | null;
   paper?: { events: { type: string; reason?: string; trade?: PaperTrade }[]; open: PaperTrade[] };
 }
 

@@ -1,12 +1,17 @@
-"""Opening Range Playbook (best performer in the strategy lab on real NIFTY data).
+"""Opening Range Playbook - FIRST-HOUR breakout (the best-validated rule in this project).
 
 Rules:
-1. 09:15-09:45 builds the opening range (high/low of the first 30 minutes).
-2. After 09:45, the first 5-minute CLOSE above the range high = BUY (CE); below the low = SELL (PE).
-3. Filter: only BUY if price is above yesterday's close, only SELL if below it (trade with the day's side).
-4. Stop: the opposite side of the range. Target: 1.5x the risk. Exit by 15:15 regardless.
+1. 09:15-10:15 builds the first-hour range.
+2. After 10:15, the first 5-minute CLOSE above the range high = BUY (CE); below the low = SELL (PE).
+3. Filter: only BUY above yesterday's close, only SELL below it (trade with the day's side).
+4. Stop: the opposite side of the range. Target: 2x the risk. Exit by 15:15 regardless.
 5. One trade per day. No new entry after 15:00.
-Lab result (Jul-Oct 2026, 1 lot NIFTY, modelled option premiums + costs): 48 trades, 56% winners, PF 2.6.
+
+Evidence (modelled option premiums from real index + real India VIX, theta, slippage, charges, 1 lot):
+- NIFTY, 2 years of hourly bars (Nov 2023 - Oct 2026): 549 trades, 44% winners, PF 1.41, +Rs 2.07L,
+  profitable in 11 of 13 quarters; excluding expiry days PF 1.15 (+Rs 65k).
+- SENSEX same period: PF 1.32, profitable in 12 of 13 quarters.
+- NIFTY 5-minute bars, last 60 days: 51 trades, 49% winners, PF 2.1.
 """
 from __future__ import annotations
 
@@ -14,23 +19,23 @@ from datetime import datetime, time
 
 import pandas as pd
 
-RR = 1.5
-T945, T1500 = time(9, 45), time(15, 0)
+RR = 2.0
+T945, T1015, T1500 = time(9, 45), time(10, 15), time(15, 0)
 
 
 def evaluate(df5: pd.DataFrame, prev_close: float | None, now: datetime) -> dict:
     today = now.date()
     day = df5[df5.index.date == today]
-    base = {"name": "Opening Range Playbook", "verdict": "NO TRADE", "direction": 0}
+    base = {"name": "First-Hour Breakout", "verdict": "NO TRADE", "direction": 0}
     if day.empty:
-        return {**base, "status": "waiting", "text": "Waiting for today's open. The opening range forms 09:15-09:45."}
-    first = day[day.index.time < T945]
+        return {**base, "status": "waiting", "text": "Waiting for today's open. The first-hour range forms 09:15-10:15."}
+    first = day[day.index.time < T1015]
     hi, lo = float(first.high.max()), float(first.low.min())
     info = {"range_high": hi, "range_low": lo, "range_points": round(hi - lo, 2), "prev_close": prev_close}
-    if now.time() < T945 or len(first) < 6:
+    if now.time() < T1015 or len(first) < 12:
         return {**base, **info, "status": "forming",
-                "text": f"Opening range is forming: {lo:.0f}-{hi:.0f} so far. Don't trade the first 30 minutes; let it settle."}
-    after = day[day.index.time >= T945]
+                "text": f"First-hour range is forming: {lo:.0f}-{hi:.0f} so far. No breakout trades before 10:15."}
+    after = day[day.index.time >= T1015]
     for ts, bar in after.iterrows():
         c = float(bar.close)
         d = 1 if c > hi else -1 if c < lo else 0
@@ -49,14 +54,14 @@ def evaluate(df5: pd.DataFrame, prev_close: float | None, now: datetime) -> dict
                 "verdict": ("BUY" if d > 0 else "SELL") if live else "NO TRADE", "direction": d,
                 "trigger_time": ts.isoformat(), "entry": c, "stop": stop, "target": target, "risk_points": risk,
                 "target_points": RR * risk,
-                "text": (f"{'NOW: ' if live else ''}Price closed {word} of the opening range at {ts.strftime('%H:%M')} "
+                "text": (f"{'NOW: ' if live else ''}Price closed {word} of the first-hour range at {ts.strftime('%H:%M')} "
                          f"({c:.0f}), on the {'right' if side_ok else 'wrong'} side of yesterday's close. "
-                         f"Stop {stop:.0f} (other side of the range), target {target:.0f} (1.5x risk)."
+                         f"Stop {stop:.0f} (other side of the range), target {target:.0f} (2x risk)."
                          + ("" if live else " Today's one trade has already triggered."))}
     last = float(day.close.iloc[-1])
     where = "inside" if lo <= last <= hi else "outside (but against yesterday's close)"
     return {**base, **info, "status": "waiting" if now.time() < T1500 else "done",
-            "text": (f"Opening range {lo:.0f}-{hi:.0f} ({hi - lo:.0f} pts). Price {last:.0f} is {where}. "
+            "text": (f"First-hour range {lo:.0f}-{hi:.0f} ({hi - lo:.0f} pts). Price {last:.0f} is {where}. "
                      + ("Waiting for a 5-minute close outside the range." if now.time() < T1500 else "No breakout today - no trade."))}
 
 
