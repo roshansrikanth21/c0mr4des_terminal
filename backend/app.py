@@ -57,15 +57,24 @@ async def _analyze_and_trade(key: str) -> dict:
     return a
 
 
-_sent: set[str] = set()
+_SENT_FILE = Path(__file__).resolve().parents[1] / "data" / "alerts_sent.json"
 
 
 def _once(tag: str) -> bool:
-    """True the first time a tag is seen today (alerts fire once per day)."""
-    t = f"{datetime.now(IST).date()}|{tag}"
-    if t in _sent:
+    """True the first time a tag is seen today. Persisted, so restarts don't repeat alerts."""
+    import json
+    today = str(datetime.now(IST).date())
+    try:
+        sent = json.loads(_SENT_FILE.read_text())
+    except Exception:  # noqa: BLE001
+        sent = {}
+    sent = {k: v for k, v in sent.items() if k == today}  # keep only today's tags
+    tags = set(sent.get(today, []))
+    if tag in tags:
         return False
-    _sent.add(t)
+    tags.add(tag)
+    _SENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _SENT_FILE.write_text(json.dumps({today: sorted(tags)}))
     return True
 
 
