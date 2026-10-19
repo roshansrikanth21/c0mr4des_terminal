@@ -19,7 +19,9 @@ from pydantic import BaseModel
 load_dotenv(Path(__file__).with_name(".env"))
 
 from .engine import backtest, macro, service, timeline  # noqa: E402
-from .engine.trader import live_enabled, paper, place_live_order  # noqa: E402
+from .engine.trader import live_enabled, paper, place_live_order, replay_paper  # noqa: E402
+from .engine import replay  # noqa: E402
+from datetime import date as _date  # noqa: E402
 from .engine import notify  # noqa: E402
 from .engine.config import IST  # noqa: E402
 from datetime import datetime  # noqa: E402
@@ -44,15 +46,20 @@ LATEST: dict[str, dict] = {}
 LATEST_AT: dict[str, float] = {}
 
 
+def book():
+    """Replay trades go to their own paper book so the real paper record stays clean."""
+    return replay_paper if replay.active() else paper
+
+
 async def _analyze_and_trade(key: str) -> dict:
     a = await asyncio.to_thread(service.analyze, key)
-    a["paper"] = await asyncio.to_thread(paper.on_analysis, a, service.load_settings())
+    a["paper"] = await asyncio.to_thread(book().on_analysis, a, service.load_settings())
     LATEST[key], LATEST_AT[key] = a, time.time()
     for ev in a["paper"]["events"]:
         log.info("PAPER %s %s", key, ev)
         msg = notify.fmt_event(ev)
         if msg:
-            notify.send(msg)
+            notify.send(("[REPLAY " + replay.status()["day"] + "] " if replay.active() else "") + msg)
     _maybe_alert_shock(key, a)
     return a
 
@@ -80,11 +87,25 @@ def _once(tag: str) -> bool:
 
 def _maybe_alert_shock(key: str, a: dict) -> None:
     sh = a.get("shock")
-    if sh and sh.get("active") and a["session"]["is_open"] and _once(f"shock|{key}"):
+    if sh and sh.get("active") and a["session"]["is_open"] and not replay.active() and _once(f"shock|{key}"):
         notify.send(f"SHOCK MODE {key}: " + "; ".join(sh["reasons"]) + "\n" + "\n".join("- " + p for p in sh["playbook"][:3]))
 
 
+def _maybe_replay_summary() -> None:
+    st = replay.status()
+    if not st.get("finished") or not _once(f"replay|{st['day']}|{st['speed']}"):
+        return
+    d = _date.fromisoformat(st["day"])
+    s = replay_paper.summary(day=d)
+    lines = [f"[REPLAY {st['day']}] finished: {s['today']['trades']} trade(s), P&L Rs {s['today']['pnl']:,.0f}"]
+    for t in reversed([t for t in s["closed"] if t["opened_at"][:10] == st["day"]]):
+        lines.append(f"- {t['strategy']}: {t['side']} {t['strike']} {t['reason']} Rs {t['pnl']:,.0f}")
+    notify.send("\n".join(lines))
+
+
 def _maybe_daily_summary() -> None:
+    if replay.active():
+        return _maybe_replay_summary()
     now = datetime.now(IST)
     sess = timeline.session(now, "NIFTY")
     if not sess["is_trading_day"] or now.hour * 60 + now.minute < 15 * 60 + 35 or not _once("summary"):
@@ -110,6 +131,12 @@ async def _market_loop():
             except Exception as exc:  # noqa: BLE001
                 log.warning("analysis failed for %s: %s", key, exc)
         _maybe_daily_summary()
+        if replay.active():
+            if replay.finished():  # summary already sent above; hand control back to the live market
+                replay.stop()
+                LATEST.clear(); LATEST_AT.clear()
+            await asyncio.sleep(2)
+            continue
         now = datetime.now(IST)
         open_now = timeline.session(now, "NIFTY")["is_open"]
         near_open = now.hour == 9 and now.minute < 15 or now.hour == 8 and now.minute >= 50
@@ -165,13 +192,53 @@ def notify_test():
 
 @app.get("/api/paper")
 def paper_summary():
+    if replay.active():
+        return {**replay_paper.summary(day=replay.now().date()), "replay": True}
     return paper.summary()
 
 
 @app.post("/api/paper/reset")
 def paper_reset():
-    paper.reset()
-    return paper.summary()
+    book().reset()
+    return book().summary()
+
+
+class ReplayReq(BaseModel):
+    day: str
+    speed: float = 60
+
+
+@app.get("/api/replay")
+def replay_status():
+    return replay.status()
+
+
+@app.get("/api/replay/days")
+async def replay_days():
+    df, _ = await asyncio.to_thread(get_candles, "NIFTY", "5m")
+    today = datetime.now(IST).date()
+    days = sorted({d for d in df.index.date if d < today or not timeline.session(key="NIFTY")["is_open"]}, reverse=True)
+    return {"days": [d.isoformat() for d in days[:40]]}
+
+
+@app.post("/api/replay/start")
+def replay_start(req: ReplayReq):
+    d = _date.fromisoformat(req.day)
+    if not timeline.is_trading_day(d):
+        raise HTTPException(400, f"{req.day} was not a trading day")
+    LATEST.clear(); LATEST_AT.clear()
+    return replay.start(d, req.speed)
+
+
+@app.post("/api/replay/stop")
+def replay_stop():
+    LATEST.clear(); LATEST_AT.clear()
+    return replay.stop()
+
+
+@app.post("/api/replay/pause")
+def replay_pause(on: bool = True):
+    return replay.pause(on)
 
 
 class OrderReq(BaseModel):

@@ -25,6 +25,7 @@ from .options import bs, implied_vol, round_trip_cost, years_to_expiry
 log = logging.getLogger("engine.trader")
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 PAPER_FILE = DATA_DIR / "paper_trades.json"
+REPLAY_FILE = DATA_DIR / "replay_paper.json"
 ORDER_LOG = DATA_DIR / "live_orders.jsonl"
 SQUARE_OFF = time(15, 15)
 
@@ -34,27 +35,28 @@ def live_enabled() -> bool:
 
 
 class PaperTrader:
-    def __init__(self):
+    def __init__(self, path: Path | None = None):
+        self.path = path or PAPER_FILE
         self._lock = threading.Lock()
         self.state = self._load()
 
     def _load(self) -> dict:
         try:
-            return json.loads(PAPER_FILE.read_text())
+            return json.loads(self.path.read_text())
         except Exception:  # noqa: BLE001
             return {"open": {}, "closed": []}
 
     def _save(self):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        PAPER_FILE.write_text(json.dumps(self.state, indent=1, default=str))
+        self.path.write_text(json.dumps(self.state, indent=1, default=str))
 
     # ---------- helpers ----------
-    def today_closed(self, key: str | None = None) -> list[dict]:
-        d = date.today().isoformat()
+    def today_closed(self, key: str | None = None, day: date | None = None) -> list[dict]:
+        d = (day or date.today()).isoformat()
         return [t for t in self.state["closed"] if t["opened_at"][:10] == d and (key is None or t["instrument"] == key)]
 
-    def day_pnl(self) -> float:
-        return sum(t["pnl"] for t in self.today_closed())
+    def day_pnl(self, day: date | None = None) -> float:
+        return sum(t["pnl"] for t in self.today_closed(day=day))
 
     def _premium_now(self, pos: dict, spot: float, now: datetime, chain: list | None) -> tuple[float, str]:
         if chain:
@@ -122,7 +124,7 @@ class PaperTrader:
                     events.append({"type": "blocked", "reason": f"{strategy}: cooling off 15 min after the last exit"})
                 elif n_today >= max_trades:
                     events.append({"type": "blocked", "reason": f"{strategy}: max {max_trades} trade(s)/day reached"})
-                elif self.day_pnl() <= loss_cap:
+                elif self.day_pnl(now.date()) <= loss_cap:
                     events.append({"type": "blocked", "reason": "Daily loss limit hit - done for the day"})
                 else:
                     o, p = option, plan
@@ -146,8 +148,8 @@ class PaperTrader:
                     events.append({"type": "paper_entry", "trade": pos})
         return events
 
-    def summary(self) -> dict:
-        today = self.today_closed()
+    def summary(self, day: date | None = None) -> dict:
+        today = self.today_closed(day=day)
         allc = self.state["closed"]
         wins = [t for t in allc if t["pnl"] > 0]
         by_strategy = {}
@@ -174,6 +176,7 @@ class PaperTrader:
 
 
 paper = PaperTrader()
+replay_paper = PaperTrader(REPLAY_FILE)
 
 
 # ---------------- live orders (explicit click only) ----------------

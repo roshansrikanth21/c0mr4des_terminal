@@ -7,7 +7,7 @@ import threading
 from datetime import date, datetime
 from pathlib import Path
 
-from . import macro, options, orb, timeline
+from . import macro, options, orb, replay, timeline
 from .config import IST, INSTRUMENTS, RISK_DEFAULTS
 from .data import angel, closed_bars, get_candles
 from .news import radar
@@ -52,11 +52,16 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     if key not in INSTRUMENTS:
         raise ValueError(f"Unknown instrument {key}; use one of {list(INSTRUMENTS)}")
     inst = INSTRUMENTS[key]
-    now = datetime.now(IST)
+    now = replay.now()
     sess = timeline.session(now, key)
     raw5, source = get_candles(key, "5m")
-    df5 = closed_bars(raw5, "5m", now)
     daily, _ = get_candles(key, "1d")
+    if replay.active():
+        raw5, daily = replay.cut(raw5, "5m"), replay.cut(daily, "1d")
+        source = f"replay ({source})"
+        if raw5.empty:
+            raise RuntimeError("Replay: no candles yet for this day/time")
+    df5 = closed_bars(raw5, "5m", now)
     vix = macro.india_vix()
     news = radar.sentiment()
     cues = macro.global_cues()
@@ -66,7 +71,7 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
                       cue_bias=cues["bias"] * cue_w, session=sess)
 
     expiry = date.fromisoformat(sess["expiry"])
-    chain = options.live_chain(key, expiry, result["price"]) if sess["is_open"] else None
+    chain = options.live_chain(key, expiry, result["price"]) if sess["is_open"] and not replay.active() else None
     settings = load_settings()
     plan = result["plan"]
     option = options.plan_trade(key, plan["direction"], result["price"], expiry, vix["value"] if vix else None,
@@ -100,11 +105,12 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     out = {
         "instrument": {"key": key, "name": inst.name, "lot_size": inst.lot_size, "strike_step": inst.strike_step},
         "generated_at": now.isoformat(timespec="seconds"),
-        "data_source": source, "data_delayed": source != "angel_one",
+        "data_source": source, "data_delayed": source not in ("angel_one",) and not source.startswith("replay"),
         "session": sess, "vix": vix, "expected_move_rest_of_day": round(em, 1) if em else None,
         **result, "reasons": reasons, "option": option, "pcr": options.pcr(chain), "chain": chain,
         "news": news, "global": cues, "candles": chart_payload(raw5), "broker_connected": angel.api is not None,
-        "spot_live": _spot_ltp(inst) or float(raw5["close"].iloc[-1]), "orb": orb_sig, "first30": f30,
+        "spot_live": (None if replay.active() else _spot_ltp(inst)) or float(raw5["close"].iloc[-1]),
+        "replay": replay.status(), "orb": orb_sig, "first30": f30,
         "shock": shock_check(raw5, daily, vix, news),
     }
     _log_signal(key, out)
@@ -158,7 +164,7 @@ def _spot_ltp(inst) -> float | None:
 
 def _log_signal(key: str, out: dict) -> None:
     """Append when the verdict changes during market hours, for honest after-the-fact review."""
-    if not out["session"]["is_open"]:
+    if not out["session"]["is_open"] or replay.active():
         return
     with _lock:
         if _last_verdict.get(key) == out["verdict"]:

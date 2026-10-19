@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { getJSON, inr } from '@/lib/api';
 import { PRESETS, setPreset, setViewMode, useAppearance } from '@/lib/appearance';
+import { ReplayControls } from '@/components/ReplayBar';
 
 interface Risk { capital: number; risk_per_trade_pct: number; max_trades_per_day: number; max_daily_loss_pct: number; autopilot_instruments?: string[] }
 interface Broker { configured: boolean; connected: boolean; note: string }
@@ -86,6 +87,7 @@ export function Settings() {
           <Button onClick={save} className="font-mono uppercase text-xs tracking-widest"><Save className="w-4 h-4 mr-2" />Save</Button>
         </div>
       )}
+      <ReplayControls />
       {broker && (
         <div className="border border-border rounded-md p-6 bg-card/40">
           <div className="flex items-center gap-2 text-xs font-mono font-bold uppercase tracking-wider">

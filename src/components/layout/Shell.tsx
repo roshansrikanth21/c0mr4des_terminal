@@ -15,6 +15,7 @@ import {
 import { cn } from '@/lib/utils';
 import { Link, useLocation } from 'react-router-dom';
 import { setTheme, useAppearance } from '@/lib/appearance';
+import { ReplayBar } from '@/components/ReplayBar';
 
 interface ShellProps {
   children: React.ReactNode;
@@ -113,6 +114,7 @@ export function Shell({ children }: ShellProps) {
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto pt-16 lg:pt-0">
         <div className="p-6 lg:p-12 w-full animate-fade-in">
+          <ReplayBar />
           {children}
         </div>
       </main>
