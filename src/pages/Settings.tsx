@@ -62,6 +62,7 @@ export function Settings() {
             value={(risk.autopilot_instruments || ['NIFTY']).join('+')}
             options={[['NIFTY', 'NIFTY only'], ['SENSEX', 'SENSEX only'], ['NIFTY+SENSEX', 'Both']]}
             onChange={(v) => setRisk({ ...risk, autopilot_instruments: v.split('+') })} />
+          <CapitalHealth capital={risk.capital} />
           <div className="text-xs text-muted-foreground font-mono">
             Max risk per trade: {inr(risk.capital * risk.risk_per_trade_pct / 100)} · daily stop: {inr(risk.capital * risk.max_daily_loss_pct / 100)}
           </div>
@@ -97,6 +98,29 @@ function Choice({ label, help, value, options, onChange }: { label: string; help
               value === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>{l}</button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** Monte Carlo of the 2-year first-hour breakout trades (1 strike OTM, 1 NIFTY lot, 250 trades ~ 1 year). */
+const RUIN: [number, number, number][] = [
+  // capital, ruin% (all days), ruin% (excluding expiry days - conservative)
+  [10000, 41, 64], [20000, 15, 37], [30000, 5, 22], [50000, 1, 9], [75000, 0.2, 3], [100000, 0, 1],
+];
+
+function CapitalHealth({ capital }: { capital: number }) {
+  const row = [...RUIN].reverse().find(([c]) => capital >= c) ?? RUIN[0];
+  const [, ruin, ruinCons] = row;
+  const tone = ruinCons <= 5 ? 'border-green-500/40 bg-green-500/10 text-green-500'
+    : ruinCons <= 25 ? 'border-amber-500/40 bg-amber-500/10 text-amber-500' : 'border-red-500/40 bg-red-500/10 text-red-500';
+  return (
+    <div className={cn('rounded-md border p-3 text-xs', tone)}>
+      <div className="font-mono font-bold uppercase tracking-widest text-[10px]">Capital check · first-hour breakout, 1 NIFTY lot</div>
+      <p className="mt-1 text-foreground">
+        Simulated over a year of trades from the 2-year backtest: with this capital the account blows up (can't afford a lot)
+        in about <b>{ruin}%</b> of cases, or <b>{ruinCons}%</b> if expiry-day profits don't hold up.
+        {ruinCons > 25 ? ' Paper-trade first or build capital - normal losing streaks are bigger than this account.' : ruinCons > 5 ? ' Survivable, but expect deep drawdowns.' : ' Normal losing streaks are survivable at this size.'}
+      </p>
     </div>
   );
 }

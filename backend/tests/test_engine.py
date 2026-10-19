@@ -222,3 +222,11 @@ def test_orb_breakout_rules():
     assert r2["verdict"] == "NO TRADE"
     early = orb.evaluate(df.iloc[:8], prev_close=22950, now=df.index[7].to_pydatetime())
     assert early["status"] == "forming"
+
+
+def test_first_hour_uses_one_strike_otm():
+    risk = {"capital": 10000, "risk_per_trade_pct": 25, "max_trades_per_day": 2, "max_daily_loss_pct": 25}
+    now = datetime(2026, 10, 21, 11, 0, tzinfo=IST)
+    ce = options.plan_trade("NIFTY", 1, 23010, date(2026, 10, 27), 14, 60, 120, risk, now=now, otm_steps=1)
+    pe = options.plan_trade("NIFTY", -1, 23010, date(2026, 10, 27), 14, 60, 120, risk, now=now, otm_steps=1)
+    assert ce["strike"] == 23050 and pe["strike"] == 22950

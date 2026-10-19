@@ -77,7 +77,7 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         orb_sig["verdict"] = "NO TRADE"
     orb_sig["option"] = options.plan_trade(key, orb_sig["direction"], result["price"], expiry, vix["value"] if vix else None,
                                            orb_sig.get("risk_points") or 0, orb_sig.get("target_points") or 0,
-                                           settings, chain, now) if orb_sig["direction"] else None
+                                           settings, chain, now, otm_steps=1) if orb_sig["direction"] else None
     f30 = orb.first30(df5, now)
     if not sess["is_open"] and f30["verdict"] != "NO TRADE":
         f30["verdict"] = "NO TRADE"

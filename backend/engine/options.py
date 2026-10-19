@@ -146,7 +146,8 @@ def pcr(chain: list[dict] | None) -> float | None:
 
 
 def plan_trade(key: str, direction: int, spot: float, expiry: date, vix: float | None, stop_points: float,
-               target_points: float, risk: dict, chain: list[dict] | None = None, now: datetime | None = None) -> dict | None:
+               target_points: float, risk: dict, chain: list[dict] | None = None, now: datetime | None = None,
+               otm_steps: int | None = None) -> dict | None:
     """Pick strike (ATM, or 1 step ITM when expiry is close), estimate premium, size the position."""
     if direction == 0:
         return None
@@ -154,8 +155,13 @@ def plan_trade(key: str, direction: int, spot: float, expiry: date, vix: float |
     kind = "CE" if direction > 0 else "PE"
     atm = round(spot / inst.strike_step) * inst.strike_step
     T = years_to_expiry(expiry, now)
-    itm_shift = 1 if T * 365 < 2 else 0  # near expiry, slightly ITM holds value better
-    strike = atm - direction * itm_shift * inst.strike_step
+    if otm_steps is not None:
+        # Strike test (2y NIFTY, first-hour breakout): 1 step OTM had the best profit factor (1.45 vs 1.41 ATM),
+        # smaller average loss and lower risk of ruin for small accounts.
+        strike = atm + direction * otm_steps * inst.strike_step
+    else:
+        itm_shift = 1 if T * 365 < 2 else 0  # near expiry, slightly ITM holds value better
+        strike = atm - direction * itm_shift * inst.strike_step
     sigma = (vix or 14) / 100
     est = bs(spot, strike, T, sigma, kind)
     premium, source = est["price"], "estimated (Black-Scholes using India VIX)"
