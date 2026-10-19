@@ -109,12 +109,14 @@ class PaperTrader:
                     del self.state["open"][slot]
                     events.append({"type": "paper_exit", "trade": closed})
                 self._save()
-            elif verdict in ("BUY", "SELL") and option and option.get("lots", 0) > 0 and plan.get("stop") is not None:
+            elif verdict in ("BUY", "SELL") and option and plan.get("stop") is not None:
                 mine = [t for t in self.state["closed"] if t.get("slot") == slot]
                 n_today = sum(1 for t in mine if t["opened_at"][:10] == now.date().isoformat())
                 loss_cap = -settings["capital"] * settings["max_daily_loss_pct"] / 100
                 cooling = mine and (now - datetime.fromisoformat(mine[-1]["closed_at"])).total_seconds() < 900
-                if cooling:
+                if (spot - plan["stop"]) * plan["direction"] <= 0:
+                    events.append({"type": "blocked", "reason": f"{strategy}: stop is on the wrong side of price - skipped"})
+                elif cooling:
                     events.append({"type": "blocked", "reason": f"{strategy}: cooling off 15 min after the last exit"})
                 elif n_today >= max_trades:
                     events.append({"type": "blocked", "reason": f"{strategy}: max {max_trades} trade(s)/day reached"})
@@ -122,13 +124,17 @@ class PaperTrader:
                     events.append({"type": "blocked", "reason": "Daily loss limit hit - done for the day"})
                 else:
                     o, p = option, plan
+                    # Paper always takes at least 1 lot (same as the lab), and flags when that breaks your risk budget.
+                    lots = max(1, o.get("lots", 0))
+                    qty = lots * INSTRUMENTS[key].lot_size
+                    oversize = o.get("lots", 0) < 1
                     exp = date.fromisoformat(o["expiry"])
                     iv = (o["greeks"].get("iv")
                           or implied_vol(o["premium"], spot, o["strike"], years_to_expiry(exp, now), o["option_type"])
                           or (a["vix"]["value"] / 100 if a.get("vix") else 0.14))
                     pos = {"slot": slot, "strategy": strategy, "instrument": key, "dir": p["direction"], "side": o["side"],
                            "symbol": o["symbol_hint"], "strike": o["strike"], "option_type": o["option_type"],
-                           "expiry": o["expiry"], "quantity": o["quantity"], "lots": o["lots"], "entry_premium": o["premium"],
+                           "expiry": o["expiry"], "quantity": qty, "lots": lots, "oversize": oversize, "entry_premium": o["premium"],
                            "premium_source": o["premium_source"], "premium_stop": o["premium_stop"],
                            "premium_target": o["premium_target"], "iv": iv, "entry_spot": spot,
                            "index_stop": p["stop"], "index_target": p["target"], "opened_at": now.isoformat(),
