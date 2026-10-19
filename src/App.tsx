@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { Shell } from '@/components/layout/Shell';
 import { Spinner } from '@/components/ui/spinner';
+import { applyPreset } from '@/lib/appearance';
 
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((m) => ({ default: m.Dashboard })));
 const NewsRadar = lazy(() => import('@/pages/NewsRadar').then((m) => ({ default: m.NewsRadar })));
@@ -18,10 +19,7 @@ function RouteFallback() {
 }
 
 function App() {
-  useEffect(() => {
-    const theme = localStorage.getItem('theme') || 'dark';
-    document.documentElement.classList.toggle('dark', theme === 'dark');
-  }, []);
+  useEffect(() => { applyPreset(); }, []);
 
   return (
     <Router>

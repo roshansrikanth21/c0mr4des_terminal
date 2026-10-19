@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { getJSON, inr } from '@/lib/api';
-import { setTheme, setViewMode, useAppearance } from '@/lib/appearance';
+import { PRESETS, setPreset, setViewMode, useAppearance } from '@/lib/appearance';
 
 interface Risk { capital: number; risk_per_trade_pct: number; max_trades_per_day: number; max_daily_loss_pct: number; autopilot_instruments?: string[] }
 interface Broker { configured: boolean; connected: boolean; note: string }
@@ -19,7 +19,7 @@ const FIELDS: [keyof Risk, string, string][] = [
 export function Settings() {
   const [risk, setRisk] = useState<Risk | null>(null);
   const [broker, setBroker] = useState<Broker | null>(null);
-  const { theme, view } = useAppearance();
+  const { preset, view } = useAppearance();
 
   useEffect(() => {
     getJSON<Risk>('/api/settings').then(setRisk).catch(() => undefined);
@@ -40,8 +40,25 @@ export function Settings() {
       </div>
       <div className="border border-border rounded-md p-6 bg-card/40 space-y-5">
         <div className="text-xs font-mono font-bold uppercase tracking-wider">Appearance</div>
-        <Choice label="Theme" help="Dark is easier on the eyes over a 6-hour session." value={theme}
-          options={[['dark', 'Dark'], ['light', 'Light']]} onChange={(v) => setTheme(v as 'dark' | 'light')} />
+        <div>
+          <div className="text-xs font-mono font-bold uppercase tracking-wider">Look</div>
+          <div className="text-[11px] text-muted-foreground mb-3">Same data and layout, different feel. Soft presets drop the all-caps mono labels and round the corners.</div>
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+            {PRESETS.map((p) => (
+              <button key={p.id} onClick={() => setPreset(p.id)}
+                className={cn('text-left rounded-md border p-3 transition-all hover:border-primary/60',
+                  preset === p.id ? 'border-primary ring-2 ring-primary/30' : 'border-border')}>
+                <div className="flex h-10 rounded-sm overflow-hidden border border-border mb-2">
+                  <div className="w-1/2" style={{ background: p.swatch[0] }} />
+                  <div className="w-1/3" style={{ background: p.swatch[1] }} />
+                  <div className="flex-1" style={{ background: p.swatch[2] }} />
+                </div>
+                <div className="text-xs font-bold">{p.name}</div>
+                <div className="text-[10px] text-muted-foreground leading-snug mt-0.5">{p.blurb}</div>
+              </button>
+            ))}
+          </div>
+        </div>
         <Choice label="Dashboard view" help="Focus shows only what you need mid-trade: chart, verdict, playbook, trade plan and autopilot, bigger."
           value={view} options={[['full', 'Full terminal'], ['focus', 'Focus mode']]} onChange={(v) => setViewMode(v as 'full' | 'focus')} />
       </div>

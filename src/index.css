@@ -248,3 +248,95 @@
   overflow-x: hidden;
   overscroll-behavior: contain;
 }
+
+/* ===================== LOOK PRESETS (Settings > Appearance) =====================
+   "terminal" = the original look, no overrides. Others set their own palette and soften typography. */
+
+[data-preset="calm"] {
+  --background: 222 22% 11%;
+  --foreground: 210 25% 92%;
+  --card: 222 20% 14%;
+  --card-foreground: 210 25% 92%;
+  --popover: 222 20% 14%;
+  --popover-foreground: 210 25% 92%;
+  --primary: 158 52% 52%;
+  --primary-foreground: 222 30% 10%;
+  --secondary: 220 16% 22%;
+  --secondary-foreground: 210 25% 92%;
+  --muted: 220 16% 20%;
+  --muted-foreground: 218 12% 66%;
+  --accent: 220 16% 20%;
+  --accent-foreground: 210 25% 92%;
+  --border: 220 15% 21%;
+  --input: 220 15% 24%;
+  --ring: 158 52% 52%;
+  --radius: 0.75rem;
+}
+
+[data-preset="midnight"] {
+  --background: 224 45% 7%;
+  --foreground: 213 30% 92%;
+  --card: 224 40% 10%;
+  --card-foreground: 213 30% 92%;
+  --popover: 224 40% 10%;
+  --popover-foreground: 213 30% 92%;
+  --primary: 217 91% 62%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 222 30% 17%;
+  --secondary-foreground: 213 30% 92%;
+  --muted: 222 30% 15%;
+  --muted-foreground: 216 18% 64%;
+  --accent: 222 30% 16%;
+  --accent-foreground: 213 30% 92%;
+  --border: 222 28% 17%;
+  --input: 222 28% 20%;
+  --ring: 217 91% 62%;
+  --radius: 0.5rem;
+}
+
+[data-preset="paper"] {
+  --background: 40 30% 96%;
+  --foreground: 222 25% 16%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 25% 16%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 25% 16%;
+  --primary: 221 70% 50%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 38 22% 91%;
+  --secondary-foreground: 222 25% 16%;
+  --muted: 38 22% 92%;
+  --muted-foreground: 220 9% 44%;
+  --accent: 38 25% 92%;
+  --accent-foreground: 222 25% 16%;
+  --border: 36 16% 86%;
+  --input: 36 16% 84%;
+  --ring: 221 70% 50%;
+  --radius: 0.9rem;
+}
+
+/* Friendlier typography for the soft presets: sans labels, no all-caps, normal spacing, tabular numbers */
+[data-soft] .font-mono {
+  font-family: var(--font-sans), 'Inter', sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+[data-soft] .uppercase {
+  text-transform: none;
+}
+[data-soft] .tracking-widest,
+[data-soft] .tracking-wider,
+[data-soft] [class*="tracking-["] {
+  letter-spacing: 0.01em;
+}
+[data-soft] .font-black {
+  font-weight: 750;
+}
+[data-soft] .text-\[9px\] {
+  font-size: 11px;
+}
+[data-soft] .text-\[10px\] {
+  font-size: 11.5px;
+}
+[data-soft] .shadow-sm {
+  box-shadow: 0 1px 2px hsl(var(--foreground) / 0.04), 0 4px 16px hsl(var(--foreground) / 0.04);
+}
