@@ -49,7 +49,7 @@ export function VerdictPanel({ a }: { a: Analysis | null }) {
           <div className="text-xs mt-1.5 text-muted-foreground">{a.headline}</div>
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(96px,1fr))] gap-2">
         <Stat label="Lean" value={a.lean} className={leanColor} />
         <Stat label="Score" value={(a.score > 0 ? '+' : '') + a.score.toFixed(2)} className={signalColor(a.score)} />
         <Stat label="Strength" value={`${Math.round(a.confidence * 100)}%`} />
@@ -77,8 +77,8 @@ export function VerdictPanel({ a }: { a: Analysis | null }) {
 
 function Stat({ label, value, className }: { label: string; value: React.ReactNode; className?: string }) {
   return (
-    <div className="border border-border rounded-md px-3 py-2 bg-muted/20">
-      <div className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">{label}</div>
+    <div className="min-w-0 border border-border rounded-md px-2.5 py-2 bg-muted/20">
+      <div className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest truncate">{label}</div>
       <div className={cn('text-sm font-mono font-bold mt-0.5', className)}>{value}</div>
     </div>
   );
@@ -125,7 +125,7 @@ export function OptionPanel({ a }: { a: Analysis | null }) {
         {o.side} <span className="text-foreground">{o.strike}</span>
       </div>
       <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest mt-0.5">{o.symbol_hint} · lot {o.lot_size}</div>
-      <div className="grid grid-cols-3 gap-2 mt-3">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(96px,1fr))] gap-2 mt-3">
         <Stat label="Premium" value={inr(o.premium, 1)} />
         <Stat label="Stop (prem)" value={inr(o.premium_stop, 1)} className="text-red-500" />
         <Stat label="Target (prem)" value={inr(o.premium_target, 1)} className="text-green-500" />
@@ -136,7 +136,7 @@ export function OptionPanel({ a }: { a: Analysis | null }) {
         <Stat label="Capital" value={inr(o.capital_needed)} />
         <Stat label="Max loss" value={inr(o.max_loss)} className="text-red-500" />
       </div>
-      <div className="grid grid-cols-4 gap-2 mt-2 text-[10px] font-mono text-muted-foreground">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[10px] font-mono text-muted-foreground">
         <span>Δ {o.greeks.delta}</span><span>Θ {o.greeks.theta_per_day}/day</span><span>Vega {o.greeks.vega}</span>
         <span>{o.greeks.iv ? `IV ${(o.greeks.iv * 100).toFixed(1)}%` : `VIX ${a.vix?.value ?? '--'}`}</span>
       </div>
@@ -331,7 +331,7 @@ export function PaperPanel({ a }: { a: Analysis | null }) {
       <PanelTitle icon={Bot} right={<span className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">paper · auto</span>}>
         Autopilot
       </PanelTitle>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(96px,1fr))] gap-2">
         <Stat label="Today P&L" value={inr(sum.today.pnl)} className={sum.today.pnl >= 0 ? 'text-green-500' : 'text-red-500'} />
         <Stat label="Trades" value={`${sum.today.trades} (${sum.today.wins} won)`} />
         <Stat label="All-time" value={inr(sum.all_time.pnl)} className={sum.all_time.pnl >= 0 ? 'text-green-500' : 'text-red-500'} />
