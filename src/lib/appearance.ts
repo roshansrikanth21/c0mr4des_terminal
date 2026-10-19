@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 
 export type Theme = 'dark' | 'light';
 export type ViewMode = 'full' | 'focus';
-export type Preset = 'terminal' | 'terminal-light' | 'ocean' | 'paper';
+export type Preset = 'terminal' | 'terminal-light' | 'ocean' | 'paper' | 'ember' | 'forest' | 'graphite' | 'rose';
 const EVT = 'appearance-change';
 
 export const PRESETS: { id: Preset; name: string; blurb: string; mode: Theme; soft: boolean; swatch: string[] }[] = [
@@ -10,6 +10,10 @@ export const PRESETS: { id: Preset; name: string; blurb: string; mode: Theme; so
   { id: 'terminal-light', name: 'Terminal Light', blurb: 'The original layout in soft grey, no glare.', mode: 'light', soft: false, swatch: ['#e6e8ec', '#f4f5f8', '#1a1f2b'] },
   { id: 'paper', name: 'Paper', blurb: 'Warm cream, rounded, friendly. Best in a bright room.', mode: 'light', soft: true, swatch: ['#f2ede3', '#fcfaf5', '#2f5fd8'] },
   { id: 'ocean', name: 'Ocean', blurb: 'Vivid deep blue with a bright sky accent.', mode: 'dark', soft: true, swatch: ['#0d1a2f', '#14233d', '#22b8f5'] },
+  { id: 'ember', name: 'Ember', blurb: 'Warm espresso charcoal, amber accent. Cosy for long sessions and nights.', mode: 'dark', soft: true, swatch: ['#1a1613', '#221d19', '#f8a832'] },
+  { id: 'forest', name: 'Forest', blurb: 'Deep green charcoal, emerald accent. Calm and focused.', mode: 'dark', soft: true, swatch: ['#111a17', '#16211d', '#26d98a'] },
+  { id: 'rose', name: 'Rosé', blurb: 'Plum charcoal with a rose-pink accent. Soft, elegant, easy on the eyes.', mode: 'dark', soft: true, swatch: ['#1b1418', '#241a20', '#f17cb6'] },
+  { id: 'graphite', name: 'Graphite', blurb: 'Neutral graphite, vivid violet accent. Modern and crisp.', mode: 'dark', soft: true, swatch: ['#16171c', '#1d1f25', '#9d6bff'] },
 ];
 
 export function getPreset(): Preset {
@@ -43,7 +47,7 @@ export function getTheme(): Theme {
 /** Sidebar sun/moon: flip to the paired preset (terminal <-> terminal-light, ocean <-> paper). */
 export function setTheme(t: Theme) {
   const cur = getPreset();
-  const pair: Record<Preset, Preset> = { terminal: 'terminal-light', 'terminal-light': 'terminal', ocean: 'paper', paper: 'ocean' };
+  const pair: Record<Preset, Preset> = { terminal: 'terminal-light', 'terminal-light': 'terminal', ocean: 'paper', paper: 'ember', ember: 'paper', forest: 'paper', graphite: 'paper', rose: 'paper' };
   const next = PRESETS.find((x) => x.id === cur)?.mode === t ? cur : pair[cur];
   setPreset(next);
 }

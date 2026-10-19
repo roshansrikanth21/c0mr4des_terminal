@@ -328,3 +328,95 @@
 [data-preset="paper"] .border-red-500\/40, [data-preset="paper"] .border-red-500\/50 { border-color: rgb(194 65 12 / 0.35); }
 [data-preset="ocean"] .text-green-500 { color: #34d399; }
 [data-preset="ocean"] .text-red-500 { color: #fb7185; }
+
+[data-preset="ember"] {
+  --background: 24 14% 9%;
+  --foreground: 36 30% 93%;
+  --card: 24 13% 12.5%;
+  --card-foreground: 36 30% 93%;
+  --popover: 24 13% 12.5%;
+  --popover-foreground: 36 30% 93%;
+  --primary: 35 95% 58%;
+  --primary-foreground: 24 30% 9%;
+  --secondary: 24 12% 18%;
+  --secondary-foreground: 36 30% 93%;
+  --muted: 24 12% 18%;
+  --muted-foreground: 30 12% 68%;
+  --accent: 24 12% 18%;
+  --accent-foreground: 36 30% 93%;
+  --border: 24 12% 20%;
+  --input: 24 12% 20%;
+  --ring: 35 95% 58%;
+  --radius: 0.75rem;
+}
+[data-preset="ember"] .text-green-500 { color: #4ade80; }
+[data-preset="ember"] .text-red-500 { color: #f87171; }
+
+[data-preset="forest"] {
+  --background: 160 20% 8%;
+  --foreground: 150 20% 93%;
+  --card: 160 18% 11.5%;
+  --card-foreground: 150 20% 93%;
+  --popover: 160 18% 11.5%;
+  --popover-foreground: 150 20% 93%;
+  --primary: 152 70% 50%;
+  --primary-foreground: 160 40% 8%;
+  --secondary: 160 15% 17%;
+  --secondary-foreground: 150 20% 93%;
+  --muted: 160 15% 17%;
+  --muted-foreground: 150 10% 66%;
+  --accent: 160 15% 17%;
+  --accent-foreground: 150 20% 93%;
+  --border: 160 14% 19%;
+  --input: 160 14% 19%;
+  --ring: 152 70% 50%;
+  --radius: 0.75rem;
+}
+[data-preset="forest"] .text-green-500 { color: #4ade80; }
+[data-preset="forest"] .text-red-500 { color: #fb7185; }
+
+[data-preset="graphite"] {
+  --background: 230 10% 10%;
+  --foreground: 230 20% 95%;
+  --card: 230 10% 13.5%;
+  --card-foreground: 230 20% 95%;
+  --popover: 230 10% 13.5%;
+  --popover-foreground: 230 20% 95%;
+  --primary: 262 90% 68%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 230 9% 19%;
+  --secondary-foreground: 230 20% 95%;
+  --muted: 230 9% 19%;
+  --muted-foreground: 230 10% 68%;
+  --accent: 230 9% 19%;
+  --accent-foreground: 230 20% 95%;
+  --border: 230 9% 21%;
+  --input: 230 9% 21%;
+  --ring: 262 90% 68%;
+  --radius: 0.75rem;
+}
+[data-preset="graphite"] .text-green-500 { color: #34d399; }
+[data-preset="graphite"] .text-red-500 { color: #fb7185; }
+
+[data-preset="rose"] {
+  --background: 330 18% 9%;
+  --foreground: 330 30% 95%;
+  --card: 330 17% 12.5%;
+  --card-foreground: 330 30% 95%;
+  --popover: 330 17% 12.5%;
+  --popover-foreground: 330 30% 95%;
+  --primary: 330 85% 70%;
+  --primary-foreground: 330 40% 10%;
+  --secondary: 330 14% 19%;
+  --secondary-foreground: 330 30% 95%;
+  --muted: 330 14% 19%;
+  --muted-foreground: 330 12% 72%;
+  --accent: 330 14% 19%;
+  --accent-foreground: 330 30% 95%;
+  --border: 330 13% 21%;
+  --input: 330 13% 21%;
+  --ring: 330 85% 70%;
+  --radius: 0.9rem;
+}
+[data-preset="rose"] .text-green-500 { color: #4ade80; }
+[data-preset="rose"] .text-red-500 { color: #ff5a4f; }
