@@ -110,6 +110,80 @@ def engine(day, ctx, buy_threshold=None, sell_threshold=None, max_trades=3, sell
     return out
 
 
+def tjr_sweep(day, ctx, rr=2.0, max_trades=2, wait=6):
+    """TJR / ICT-style model adapted to NIFTY/SENSEX:
+    1. Liquidity pools: previous day high/low and the 09:15-09:30 opening range high/low.
+    2. Sweep: a candle trades through a pool and CLOSES back inside (stop hunt).
+    3. Within `wait` bars, a displacement candle (body > 50% of range, range >= 1 ATR) closes beyond the
+       lowest low (bearish) / highest high (bullish) printed since the sweep = structure shift.
+    4. The displacement leaves a fair value gap; enter with a limit order when price retraces into it
+       (within `wait` bars). Stop beyond the sweep extreme, target `rr` x risk. Entries 09:30-14:30.
+    """
+    a = atr(ctx["hist"].iloc[max(0, ctx["day_start"] - 200):ctx["day_start"] + len(day)], 14)
+    a = a.reindex(day.index).ffill()
+    orr = day[day.index.time < T930]
+    pools_hi = [ctx["pdh"]] + ([float(orr.high.max())] if len(orr) >= 3 else [])
+    pools_lo = [ctx["pdl"]] + ([float(orr.low.min())] if len(orr) >= 3 else [])
+    o, h, l, c = (day[k].to_numpy() for k in ("open", "high", "low", "close"))
+    out, used = [], set()
+    i = 3
+    while i < len(day) - 2 and len(out) < max_trades:
+        t = day.index[i].time()
+        if not (T930 <= t < time(14, 30)):
+            i += 1
+            continue
+        sweep = None
+        for p in pools_hi:
+            if ("H", p) not in used and h[i] > p and c[i] < p:
+                sweep = (-1, h[i], p)
+        for p in pools_lo:
+            if ("L", p) not in used and l[i] < p and c[i] > p:
+                sweep = (1, l[i], p)
+        if not sweep:
+            i += 1
+            continue
+        d, extreme, pool = sweep
+        used.add(("H" if d < 0 else "L", pool))
+        found = False
+        for j in range(i + 1, min(i + 1 + wait, len(day) - 1)):
+            rng = h[j] - l[j]
+            body = abs(c[j] - o[j])
+            if rng <= 0 or np.isnan(a.iloc[j]) or body < 0.5 * rng or rng < a.iloc[j]:
+                continue
+            if d < 0 and c[j] < o[j] and c[j] < min(l[i:j]):
+                fvg_lo, fvg_hi = h[j + 1] if j + 1 < len(day) else None, l[j - 1]
+            elif d > 0 and c[j] > o[j] and c[j] > max(h[i:j]):
+                fvg_lo, fvg_hi = h[j - 1], l[j + 1] if j + 1 < len(day) else None
+            else:
+                continue
+            # 3-candle gap between candle j-1 and j+1
+            if d < 0:
+                gap_top, gap_bot = l[j - 1], (h[j + 1] if j + 1 < len(day) else None)
+                if gap_bot is None or gap_bot >= gap_top:
+                    break
+                for k in range(j + 2, min(j + 2 + wait, len(day))):
+                    if h[k] >= gap_bot:
+                        risk = extreme - gap_bot
+                        if risk > 0:
+                            out.append({"i": k, "fill": gap_bot, "dir": -1, "stop": extreme + 0.5, "target": gap_bot - rr * risk})
+                            found = True
+                        break
+            else:
+                gap_bot, gap_top = h[j - 1], (l[j + 1] if j + 1 < len(day) else None)
+                if gap_top is None or gap_top <= gap_bot:
+                    break
+                for k in range(j + 2, min(j + 2 + wait, len(day))):
+                    if l[k] <= gap_top:
+                        risk = gap_top - extreme
+                        if risk > 0:
+                            out.append({"i": k, "fill": gap_top, "dir": 1, "stop": extreme - 0.5, "target": gap_top + rr * risk})
+                            found = True
+                        break
+            break
+        i = (out[-1]["i"] + 1) if found else i + 1
+    return out
+
+
 def first30_plus_engine(day, ctx, **kw):
     """Engine trades only in the direction the first 30 minutes chose."""
     f = first30_direction(day, ctx)
@@ -128,7 +202,7 @@ def _execute(key, day, entries, ctx):
         if i0 <= busy_until or i0 >= len(day):
             continue
         d = e["dir"]
-        entry = float(day.open.iloc[i0])
+        entry = float(e.get("fill", day.open.iloc[i0]))  # limit fills (FVG retrace) use their price
         stop = e["stop"]
         if (entry - stop) * d <= 0:  # gapped through the stop already
             continue
