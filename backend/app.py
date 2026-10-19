@@ -20,6 +20,9 @@ load_dotenv(Path(__file__).with_name(".env"))
 
 from .engine import backtest, macro, service, timeline  # noqa: E402
 from .engine.trader import live_enabled, paper, place_live_order  # noqa: E402
+from .engine import notify  # noqa: E402
+from .engine.config import IST  # noqa: E402
+from datetime import datetime  # noqa: E402
 from .engine.config import INSTRUMENTS  # noqa: E402
 from .engine.data import angel, get_candles  # noqa: E402
 from .engine.news import radar  # noqa: E402
@@ -47,7 +50,46 @@ async def _analyze_and_trade(key: str) -> dict:
     LATEST[key], LATEST_AT[key] = a, time.time()
     for ev in a["paper"]["events"]:
         log.info("PAPER %s %s", key, ev)
+        msg = notify.fmt_event(ev)
+        if msg:
+            notify.send(msg)
+    _maybe_alert_shock(key, a)
     return a
+
+
+_sent: set[str] = set()
+
+
+def _once(tag: str) -> bool:
+    """True the first time a tag is seen today (alerts fire once per day)."""
+    t = f"{datetime.now(IST).date()}|{tag}"
+    if t in _sent:
+        return False
+    _sent.add(t)
+    return True
+
+
+def _maybe_alert_shock(key: str, a: dict) -> None:
+    sh = a.get("shock")
+    if sh and sh.get("active") and a["session"]["is_open"] and _once(f"shock|{key}"):
+        notify.send(f"SHOCK MODE {key}: " + "; ".join(sh["reasons"]) + "\n" + "\n".join("- " + p for p in sh["playbook"][:3]))
+
+
+def _maybe_daily_summary() -> None:
+    now = datetime.now(IST)
+    sess = timeline.session(now, "NIFTY")
+    if not sess["is_trading_day"] or now.hour * 60 + now.minute < 15 * 60 + 35 or not _once("summary"):
+        return
+    s = paper.summary()
+    today = [t for t in s["closed"] if t["opened_at"][:10] == now.date().isoformat()]
+    lines = [f"DAILY SUMMARY {now:%d %b}: {len(today)} paper trade(s), P&L Rs {s['today']['pnl']:,.0f}",
+             f"All-time paper: Rs {s['all_time']['pnl']:,.0f} over {s['all_time']['trades']} trades"
+             + (f" ({s['all_time']['win_rate']}% won)" if s['all_time']['win_rate'] is not None else "")]
+    for t in reversed(today):
+        lines.append(f"- {t['strategy']}: {t['side']} {t['strike']} {t['reason']} Rs {t['pnl']:,.0f}")
+    for k, v in s.get("by_strategy", {}).items():
+        lines.append(f"[{k}] total Rs {v['pnl']:,.0f}, {v['wins']}/{v['trades']} won")
+    notify.send("\n".join(lines))
 
 
 async def _market_loop():
@@ -58,12 +100,16 @@ async def _market_loop():
                 await _analyze_and_trade(key)
             except Exception as exc:  # noqa: BLE001
                 log.warning("analysis failed for %s: %s", key, exc)
-        open_now = timeline.session(key="NIFTY")["is_open"]
-        await asyncio.sleep(15 if open_now else 300)
+        _maybe_daily_summary()
+        now = datetime.now(IST)
+        open_now = timeline.session(now, "NIFTY")["is_open"]
+        near_open = now.hour == 9 and now.minute < 15 or now.hour == 8 and now.minute >= 50
+        await asyncio.sleep(15 if open_now else 30 if near_open else 300)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    notify.send("C0MR4DE Terminal is online. Paper autopilot armed (NIFTY first-hour breakout + engine + first-30).")
     tasks = [asyncio.create_task(_news_loop()), asyncio.create_task(_market_loop())]
     yield
     for t in tasks:
@@ -98,6 +144,14 @@ async def signal(symbol: str = "NIFTY"):
         return await _analyze_and_trade(key)
     except RuntimeError as exc:
         raise HTTPException(503, str(exc)) from exc
+
+
+@app.post("/api/notify/test")
+def notify_test():
+    if not notify.configured():
+        raise HTTPException(400, "No TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID or NTFY_TOPIC in backend/.env")
+    notify.send("Test alert from C0MR4DE Terminal - notifications work.")
+    return {"ok": True}
 
 
 @app.get("/api/paper")
@@ -219,3 +273,19 @@ async def ws(socket: WebSocket, symbol: str = "NIFTY"):
             await asyncio.sleep(2)
     except (WebSocketDisconnect, RuntimeError):
         return
+
+
+# Serve the built dashboard (npm run build -> dist/) from the same port, so one SSH tunnel shows everything.
+_DIST = Path(__file__).resolve().parents[1] / "dist"
+if _DIST.exists():
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/assets", StaticFiles(directory=_DIST / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa(path: str):
+        f = _DIST / path
+        if path and f.is_file():
+            return FileResponse(f)
+        return FileResponse(_DIST / "index.html")
