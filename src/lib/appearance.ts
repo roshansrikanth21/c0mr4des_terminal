@@ -2,20 +2,20 @@ import { useEffect, useState } from 'react';
 
 export type Theme = 'dark' | 'light';
 export type ViewMode = 'full' | 'focus';
-export type Preset = 'terminal' | 'terminal-light' | 'calm' | 'midnight' | 'paper';
+export type Preset = 'terminal' | 'terminal-light' | 'ocean' | 'paper';
 const EVT = 'appearance-change';
 
 export const PRESETS: { id: Preset; name: string; blurb: string; mode: Theme; soft: boolean; swatch: string[] }[] = [
   { id: 'terminal', name: 'Terminal', blurb: 'The original: black, mono, high contrast.', mode: 'dark', soft: false, swatch: ['#09090b', '#27272a', '#fafafa'] },
-  { id: 'terminal-light', name: 'Terminal Light', blurb: 'The original layout on white.', mode: 'light', soft: false, swatch: ['#f4f4f5', '#ffffff', '#18181b'] },
-  { id: 'calm', name: 'Calm', blurb: 'Soft slate, rounded, mint accent. Easy on the eyes all day.', mode: 'dark', soft: true, swatch: ['#161b26', '#1d2330', '#4fcf98'] },
-  { id: 'midnight', name: 'Midnight', blurb: 'Deep navy with blue accents, like a broker terminal.', mode: 'dark', soft: true, swatch: ['#0a1020', '#0f1729', '#3b82f6'] },
-  { id: 'paper', name: 'Paper', blurb: 'Warm light, rounded, friendly. Best in a bright room.', mode: 'light', soft: true, swatch: ['#f7f4ee', '#ffffff', '#2f62d4'] },
+  { id: 'terminal-light', name: 'Terminal Light', blurb: 'The original layout in soft grey, no glare.', mode: 'light', soft: false, swatch: ['#e6e8ec', '#f4f5f8', '#1a1f2b'] },
+  { id: 'paper', name: 'Paper', blurb: 'Warm cream, rounded, friendly. Best in a bright room.', mode: 'light', soft: true, swatch: ['#f2ede3', '#fcfaf5', '#2f5fd8'] },
+  { id: 'ocean', name: 'Ocean', blurb: 'Vivid deep blue with a bright sky accent.', mode: 'dark', soft: true, swatch: ['#0d1a2f', '#14233d', '#22b8f5'] },
 ];
 
 export function getPreset(): Preset {
-  const p = localStorage.getItem('preset') as Preset | null;
-  if (p && PRESETS.some((x) => x.id === p)) return p;
+  let p = localStorage.getItem('preset') as string | null;
+  if (p === 'midnight' || p === 'calm') p = 'ocean'; // retired presets
+  if (p && PRESETS.some((x) => x.id === p)) return p as Preset;
   return localStorage.getItem('theme') === 'light' ? 'terminal-light' : 'terminal';
 }
 
@@ -40,10 +40,10 @@ export function getTheme(): Theme {
   return PRESETS.find((x) => x.id === getPreset())?.mode ?? 'dark';
 }
 
-/** Sidebar sun/moon: flip to the paired preset (terminal <-> terminal-light, calm/midnight <-> paper). */
+/** Sidebar sun/moon: flip to the paired preset (terminal <-> terminal-light, ocean <-> paper). */
 export function setTheme(t: Theme) {
   const cur = getPreset();
-  const pair: Record<Preset, Preset> = { terminal: 'terminal-light', 'terminal-light': 'terminal', calm: 'paper', midnight: 'paper', paper: 'calm' };
+  const pair: Record<Preset, Preset> = { terminal: 'terminal-light', 'terminal-light': 'terminal', ocean: 'paper', paper: 'ocean' };
   const next = PRESETS.find((x) => x.id === cur)?.mode === t ? cur : pair[cur];
   setPreset(next);
 }
