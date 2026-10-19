@@ -5,6 +5,12 @@ set -euo pipefail
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$APP_DIR"
 
+# Small VMs (Azure B1s / GCP e2-micro have 1 GB RAM): add 2 GB swap so npm build and pandas don't run out of memory
+if [ "$(free -m | awk '/Mem:/ {print $2}')" -lt 2000 ] && ! swapon --show | grep -q /swapfile; then
+  sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+fi
+
 sudo apt-get update -y
 sudo apt-get install -y python3 python3-venv python3-pip git curl xz-utils
 

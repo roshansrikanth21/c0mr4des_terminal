@@ -12,7 +12,18 @@ Paper only. `LIVE_TRADING` stays `false`.
 2. Open your new bot and send it any message, e.g. `hi`.
 3. In a browser, open `https://api.telegram.org/bot<TOKEN>/getUpdates`. Find `"chat":{"id": 123456789` and copy that number. That's your **chat id**.
 
-## 2. Free server (Oracle Cloud Always Free)
+## 2a. Free server for students (Azure for Students - no credit card)
+1. Go to https://azure.microsoft.com/free/students and sign in with your **college email**. You get $100 credit, renewable yearly while enrolled.
+2. Go to **Create a resource → Virtual machine**:
+   - Region: **Central India** (or South India)
+   - Image: **Ubuntu Server 24.04 LTS**
+   - Size: **B1s** (1 vCPU, 1 GB). The setup script adds swap so this is enough.
+   - Authentication: **SSH public key**, *Generate new key pair*, then download the `.pem` when asked.
+   - Inbound ports: **SSH (22) only**.
+3. After **Review + create** finishes, copy the VM's **Public IP address**. The username is the one you chose (default `azureuser`).
+4. Continue at step 3 below, using `azureuser@<ip>` instead of `ubuntu@<ip>`.
+
+## 2b. Free server (Oracle Cloud Always Free)
 1. Sign up at https://www.oracle.com/cloud/free/. A card is needed for verification; Always Free resources are not charged. Pick **Mumbai** or **Hyderabad** as the home region.
 2. Go to **Compute → Instances → Create instance**:
    - Image: **Canonical Ubuntu 24.04**
