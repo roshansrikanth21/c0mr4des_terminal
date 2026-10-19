@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { getJSON, inr } from '@/lib/api';
+import { setTheme, setViewMode, useAppearance } from '@/lib/appearance';
 
 interface Risk { capital: number; risk_per_trade_pct: number; max_trades_per_day: number; max_daily_loss_pct: number }
 interface Broker { configured: boolean; connected: boolean; note: string }
@@ -18,6 +19,7 @@ const FIELDS: [keyof Risk, string, string][] = [
 export function Settings() {
   const [risk, setRisk] = useState<Risk | null>(null);
   const [broker, setBroker] = useState<Broker | null>(null);
+  const { theme, view } = useAppearance();
 
   useEffect(() => {
     getJSON<Risk>('/api/settings').then(setRisk).catch(() => undefined);
@@ -34,7 +36,14 @@ export function Settings() {
   return (
     <div className="space-y-8 max-w-3xl">
       <div className="pb-6 border-b border-border">
-        <h1 className="text-3xl font-black tracking-tighter uppercase flex items-center gap-3"><SettingsIcon className="w-7 h-7" />Risk Settings</h1>
+        <h1 className="text-3xl font-black tracking-tighter uppercase flex items-center gap-3"><SettingsIcon className="w-7 h-7" />Settings</h1>
+      </div>
+      <div className="border border-border rounded-md p-6 bg-card/40 space-y-5">
+        <div className="text-xs font-mono font-bold uppercase tracking-wider">Appearance</div>
+        <Choice label="Theme" help="Dark is easier on the eyes over a 6-hour session." value={theme}
+          options={[['dark', 'Dark'], ['light', 'Light']]} onChange={(v) => setTheme(v as 'dark' | 'light')} />
+        <Choice label="Dashboard view" help="Focus shows only what you need mid-trade: chart, verdict, playbook, trade plan and autopilot, bigger."
+          value={view} options={[['full', 'Full terminal'], ['focus', 'Focus mode']]} onChange={(v) => setViewMode(v as 'full' | 'focus')} />
       </div>
       {risk && (
         <div className="border border-border rounded-md p-6 bg-card/40 space-y-5">
@@ -66,6 +75,24 @@ export function Settings() {
           <p className="text-sm text-muted-foreground mt-2">{broker.note}</p>
         </div>
       )}
+    </div>
+  );
+}
+
+function Choice({ label, help, value, options, onChange }: { label: string; help: string; value: string; options: [string, string][]; onChange: (v: string) => void }) {
+  return (
+    <div className="grid md:grid-cols-2 gap-2 items-center">
+      <div>
+        <div className="text-xs font-mono font-bold uppercase tracking-wider">{label}</div>
+        <div className="text-[11px] text-muted-foreground">{help}</div>
+      </div>
+      <div className="flex border border-border rounded-md p-1 bg-muted/20 w-fit">
+        {options.map(([v, l]) => (
+          <button key={v} onClick={() => onChange(v)}
+            className={cn('px-4 py-1.5 text-[11px] font-mono font-bold uppercase tracking-widest rounded-sm transition-colors',
+              value === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>{l}</button>
+        ))}
+      </div>
     </div>
   );
 }

@@ -10,6 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { useAnalysis, type Analysis, type Symbol } from '@/lib/api';
 import { useDashboardStore, type DashboardTab } from '@/hooks/use-dashboard-store';
+import { useAppearance } from '@/lib/appearance';
 import { CandleChart } from '@/components/CandleChart';
 import {
   GlobalPanel, NewsPanel, OptionPanel, OrbPanel, PaperPanel, ReasonsPanel, StructurePanel, TimelinePanel, VerdictPanel,
@@ -26,6 +27,14 @@ function stacked(layout: readonly { i: string; h: number }[], cols: number) {
     .map((it) => { const out = { i: it.i, x: 0, y, w: cols, h: it.i === 'chart' ? 5 : Math.max(it.h, 4) }; y += out.h; return out; });
 }
 const SYMBOLS: Symbol[] = ['NIFTY', 'SENSEX'];
+// Focus mode: only what matters mid-trade, bigger tiles. Not persisted, not draggable.
+const FOCUS_LAYOUT = [
+  { i: 'chart', x: 0, y: 0, w: 8, h: 6 },
+  { i: 'verdict', x: 8, y: 0, w: 4, h: 6 },
+  { i: 'orb', x: 0, y: 6, w: 4, h: 4 },
+  { i: 'option', x: 4, y: 6, w: 4, h: 4 },
+  { i: 'paper', x: 8, y: 6, w: 4, h: 4 },
+];
 
 export function Dashboard() {
   const [symbol, setSymbol] = useState<Symbol>(() => (localStorage.getItem('symbol') as Symbol) || 'NIFTY');
@@ -210,8 +219,11 @@ function AdaptivePanel({ tab, panelId, isEditMode, children }: { tab: DashboardT
 }
 
 function DashboardGrid({ tab, symbol, data }: { tab: DashboardTab; symbol: Symbol; data: Analysis | null }) {
-  const { layouts, isEditMode, updateLayout } = useDashboardStore();
-  const layout = layouts[tab];
+  const { layouts, isEditMode: editing, updateLayout } = useDashboardStore();
+  const { view } = useAppearance();
+  const focus = view === 'focus' && tab === 'terminal';
+  const layout = focus ? FOCUS_LAYOUT : layouts[tab];
+  const isEditMode = editing && !focus;
   const { width, containerRef, mounted } = useContainerWidth();
 
   const panels: Record<string, React.ReactNode> = {
@@ -228,7 +240,7 @@ function DashboardGrid({ tab, symbol, data }: { tab: DashboardTab; symbol: Symbo
   };
 
   const gridItemClass = cn(
-    'h-full w-full overflow-hidden rounded-lg bg-card/40 backdrop-blur-sm border border-border shadow-sm transition-all',
+    'h-full w-full overflow-hidden rounded-lg bg-card border border-border shadow-sm transition-all',
     isEditMode && 'ring-2 ring-primary ring-offset-2 cursor-move border-dashed border-primary/50 bg-primary/5',
   );
 

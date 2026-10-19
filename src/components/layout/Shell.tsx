@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Link, useLocation } from 'react-router-dom';
+import { setTheme, useAppearance } from '@/lib/appearance';
 
 interface ShellProps {
   children: React.ReactNode;
@@ -22,27 +23,15 @@ interface ShellProps {
 export function Shell({ children }: ShellProps) {
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
-  const [theme, setTheme] = React.useState<'light' | 'dark'>(() => {
-    return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark';
-  });
-
-  const toggleTheme = () => {
-    const newTheme = theme === 'light' ? 'dark' : 'light';
-    setTheme(newTheme);
-    localStorage.setItem('theme', newTheme);
-    if (newTheme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  };
+  const { theme } = useAppearance();
+  const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light');
 
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
     { label: 'News Radar', icon: Radio, path: '/news' },
     { label: 'Backtest', icon: PlaySquare, path: '/backtest' },
     { label: 'Trade Journal', icon: History, path: '/signals' },
-    { label: 'Risk Settings', icon: Settings, path: '/settings' },
+    { label: 'Settings', icon: Settings, path: '/settings' },
   ];
 
   return (

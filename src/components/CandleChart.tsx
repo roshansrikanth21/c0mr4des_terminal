@@ -6,6 +6,7 @@ import {
 import { Activity } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getJSON, type Analysis, type Candle, type Symbol } from '@/lib/api';
+import { useAppearance } from '@/lib/appearance';
 
 const IST_OFFSET = 19800; // chart renders UTC; shift so the axis reads Indian time
 const INTERVALS = ['1m', '5m', '15m', '1d'] as const;
@@ -19,8 +20,8 @@ const LEVEL_COLORS: Record<string, string> = {
 function themeColors() {
   const dark = document.documentElement.classList.contains('dark');
   return dark
-    ? { bg: 'transparent', text: '#a1a1aa', grid: 'rgba(39,39,42,0.6)', border: '#27272a' }
-    : { bg: 'transparent', text: '#52525b', grid: 'rgba(228,228,231,0.8)', border: '#e4e4e7' };
+    ? { bg: 'transparent', text: '#a1a1aa', grid: 'rgba(39,39,42,0.6)', border: '#27272a', up: '#22c55e', down: '#ef4444' }
+    : { bg: 'transparent', text: '#71717a', grid: 'rgba(228,228,231,0.6)', border: '#e4e4e7', up: '#16a34a', down: '#dc2626' };
 }
 
 export function CandleChart({ symbol, analysis }: { symbol: Symbol; analysis: Analysis | null }) {
@@ -33,6 +34,7 @@ export function CandleChart({ symbol, analysis }: { symbol: Symbol; analysis: An
   const [candles, setCandles] = useState<Candle[]>([]);
   const [source, setSource] = useState('');
   const [showLevels, setShowLevels] = useState(true);
+  const { theme } = useAppearance();
 
   // create chart once
   useEffect(() => {
@@ -84,6 +86,16 @@ export function CandleChart({ symbol, analysis }: { symbol: Symbol; analysis: An
   }, [candles, interval]);
 
   useEffect(() => { chartRef.current?.timeScale().fitContent(); }, [symbol, interval]);
+
+  useEffect(() => {
+    const c = themeColors();
+    chartRef.current?.applyOptions({
+      layout: { background: { type: ColorType.Solid, color: c.bg }, textColor: c.text },
+      grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
+      rightPriceScale: { borderColor: c.border }, timeScale: { borderColor: c.border },
+    });
+    seriesRef.current?.applyOptions({ upColor: c.up, downColor: c.down, borderUpColor: c.up, borderDownColor: c.down, wickUpColor: c.up, wickDownColor: c.down });
+  }, [theme]);
 
   // overlays: pattern markers, key levels, trade plan
   useEffect(() => {
