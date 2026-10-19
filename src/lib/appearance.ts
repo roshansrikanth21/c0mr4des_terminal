@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 export type Theme = 'dark' | 'light';
-export type ViewMode = 'full' | 'focus';
+export type ViewMode = 'full' | 'focus' | 'simple';
 export type Preset = 'terminal' | 'terminal-light' | 'ocean' | 'paper' | 'ember' | 'forest' | 'graphite' | 'rose';
 const EVT = 'appearance-change';
 

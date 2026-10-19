@@ -59,8 +59,8 @@ export function Settings() {
             ))}
           </div>
         </div>
-        <Choice label="Dashboard view" help="Focus shows only what you need mid-trade: chart, verdict, playbook, trade plan and autopilot, bigger."
-          value={view} options={[['full', 'Full terminal'], ['focus', 'Focus mode']]} onChange={(v) => setViewMode(v as 'full' | 'focus')} />
+        <Choice label="Dashboard view" help="Simple: one big BUY / SELL / WAIT answer in plain words. Full: every panel. Focus: the trading panels only, bigger."
+          value={view} options={[['simple', 'Simple'], ['full', 'Full terminal'], ['focus', 'Focus mode']]} onChange={(v) => setViewMode(v as 'full' | 'focus' | 'simple')} />
       </div>
       {risk && (
         <div className="border border-border rounded-md p-6 bg-card/40 space-y-5">

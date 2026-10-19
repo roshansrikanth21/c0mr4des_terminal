@@ -10,7 +10,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { useAnalysis, type Analysis, type Symbol } from '@/lib/api';
 import { useDashboardStore, type DashboardTab } from '@/hooks/use-dashboard-store';
-import { useAppearance } from '@/lib/appearance';
+import { setViewMode, useAppearance } from '@/lib/appearance';
+import { SimpleView } from '@/components/SimpleView';
 import { CandleChart } from '@/components/CandleChart';
 import {
   GlobalPanel, NewsPanel, OptionPanel, OrbPanel, PaperPanel, ReasonsPanel, StructurePanel, TimelinePanel, VerdictPanel,
@@ -40,6 +41,8 @@ export function Dashboard() {
   const [symbol, setSymbol] = useState<Symbol>(() => (localStorage.getItem('symbol') as Symbol) || 'NIFTY');
   const [activeTab, setActiveTab] = useState<DashboardTab>('terminal');
   const { isEditMode, toggleEditMode, resetPanelScales, resetLayout } = useDashboardStore();
+  const { view } = useAppearance();
+  const simple = view === 'simple';
   const { data, error, live, updatedAt } = useAnalysis(symbol);
   const lastVerdict = useRef<string | null>(null);
   const lastGen = useRef<string | null>(null);
@@ -100,6 +103,15 @@ export function Dashboard() {
 
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex border border-border rounded-md p-1 bg-muted/20">
+            {([['simple', 'Simple'], [view === 'focus' ? 'focus' : 'full', 'Terminal']] as const).map(([v, label]) => (
+              <button key={label} onClick={() => setViewMode(v)}
+                className={cn('px-4 py-2 text-xs font-mono font-black tracking-widest uppercase rounded-sm transition-all',
+                  (label === 'Simple') === simple ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex border border-border rounded-md p-1 bg-muted/20">
             {SYMBOLS.map((s) => (
               <button key={s} onClick={() => setSymbol(s)}
                 className={cn('px-5 py-2 text-xs font-mono font-black tracking-widest uppercase rounded-sm transition-all',
@@ -108,7 +120,7 @@ export function Dashboard() {
               </button>
             ))}
           </div>
-          <div className={cn('border shadow-sm px-6 py-3 rounded-md min-w-[130px]',
+          <div className={cn('border shadow-sm px-6 py-3 rounded-md min-w-[130px]', simple && 'hidden',
             data?.verdict === 'BUY' ? 'border-green-500/50 bg-green-500/10' : data?.verdict === 'SELL' ? 'border-red-500/50 bg-red-500/10' : 'border-border bg-muted/20')}>
             <div className="text-right">
               <div className="text-[9px] font-mono text-muted-foreground uppercase leading-none mb-1">Verdict</div>
@@ -127,6 +139,7 @@ export function Dashboard() {
         </div>
       )}
 
+      {simple ? <SimpleView a={data} symbol={symbol} /> : (
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as DashboardTab)} className="w-full">
         <TabsList className="bg-muted/30 border border-border p-1 h-12 mb-8 flex flex-wrap max-w-fit">
           {([['terminal', 'Market Terminal'], ['context', 'Market Context'], ['news', 'Global News']] as const).map(([v, label]) => (
@@ -141,12 +154,14 @@ export function Dashboard() {
           </TabsContent>
         ))}
       </Tabs>
+      )}
 
       {/* --- FOOTER STICKY --- */}
       <div className="fixed bottom-0 left-0 w-full bg-background/95 backdrop-blur-sm border-t border-border p-3 shadow-lg z-40">
         <div className="px-8 flex justify-between items-center w-full">
           <div className="flex items-center gap-3">
             <div className={cn('h-2.5 w-2.5 rounded-full', data?.session.is_open ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground')} />
+            {!simple && <>
             <Button variant="outline" size="sm" className="h-8 border-primary/20 bg-primary/5 hover:bg-primary/10 transition-all"
               onClick={() => { resetLayout(activeTab); toast.success('Dashboard arrangement reset.'); }}>
               <RotateCcw className="w-4 h-4 mr-2" />Reset Arrangement
@@ -159,6 +174,7 @@ export function Dashboard() {
               onClick={() => { resetPanelScales(activeTab); toast.success('Panel text scaling reset.'); }}>
               <SlidersHorizontal className="w-4 h-4 mr-2" />Reset Text Scale
             </Button>
+            </>}
           </div>
           <span className="text-xs font-mono text-muted-foreground hidden md:block">
             {symbol} | {data ? `UPDATED ${new Date(updatedAt).toLocaleTimeString('en-IN')}` : 'SYNCING'} | NOT FINANCIAL ADVICE
