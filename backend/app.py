@@ -44,6 +44,22 @@ async def _news_loop():
 
 LATEST: dict[str, dict] = {}
 LATEST_AT: dict[str, float] = {}
+_WAKE: asyncio.Event | None = None  # set to cut the market loop's sleep short (replay start/stop)
+
+
+async def _sleep(seconds: float) -> None:
+    global _WAKE
+    _WAKE = _WAKE or asyncio.Event()
+    try:
+        await asyncio.wait_for(_WAKE.wait(), timeout=seconds)
+    except asyncio.TimeoutError:
+        pass
+    _WAKE.clear()
+
+
+def _wake() -> None:
+    if _WAKE is not None:
+        _WAKE.set()
 
 
 def book():
@@ -137,12 +153,12 @@ async def _market_loop():
             if replay.finished():  # summary already sent above; hand control back to the live market
                 replay.stop()
                 LATEST.clear(); LATEST_AT.clear()
-            await asyncio.sleep(replay.step_seconds())
+            await _sleep(replay.step_seconds())
             continue
         now = datetime.now(IST)
         open_now = timeline.session(now, "NIFTY")["is_open"]
         near_open = now.hour == 9 and now.minute < 15 or now.hour == 8 and now.minute >= 50
-        await asyncio.sleep(15 if open_now else 30 if near_open else 300)
+        await _sleep(15 if open_now else 30 if near_open else 300)
 
 
 @asynccontextmanager
@@ -224,18 +240,22 @@ async def replay_days():
 
 
 @app.post("/api/replay/start")
-def replay_start(req: ReplayReq):
+async def replay_start(req: ReplayReq):
     d = _date.fromisoformat(req.day)
     if not timeline.is_trading_day(d):
         raise HTTPException(400, f"{req.day} was not a trading day")
     LATEST.clear(); LATEST_AT.clear()
-    return replay.start(d, req.speed)
+    st = replay.start(d, req.speed)
+    _wake()
+    return st
 
 
 @app.post("/api/replay/stop")
-def replay_stop():
+async def replay_stop():
     LATEST.clear(); LATEST_AT.clear()
-    return replay.stop()
+    st = replay.stop()
+    _wake()
+    return st
 
 
 @app.post("/api/replay/pause")

@@ -24,7 +24,7 @@ def start(day: date, speed: float = 60.0, start_at: time = time(9, 10)) -> dict:
         _state.clear()
         _state.update({"active": True, "day": day, "speed": max(1.0, min(float(speed), 600.0)),
                        "sim_start": datetime.combine(day, start_at, IST), "real_start": _time.time(),
-                       "paused_at": None})
+                       "paused_at": None, "held_at": _time.time()})
     return status()
 
 

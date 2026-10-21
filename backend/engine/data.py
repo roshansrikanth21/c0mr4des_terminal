@@ -122,7 +122,8 @@ class AngelClient:
             return _normalize(df)
         except Exception as exc:  # noqa: BLE001
             log.warning("Angel candles failed (%s %s): %s", inst.key, interval, exc)
-            self.reset()
+            if any(k in str(exc).lower() for k in ("token", "session")):  # not on rate limits: re-login makes them worse
+                self.reset()
             return None
 
     def ltp(self, exchange: str, tokens: list[str]) -> dict:
