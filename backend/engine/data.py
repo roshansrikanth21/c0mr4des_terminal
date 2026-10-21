@@ -170,7 +170,9 @@ def get_candles(key: str, interval: str = "5m") -> tuple[pd.DataFrame, str]:
     ck = (key, interval)
     with _LOCK:
         hit = _CACHE.get(ck)
-        if hit and _time.time() - hit[0] < CACHE_TTL[interval]:
+        from . import replay  # a past day never changes: replay reuses data instead of hitting Angel's rate limit
+        ttl = 3600 if replay.active() else CACHE_TTL[interval]
+        if hit and _time.time() - hit[0] < ttl:
             return hit[1], hit[1].attrs.get("source", "cache")
     df, source = angel.candles(inst, interval), "angel_one"
     if df is None or df.empty:
