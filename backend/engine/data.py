@@ -41,11 +41,23 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     return df[ok].astype(float)
 
 
+def _token_error(res) -> bool:
+    """SmartAPI returns expired/invalid sessions as a normal response, not an exception."""
+    if not isinstance(res, dict) or res.get("status") or res.get("success"):
+        return False
+    msg = f"{res.get('errorCode', '')} {res.get('message', '')}".lower()
+    return any(k in msg for k in ("ag8001", "ag8002", "ag8003", "token", "session"))
+
+
 class AngelClient:
-    """Thin SmartAPI wrapper: login once, reuse session, back off on failure."""
+    """Thin SmartAPI wrapper: login once a day, re-login when the session expires, back off on failure.
+
+    Angel One sessions die at midnight IST, so a long-running server must log in again every day.
+    """
 
     def __init__(self):
         self.api = None
+        self._login_day = None
         self._failed_at = 0.0
         self._lock = threading.Lock()
 
@@ -57,20 +69,23 @@ class AngelClient:
         if not self.configured():
             return None
         with self._lock:
-            if self.api is not None:
+            if self.api is not None and self._login_day == datetime.now(IST).date():
                 return self.api
+            self.api = None
             if _time.time() - self._failed_at < 300:
                 return None
             try:
                 import pyotp
                 from SmartApi import SmartConnect
 
+                logging.getLogger("logzero_default").setLevel(logging.CRITICAL)  # SmartAPI logs full request headers incl. the session token
+
                 api = SmartConnect(api_key=os.environ["ANGEL_API_KEY"])
                 totp = pyotp.TOTP(os.environ["ANGEL_TOTP_KEY"]).now()
                 res = api.generateSession(os.environ["ANGEL_CLIENT_ID"], os.environ["ANGEL_PASSWORD"], totp)
                 if not res or not res.get("status"):
                     raise RuntimeError(res.get("message") if isinstance(res, dict) else "login failed")
-                self.api = api
+                self.api, self._login_day = api, datetime.now(IST).date()
                 log.info("Angel One session established")
                 return api
             except Exception as exc:  # noqa: BLE001
@@ -96,6 +111,10 @@ class AngelClient:
         }
         try:
             res = api.getCandleData(params)
+            if _token_error(res):
+                log.warning("Angel session expired - logging in again")
+                self.reset()
+                return None
             rows = (res or {}).get("data") or []
             if not rows:
                 return None
@@ -115,6 +134,10 @@ class AngelClient:
         try:
             for i in range(0, len(tokens), 50):
                 res = api.getMarketData("FULL", {exchange: tokens[i:i + 50]})
+                if _token_error(res):
+                    log.warning("Angel session expired - logging in again")
+                    self.reset()
+                    return out
                 for q in ((res or {}).get("data") or {}).get("fetched", []) or []:
                     out[str(q.get("symbolToken"))] = q
         except Exception as exc:  # noqa: BLE001

@@ -230,3 +230,25 @@ def test_first_hour_uses_one_strike_otm():
     ce = options.plan_trade("NIFTY", 1, 23010, date(2026, 10, 27), 14, 60, 120, risk, now=now, otm_steps=1)
     pe = options.plan_trade("NIFTY", -1, 23010, date(2026, 10, 27), 14, 60, 120, risk, now=now, otm_steps=1)
     assert ce["strike"] == 23050 and pe["strike"] == 22950
+
+
+def test_angel_token_error_detected():
+    from backend.engine.data import _token_error
+    assert _token_error({"success": False, "message": "Invalid Token", "errorCode": "AG8001", "data": ""})
+    assert not _token_error({"status": True, "data": []})
+    assert not _token_error(None)
+
+
+def test_replay_clock_freezes_while_engine_busy():
+    import time
+    from datetime import date
+    from backend.engine import replay
+    replay.start(date(2026, 10, 16), speed=600)
+    replay.hold(True)
+    t0 = replay.now()
+    time.sleep(0.3)
+    assert replay.now() == t0
+    replay.hold(False)
+    time.sleep(0.1)
+    assert replay.now() > t0
+    replay.stop()

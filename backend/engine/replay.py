@@ -40,11 +40,29 @@ def pause(on: bool) -> dict:
         if not _state.get("active"):
             return status()
         if on and _state["paused_at"] is None:
-            _state["paused_at"] = _time.time()
+            _state["paused_at"] = _state.get("held_at") or _time.time()
         elif not on and _state["paused_at"] is not None:
-            _state["real_start"] += _time.time() - _state["paused_at"]
+            _state["real_start"] += (_state.get("held_at") or _time.time()) - _state["paused_at"]
             _state["paused_at"] = None
     return status()
+
+
+def hold(on: bool) -> None:
+    """Freeze the simulated clock while the engine is busy, so a slow data fetch never skips candles."""
+    with _lock:
+        if not _state.get("active"):
+            return
+        if on and _state.get("held_at") is None:
+            _state["held_at"] = _time.time()
+        elif not on and _state.get("held_at") is not None:
+            if _state["paused_at"] is None:
+                _state["real_start"] += _time.time() - _state["held_at"]
+            _state["held_at"] = None
+
+
+def step_seconds() -> float:
+    """Real seconds between engine passes: at most 2 simulated minutes per pass at any speed."""
+    return max(0.2, min(2.0, 120.0 / _state.get("speed", 60.0)))
 
 
 def active() -> bool:
@@ -56,7 +74,7 @@ def now() -> datetime:
     with _lock:
         if not _state.get("active"):
             return datetime.now(IST)
-        ref = _state["paused_at"] or _time.time()
+        ref = _state["paused_at"] or _state.get("held_at") or _time.time()
         sim = _state["sim_start"] + timedelta(seconds=(ref - _state["real_start"]) * _state["speed"])
         end = datetime.combine(_state["day"], time(15, 35), IST)
         return min(sim, end)

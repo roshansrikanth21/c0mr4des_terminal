@@ -125,17 +125,19 @@ def _maybe_daily_summary() -> None:
 async def _market_loop():
     """One engine loop for everyone: refresh both indices, run the paper autopilot, cache for clients."""
     while True:
+        replay.hold(True)
         for key in INSTRUMENTS:
             try:
                 await _analyze_and_trade(key)
             except Exception as exc:  # noqa: BLE001
                 log.warning("analysis failed for %s: %s", key, exc)
+        replay.hold(False)
         _maybe_daily_summary()
         if replay.active():
             if replay.finished():  # summary already sent above; hand control back to the live market
                 replay.stop()
                 LATEST.clear(); LATEST_AT.clear()
-            await asyncio.sleep(2)
+            await asyncio.sleep(replay.step_seconds())
             continue
         now = datetime.now(IST)
         open_now = timeline.session(now, "NIFTY")["is_open"]
