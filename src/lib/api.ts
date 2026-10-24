@@ -64,7 +64,7 @@ export interface PaperTrade {
   slot?: string; strategy?: string;
   instrument: string; dir: number; side: string; symbol: string; strike: number; option_type: 'CE' | 'PE'; expiry: string;
   quantity: number; lots: number; entry_premium: number; premium_source: string; premium_stop: number; premium_target: number;
-  entry_spot: number; index_stop: number; index_target: number; opened_at: string; score: number; mark?: number;
+  entry_spot: number; index_stop: number; index_target: number | null; opened_at: string; score: number; mark?: number;
   unrealized?: number; closed_at?: string; exit_spot?: number; exit_premium?: number; reason?: string; charges?: number; pnl?: number;
 }
 

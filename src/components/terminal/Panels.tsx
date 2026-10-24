@@ -358,10 +358,10 @@ export function PaperPanel({ a }: { a: Analysis | null }) {
           <div className="text-[10px] font-mono text-muted-foreground mt-1">
             {open.symbol} · {open.quantity} qty · in {num(open.entry_premium)} → now {num(open.mark)}
           </div>
-          <div className="text-[10px] font-mono text-muted-foreground">index stop {num(open.index_stop, 0)} · target {num(open.index_target, 0)} · since {new Date(open.opened_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
+          <div className="text-[10px] font-mono text-muted-foreground">index stop {num(open.index_stop, 0)} · {open.index_target == null ? 'hold to 15:15' : `target ${num(open.index_target, 0)}`} · since {new Date(open.opened_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
         </div>
       )) : (
-        <p className="text-xs text-muted-foreground mt-3">No open paper position. The autopilot paper-trades three strategies separately (First-Hour breakout = main, Engine, First-30) and exits on stop, target or 15:15.</p>
+        <p className="text-xs text-muted-foreground mt-3">No open paper position. The autopilot paper-trades each enabled strategy separately (First-Hour breakout = main, First-30; Engine is off by default) and exits on stop, target or 15:15.</p>
       )}
       {sum.closed.slice(0, 4).map((t) => (
         <div key={t.opened_at + t.instrument} className="flex justify-between text-[11px] font-mono mt-1.5">
@@ -440,7 +440,7 @@ export function OrbPanel({ a }: { a: Analysis | null }) {
           <p className="text-xs text-muted-foreground mt-1">{a.first30.text}</p>
         </div>
       )}
-      <p className="text-[10px] text-muted-foreground mt-3">Evidence: 2 years of NIFTY (Nov 2023 - Oct 2026), 549 trades, 44% winners, profit factor 1.41, profitable in 11 of 13 quarters (modelled premiums). Without expiry days PF 1.15. The First-30 rule is weaker (PF 1.11) and is kept only for comparison.</p>
+      <p className="text-[10px] text-muted-foreground mt-3">Evidence: 2 years of NIFTY (Nov 2023 - Oct 2026), 549 trades, 44% winners, profit factor 1.41, profitable in 11 of 13 quarters (modelled premiums). This rule now skips expiry days, so the number that applies is PF 1.15 (+Rs 65k) - close to break-even. The First-30 rule is weaker (PF 1.11) and is kept only for comparison.</p>
     </div>
   );
 }

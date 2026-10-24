@@ -11,7 +11,8 @@ news and social feeds for anything that moves Indian indices, and ends with one 
 Every conclusion comes with the reasons in plain English, a trade plan (strike, premium stop and target,
 index stop and target, lots sized to your risk) and the reasons it would refuse to trade.
 
-> Decision support, not financial advice. It never places orders. You do.
+> Decision support. Real orders stay off unless you set `LIVE_TRADING=true`, and even then it is one
+> confirmed click per order, with a server-side re-check of your caps. You manage the exit.
 
 ## Run it
 
@@ -68,9 +69,14 @@ and 50 trades is too few to prove anything. Watch the Signal Log in a live marke
 
 Tested on real hourly NIFTY/SENSEX bars, Nov 2023 to Oct 2026, 1 lot. Option premiums are modelled from real index moves, real India VIX and real time to expiry (theta included), with slippage and full charges.
 
+**The live First-Hour rule skips expiry days** (since 25 Oct), so the number that applies to it is the
+"excluding expiry days" one: **PF 1.15, +₹65k** — roughly break-even. The 1.41 below is the same rule
+*trading* expiry days, where ~70% of the modelled profit came from premiums we trust least.
+
 | Strategy | NIFTY | SENSEX |
 |---|---|---|
 | **First-hour breakout, 2R** (main) | 549 trades, 44% won, PF 1.41, **+₹2.07L**, 11/13 quarters up | PF 1.32, +₹1.71L, 12/13 quarters up |
+| — same, excluding expiry days | PF 1.15, +₹65k | — |
 | First-hour direction (the First-30 idea at 1 hour) | PF 1.11, +₹66k, drawdown −₹85k | PF 1.17 |
 | 5 EMA (Power of Stocks), 60 days | sell-only PF 1.26, both sides PF 0.98 | sell-only PF 1.13 |
 | TJR sweep → BOS → FVG, 60 days | 14 trades, PF 1.68 | PF 0.29 (loses) |
@@ -84,10 +90,11 @@ Shock days (NIFTY daily 2008-2026): after India VIX jumps 15%+ in a day, NIFTY r
 1. Rotate your Angel One credentials (the old ones leaked), then put the NEW ones in `backend/.env` (see `.env.example`).
    Without them everything still works on Yahoo's delayed data.
 2. Run `start.bat` before 09:15. Leave it running all session.
-3. The **Autopilot** paper-trades three strategies separately, at live prices, with all charges:
-   - **Engine**: the full candle/structure/trend/news model (up to 3 trades/day)
-   - **Opening Range**: first 5-minute close outside the 09:15-09:45 range, with yesterday's close as a filter (1/day)
+3. The **Autopilot** paper-trades each enabled strategy separately, at live prices, with all charges:
+   - **First-Hour** (main): first 5-minute close outside the 09:15-**10:15** range, with yesterday's close as a filter (1/day)
    - **First-30**: your rule. The first 30 minutes went up = BUY, down = SELL, stop at mid-range, hold to 15:15 (1/day)
+   - **Engine**: the full candle/structure/trend/news model (up to 2 trades/day). **Off by default** — weakest
+     backtest and it lost its first two live trades. Turn it back on in Settings.
 4. After 15:30 open **Trade Journal** for each trade (entry, exit, why, charges, P&L) and the per-strategy scoreboard.
 5. Real orders stay off unless you set `LIVE_TRADING=true`. Even then, it's one confirmed click per order and you manage exits.
 

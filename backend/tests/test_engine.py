@@ -281,3 +281,67 @@ def test_lots_are_capped_on_cheap_premiums():
                            {"capital": 10000, "risk_per_trade_pct": 25, "max_trades_per_day": 2, "max_daily_loss_pct": 25},
                            None, now, otm_steps=1)
     assert o["lots"] <= options.MAX_LOTS
+
+
+# ---------------- robustness (audit 25 Oct 2026) ----------------
+def _entry_analysis(when: str, spot: float = 23000.0, verdict: str = "BUY") -> dict:
+    opt = {"side": "BUY CE", "symbol_hint": "NIFTY 27 OCT 23000 CE", "strike": 23000, "option_type": "CE",
+           "expiry": "2026-10-27", "quantity": 65, "lots": 1, "premium": 150.0, "premium_source": "model",
+           "premium_stop": 120.0, "premium_target": 210.0, "greeks": {"delta": 0.5}}
+    return {"instrument": {"key": "NIFTY"}, "session": {"is_open": True}, "vix": {"value": 14}, "chain": None,
+            "score": 0.6, "reasons": [], "spot_live": spot, "price": spot, "generated_at": when,
+            "verdict": verdict, "option": opt, "plan": {"direction": 1, "stop": 22950.0, "target": 23100.0}}
+
+
+def test_paper_book_recovers_from_a_corrupt_file(tmp_path):
+    from backend.engine import trader
+    p = tmp_path / "paper.json"
+    pt = trader.PaperTrader(p)
+    pt.state["closed"].append({"pnl": 10.0, "opened_at": "2026-10-21T10:00:00+05:30", "instrument": "NIFTY",
+                               "strategy": "First-Hour", "slot": "NIFTY|orb", "closed_at": "2026-10-21T11:00:00+05:30"})
+    pt._save()
+    pt._save()  # second save turns the valid file into paper.json.bak
+    p.write_text('{"open": {', encoding="utf-8")  # what a kill mid-write used to leave behind
+    again = trader.PaperTrader(p)
+    assert len(again.state["closed"]) == 1
+    assert list(tmp_path.glob("paper.json.corrupt-*.json")), "the unreadable file must be preserved"
+
+
+def test_missed_square_off_is_closed_next_session(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"]}
+    assert pt.on_analysis(_entry_analysis("2026-10-21T10:00:00+05:30"), settings)["events"][0]["type"] == "paper_entry"
+    # Next day, between stop and target: nothing would have closed it, so it must be forced out.
+    ev = pt.on_analysis(_entry_analysis("2026-10-22T09:20:00+05:30", verdict="NO TRADE"), settings)["events"][0]
+    assert ev["type"] == "paper_exit" and ev["trade"]["reason"] == "stale (square-off missed)"
+    assert ev["trade"]["stale"] is True and not pt.state["open"]
+    # Keyed on opened_at, so yesterday's forced exit never touches today's daily-loss cap.
+    assert pt.today_closed(day=date(2026, 10, 22)) == []
+    assert pt.today_closed(day=date(2026, 10, 21)) != []
+
+
+def test_first30_has_no_target():
+    from backend.engine import orb
+    closes = [23000, 23001, 23002, 23003, 23004, 23005]
+    df = make_bars(closes, start="2026-10-21 09:15", spread=1)
+    r = orb.first30(df, datetime(2026, 10, 21, 9, 50, tzinfo=IST))
+    assert r["verdict"] == "BUY" and r["direction"] == 1
+    assert r["target"] is None and "no target" in r["text"]
+
+
+def test_settings_are_clamped(tmp_path, monkeypatch):
+    from backend.engine import service
+    monkeypatch.setattr(service, "SETTINGS_FILE", tmp_path / "settings.json")
+    s = service.save_settings({"capital": -5, "max_trades_per_day": 0,
+                               "risk_per_trade_pct": 500, "max_daily_loss_pct": 300})
+    assert s["capital"] == 1000.0 and s["max_trades_per_day"] == 1
+    assert s["risk_per_trade_pct"] == 100.0 and s["max_daily_loss_pct"] == 100.0
+
+
+def test_evaluate_refuses_a_nearly_empty_frame():
+    df = make_bars([100, 101, 102])
+    with pytest.raises(RuntimeError):
+        evaluate(df, df, 50)
+

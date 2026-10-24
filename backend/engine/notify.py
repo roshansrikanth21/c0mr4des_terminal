@@ -49,7 +49,8 @@ def fmt_event(ev: dict) -> str | None:
                 f"{t['lots']} lot ({t['quantity']} qty) @ Rs {t['entry_premium']}"
                 f"{' (over your risk budget)' if t.get('oversize') else ''}\n"
                 f"Index stop {t['index_stop']:.0f} | "
-                + ("hold to 15:15 (no target)" if t.get("strategy") == "First-30" else f"target {t['index_target']:.0f}"))
+                + ("hold to 15:15 (no target)" if t.get("strategy") == "First-30" or t.get("index_target") is None
+                   else f"target {t['index_target']:.0f}"))
     if ev["type"] == "paper_exit":
         return (f"PAPER EXIT [{t['strategy']}] {t['symbol']}\n"
                 f"Out @ Rs {t['exit_premium']} ({t['reason']})\nP&L Rs {t['pnl']:,.0f} after charges")

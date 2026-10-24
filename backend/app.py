@@ -227,8 +227,10 @@ async def _market_loop():
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    on = " + ".join(service.load_settings().get("autopilot_strategies", []))
-    notify.send(f"C0MR4DE Terminal (re)started. Paper autopilot armed on NIFTY: {on}.")
+    s = service.load_settings()
+    on = " + ".join(s.get("autopilot_strategies", []))
+    where = " + ".join(s.get("autopilot_instruments", ["NIFTY"]))
+    notify.send(f"C0MR4DE Terminal (re)started. Paper autopilot armed on {where}: {on}.")
     tasks = [asyncio.create_task(_news_loop()), asyncio.create_task(_market_loop())]
     yield
     for t in tasks:

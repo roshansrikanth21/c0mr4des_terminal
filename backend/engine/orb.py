@@ -83,6 +83,6 @@ def first30(df5: pd.DataFrame, now: datetime) -> dict:
     live = len(after) <= 2  # entry window 09:45-10:00 (tolerates a few minutes of feed delay)
     word = "UP (low to high)" if d > 0 else "DOWN (high to low)"
     return {**base, "status": "triggered" if live else "taken", "verdict": ("BUY" if d > 0 else "SELL") if live else "NO TRADE",
-            "direction": d, "entry": c, "stop": stop, "target": c + d * 50 * abs(c - stop), "risk_points": abs(c - stop),
-            "target_points": 3 * abs(c - stop),
-            "text": f"First 30 minutes went {word}: {o:.0f} -> {c:.0f}. {'Enter now' if live else 'Entered at 09:45'}, stop {stop:.0f} (middle of the range), hold to 15:15."}
+            "direction": d, "entry": c, "stop": stop, "target": None, "risk_points": abs(c - stop),
+            "text": f"First 30 minutes went {word}: {o:.0f} -> {c:.0f}. {'Enter now' if live else 'Entered at 09:45'}, "
+                    f"stop {stop:.0f} (middle of the range), hold to 15:15 - no target."}

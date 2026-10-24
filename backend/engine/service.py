@@ -25,6 +25,21 @@ ALL_STRATEGIES = ("First-Hour", "First-30", "Engine")
 # Engine is off by default: weakest backtest (PF 1.27) and 0/2 in the first live week.
 DEFAULT_STRATEGIES = ("First-Hour", "First-30")
 
+# Anything the Settings page can write is clamped to a sane range (the owner types fast, and a 0 or a
+# negative here would silently disable the risk caps).
+LIMITS = {
+    "capital": (1000.0, 100_000_000.0),
+    "risk_per_trade_pct": (0.1, 100.0),
+    "max_trades_per_day": (1, 10),
+    "max_daily_loss_pct": (1.0, 100.0),
+}
+
+
+def _clamp(key: str, value) -> float | int:
+    lo, hi = LIMITS[key]
+    v = min(max(float(value), lo), hi)
+    return int(round(v)) if key == "max_trades_per_day" else round(v, 2)
+
 
 def load_settings() -> dict:
     base = {**RISK_DEFAULTS, "autopilot_instruments": ["NIFTY"], "autopilot_strategies": list(DEFAULT_STRATEGIES)}
@@ -38,7 +53,10 @@ def save_settings(new: dict) -> dict:
     cur = load_settings()
     for k in RISK_DEFAULTS:
         if k in new and new[k] is not None:
-            cur[k] = float(new[k]) if k != "max_trades_per_day" else int(new[k])
+            try:
+                cur[k] = _clamp(k, new[k])
+            except (TypeError, ValueError):
+                pass  # keep the previous value rather than 500 the Settings page
     if new.get("autopilot_strategies") is not None:
         cur["autopilot_strategies"] = [x for x in new["autopilot_strategies"] if x in ALL_STRATEGIES] or list(DEFAULT_STRATEGIES)
     if new.get("autopilot_instruments") is not None:
@@ -60,10 +78,11 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         raise ValueError(f"Unknown instrument {key}; use one of {list(INSTRUMENTS)}")
     inst = INSTRUMENTS[key]
     now = replay.now()
+    in_replay = replay.active()
     sess = timeline.session(now, key)
     raw5, source = get_candles(key, "5m")
     daily, _ = get_candles(key, "1d")
-    if replay.active():
+    if in_replay:
         raw5, daily = replay.cut(raw5, "5m"), replay.cut(daily, "1d")
         source = f"replay ({source})"
         if raw5.empty:
@@ -74,14 +93,18 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     cues = macro.global_cues()
     # Global cues matter most before/at the open; fade their weight as the day's own price action builds.
     cue_w = 1.0 if (not sess["is_open"] or sess["phase"] in ("pre_open", "opening")) else 0.5
-    result = evaluate(df5, daily, inst.strike_step, now=now, news_bias=news["bias"],
-                      cue_bias=cues["bias"] * cue_w, session=sess)
+    # Replay has no news or cue history, so using today's would leak the future into a past day. Same
+    # treatment as the backtest: price alone.
+    news_bias = 0.0 if in_replay else news["bias"]
+    cue_bias = 0.0 if in_replay else cues["bias"] * cue_w
+    result = evaluate(df5, daily, inst.strike_step, now=now, news_bias=news_bias,
+                      cue_bias=cue_bias, session=sess)
 
     expiry = date.fromisoformat(sess["expiry"])
     if expiry == now.date() and now.hour >= 12:
         # Expiry-afternoon OTM options cost a rupee or two: sizing then buys dozens of lots of a lottery ticket.
         expiry = timeline.weekly_expiry(key, now.date() + timedelta(days=1))
-    chain = options.live_chain(key, expiry, result["price"]) if sess["is_open"] and not replay.active() else None
+    chain = options.live_chain(key, expiry, result["price"]) if sess["is_open"] and not in_replay else None
     settings = load_settings()
     plan = result["plan"]
     option = options.plan_trade(key, plan["direction"], result["price"], expiry, vix["value"] if vix else None,
@@ -107,10 +130,14 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     em = options.expected_move(result["price"], vix["value"] if vix else None, minutes_left)
 
     reasons = result["reasons"] + [
-        {"factor": "News flow", "signal": "bullish" if news["bias"] > 0.15 else "bearish" if news["bias"] < -0.15 else "neutral",
-         "text": news["text"] + (" Top driver: " + news["drivers"][0]["title"] if news["drivers"] else "")},
-        {"factor": "Global cues", "signal": "bullish" if cues["bias"] > 0.2 else "bearish" if cues["bias"] < -0.2 else "neutral",
-         "text": cues["text"]},
+        {"factor": "News flow", "signal": "neutral" if in_replay else
+         "bullish" if news["bias"] > 0.15 else "bearish" if news["bias"] < -0.15 else "neutral",
+         "text": ("Not replayed: there is no news history, so it is left out of replay decisions."
+                  if in_replay else
+                  news["text"] + (" Top driver: " + news["drivers"][0]["title"] if news["drivers"] else ""))},
+        {"factor": "Global cues", "signal": "neutral" if in_replay else
+         "bullish" if cues["bias"] > 0.2 else "bearish" if cues["bias"] < -0.2 else "neutral",
+         "text": "Not replayed: no cue history, so it is left out of replay decisions." if in_replay else cues["text"]},
         {"factor": "Timeline", "signal": "neutral", "text": f"{sess['phase_note']} {sess['expiry_note']}"},
     ]
     if vix:
@@ -123,9 +150,9 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         "session": sess, "vix": vix, "expected_move_rest_of_day": round(em, 1) if em else None,
         **result, "reasons": reasons, "option": option, "pcr": options.pcr(chain), "chain": chain,
         "news": news, "global": cues, "candles": chart_payload(raw5), "broker_connected": angel.api is not None,
-        "spot_live": (None if replay.active() else _spot_ltp(inst)) or float(raw5["close"].iloc[-1]),
+        "spot_live": (None if in_replay else _spot_ltp(inst)) or float(raw5["close"].iloc[-1]),
         "replay": replay.status(), "orb": orb_sig, "first30": f30,
-        "shock": shock_check(raw5, daily, vix, news),
+        "shock": None if in_replay else shock_check(raw5, daily, vix, news),
     }
     _log_signal(key, out)
     return out

@@ -14,13 +14,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import threading
 from datetime import date, datetime, time
 from pathlib import Path
 
 from .config import INSTRUMENTS, IST
 from .data import angel
-from .options import bs, implied_vol, round_trip_cost, years_to_expiry
+from .options import MAX_LOTS, bs, implied_vol, round_trip_cost, years_to_expiry
 
 log = logging.getLogger("engine.trader")
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -40,19 +41,59 @@ class PaperTrader:
         self._lock = threading.Lock()
         self.state = self._load()
 
+    @staticmethod
+    def _valid(state) -> bool:
+        return isinstance(state, dict) and isinstance(state.get("open"), dict) and isinstance(state.get("closed"), list)
+
     def _load(self) -> dict:
-        try:
-            return json.loads(self.path.read_text())
-        except Exception:  # noqa: BLE001
-            return {"open": {}, "closed": []}
+        """Never lose the record silently.
+
+        A truncated/corrupt JSON used to come back as an empty book, and the next save then
+        overwrote the whole history. Now: read the main file, fall back to the .bak, and keep a
+        copy of anything unreadable so it can be recovered by hand.
+        """
+        bak = self.path.with_name(self.path.name + ".bak")
+        for p in (self.path, bak):
+            try:
+                state = json.loads(p.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                continue
+            except Exception as exc:  # noqa: BLE001  corrupt or unreadable
+                log.error("paper book %s is unreadable (%s) - preserving it", p.name, exc)
+                if p == self.path:
+                    keep = self.path.with_name(f"{self.path.name}.corrupt-{datetime.now(IST):%Y%m%d-%H%M%S}.json")
+                    try:
+                        shutil.copy2(self.path, keep)
+                        self.path.unlink()  # so the next save cannot copy the broken file over .bak
+                        log.error("copy saved as %s", keep.name)
+                    except Exception:  # noqa: BLE001
+                        pass
+                continue
+            if self._valid(state):
+                if p == bak:
+                    log.error("recovered the paper book from %s", bak.name)
+                return state
+            log.error("paper book %s has the wrong shape - ignoring it", p.name)
+        return {"open": {}, "closed": []}
 
     def _save(self):
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(self.state, indent=1, default=str))
+        """Atomic write + rolling .bak so a kill mid-write cannot truncate the record."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(json.dumps(self.state, indent=1, default=str))
+            f.flush()
+            os.fsync(f.fileno())
+        if self.path.exists():
+            try:
+                shutil.copy2(self.path, self.path.with_name(self.path.name + ".bak"))
+            except Exception:  # noqa: BLE001
+                pass
+        os.replace(tmp, self.path)
 
     # ---------- helpers ----------
     def today_closed(self, key: str | None = None, day: date | None = None) -> list[dict]:
-        d = (day or date.today()).isoformat()
+        d = (day or datetime.now(IST).date()).isoformat()  # IST, not the host's local date
         return [t for t in self.state["closed"] if t["opened_at"][:10] == d and (key is None or t["instrument"] == key)]
 
     def day_pnl(self, day: date | None = None) -> float:
@@ -100,20 +141,29 @@ class PaperTrader:
             pos = self.state["open"].get(slot)
             if pos:
                 d = pos["dir"]
-                hit_stop = (spot <= pos["index_stop"]) if d > 0 else (spot >= pos["index_stop"])
-                hit_tgt = (spot >= pos["index_target"]) if d > 0 else (spot <= pos["index_target"])
-                eod = now.time() >= SQUARE_OFF or not a["session"]["is_open"]
-                prem, src = self._premium_now(pos, spot, now, a.get("chain"))
+                # If the service was down at 15:15 the position never came off. Close it at its last
+                # mark instead of managing yesterday's contract against today's price forever.
+                stale = datetime.fromisoformat(pos["opened_at"]).date() < now.date()
+                if stale:
+                    prem, src = float(pos.get("mark") or pos["entry_premium"]), "last mark"
+                else:
+                    prem, src = self._premium_now(pos, spot, now, a.get("chain"))
                 pos["mark"] = round(prem, 2)
                 pos["unrealized"] = round((prem - pos["entry_premium"]) * pos["quantity"], 2)
+                tgt = pos.get("index_target")
+                hit_stop = (spot <= pos["index_stop"]) if d > 0 else (spot >= pos["index_stop"])
+                hit_tgt = tgt is not None and ((spot >= tgt) if d > 0 else (spot <= tgt))
+                eod = now.time() >= SQUARE_OFF or not a["session"]["is_open"]
                 # premium-based stop as a backstop (theta can kill a position before the index stop hits)
                 prem_stop = prem <= pos["premium_stop"]
-                if hit_stop or hit_tgt or eod or prem_stop:
-                    reason = "target" if hit_tgt else "stop" if hit_stop else "premium stop" if prem_stop else "15:15 square-off"
+                if stale or hit_stop or hit_tgt or eod or prem_stop:
+                    reason = ("stale (square-off missed)" if stale
+                              else "target" if hit_tgt else "stop" if hit_stop
+                              else "premium stop" if prem_stop else "15:15 square-off")
                     cost = round_trip_cost((pos["entry_premium"] + prem) / 2, pos["quantity"])
                     pnl = round((prem - pos["entry_premium"]) * pos["quantity"] - cost, 2)
                     closed = {**pos, "closed_at": now.isoformat(), "exit_spot": spot, "exit_premium": round(prem, 2),
-                              "exit_source": src, "reason": reason, "charges": cost, "pnl": pnl}
+                              "exit_source": src, "reason": reason, "charges": cost, "pnl": pnl, "stale": stale}
                     self.state["closed"].append(closed)
                     del self.state["open"][slot]
                     events.append({"type": "paper_exit", "trade": closed})
@@ -146,7 +196,7 @@ class PaperTrader:
                            "expiry": o["expiry"], "quantity": qty, "lots": lots, "oversize": oversize, "entry_premium": o["premium"],
                            "premium_source": o["premium_source"], "premium_stop": o["premium_stop"],
                            "premium_target": o["premium_target"], "iv": iv, "entry_spot": spot,
-                           "index_stop": p["stop"], "index_target": p["target"], "opened_at": now.isoformat(),
+                           "index_stop": p["stop"], "index_target": p.get("target"), "opened_at": now.isoformat(),
                            "score": a["score"], "mark": o["premium"], "unrealized": 0.0}
                     self.state["open"][slot] = pos
                     self._save()
@@ -235,14 +285,19 @@ def place_live_order(key: str, expiry: str, strike: float, kind: str, lots: int,
     api = angel.session()
     if api is None:
         return {"ok": False, "error": "Angel One is not connected."}
+    if lots < 1:
+        return {"ok": False, "error": "Lots must be at least 1."}
     if side == "BUY":
         if len([t for t in _order_log_today() if t.get("side") == "BUY" and t.get("ok")]) >= settings["max_trades_per_day"]:
             return {"ok": False, "error": "Max trades per day reached."}
         if paper.day_pnl() <= -settings["capital"] * settings["max_daily_loss_pct"] / 100:
             return {"ok": False, "error": "Daily loss limit reached."}
         max_lots = int(settings["capital"] // (limit_price * INSTRUMENTS[key].lot_size)) if limit_price > 0 else 0
-        if lots < 1 or lots > max_lots:
+        if lots > max_lots:
             return {"ok": False, "error": f"Lots must be 1..{max_lots} for your capital."}
+    elif lots > MAX_LOTS:
+        # Selling options needs margin the app cannot see; keep the hard cap from the paper book.
+        return {"ok": False, "error": f"Sell size is capped at {MAX_LOTS} lots."}
     c = _find_contract(key, expiry, strike, kind)
     if not c:
         return {"ok": False, "error": "Contract not found in Angel One scrip master."}
@@ -270,6 +325,6 @@ def place_live_order(key: str, expiry: str, strike: float, kind: str, lots: int,
 def _order_log_today() -> list[dict]:
     if not ORDER_LOG.exists():
         return []
-    d = date.today().isoformat()
+    d = datetime.now(IST).date().isoformat()
     rows = [json.loads(x) for x in ORDER_LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
     return [r for r in rows if str(r.get("at", ""))[:10] == d]
