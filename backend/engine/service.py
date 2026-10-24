@@ -21,8 +21,13 @@ _last_verdict: dict[str, str] = {}
 _lock = threading.Lock()
 
 
+ALL_STRATEGIES = ("First-Hour", "First-30", "Engine")
+# Engine is off by default: weakest backtest (PF 1.27) and 0/2 in the first live week.
+DEFAULT_STRATEGIES = ("First-Hour", "First-30")
+
+
 def load_settings() -> dict:
-    base = {**RISK_DEFAULTS, "autopilot_instruments": ["NIFTY"]}
+    base = {**RISK_DEFAULTS, "autopilot_instruments": ["NIFTY"], "autopilot_strategies": list(DEFAULT_STRATEGIES)}
     try:
         return {**base, **json.loads(SETTINGS_FILE.read_text())}
     except Exception:  # noqa: BLE001
@@ -34,6 +39,8 @@ def save_settings(new: dict) -> dict:
     for k in RISK_DEFAULTS:
         if k in new and new[k] is not None:
             cur[k] = float(new[k]) if k != "max_trades_per_day" else int(new[k])
+    if new.get("autopilot_strategies") is not None:
+        cur["autopilot_strategies"] = [x for x in new["autopilot_strategies"] if x in ALL_STRATEGIES] or list(DEFAULT_STRATEGIES)
     if new.get("autopilot_instruments") is not None:
         cur["autopilot_instruments"] = [x for x in new["autopilot_instruments"] if x in INSTRUMENTS] or ["NIFTY"]
     DATA_DIR.mkdir(parents=True, exist_ok=True)

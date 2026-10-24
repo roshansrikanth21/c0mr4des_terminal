@@ -19,12 +19,12 @@ from pydantic import BaseModel
 load_dotenv(Path(__file__).with_name(".env"))
 
 from .engine import backtest, macro, service, timeline  # noqa: E402
-from .engine.trader import live_enabled, paper, place_live_order, replay_paper  # noqa: E402
+from .engine.trader import go_no_go, live_enabled, paper, place_live_order, replay_paper, scorecard  # noqa: E402
 from .engine import replay  # noqa: E402
 from datetime import date as _date  # noqa: E402
 from .engine import notify  # noqa: E402
 from .engine.config import IST  # noqa: E402
-from datetime import datetime  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
 from .engine.config import INSTRUMENTS  # noqa: E402
 from .engine.data import angel, get_candles  # noqa: E402
 from .engine.news import radar  # noqa: E402
@@ -67,8 +67,44 @@ def book():
     return replay_paper if replay.active() else paper
 
 
+_HEALTH: dict = {"bad_since": None, "alerted": False, "fails": 0}
+
+
+def _check_health(a: dict | None, error: str | None = None) -> None:
+    """Telegram the user when the bot is trading blind: delayed data, stale candles or failing analysis."""
+    if replay.active():
+        return
+    now = datetime.now(IST)
+    if not timeline.session(now, "NIFTY")["is_open"]:
+        _HEALTH.update(bad_since=None, fails=0)
+        return
+    problem = None
+    if error:
+        _HEALTH["fails"] += 1
+        problem = f"analysis failing ({error[:120]})" if _HEALTH["fails"] >= 3 else None
+    else:
+        _HEALTH["fails"] = 0
+        last = a["candles"][-1]["time"] if a.get("candles") else 0
+        if a.get("data_delayed"):
+            problem = f"on delayed Yahoo data (Angel {'connected' if a.get('broker_connected') else 'NOT connected'})"
+        elif time.time() - last > 15 * 60:
+            problem = "candles are more than 15 minutes old"
+    if problem:
+        _HEALTH["bad_since"] = _HEALTH["bad_since"] or now
+        if not _HEALTH["alerted"] and (now - _HEALTH["bad_since"]).total_seconds() >= 180:
+            _HEALTH["alerted"] = True
+            notify.send(f"DATA WARNING NIFTY: {problem} for 3+ minutes. Alerts may be late - don't act on them "
+                        "until you get the all-clear.")
+    else:
+        if _HEALTH["alerted"]:
+            notify.send("DATA OK: back on live Angel One data.")
+        _HEALTH.update(bad_since=None, alerted=False)
+
+
 async def _analyze_and_trade(key: str) -> dict:
     a = await asyncio.to_thread(service.analyze, key)
+    if key == "NIFTY":
+        _check_health(a)
     a["paper"] = await asyncio.to_thread(book().on_analysis, a, service.load_settings())
     LATEST[key], LATEST_AT[key] = a, time.time()
     for ev in a["paper"]["events"]:
@@ -119,6 +155,31 @@ def _maybe_replay_summary() -> None:
     notify.send("\n".join(lines))
 
 
+def _maybe_weekly_report() -> None:
+    """Saturday 10:00 IST: the week's paper results per strategy and where each stands on go/no-go."""
+    now = datetime.now(IST)
+    if replay.active() or now.weekday() != 5 or now.hour < 10 or not _once("weekly"):
+        return
+    closed = paper.summary()["closed"]
+    closed = sorted(closed, key=lambda t: t["closed_at"])
+    week_start = (now - timedelta(days=now.weekday())).date().isoformat()
+    week = [t for t in closed if t["opened_at"][:10] >= week_start]
+    on = service.load_settings().get("autopilot_strategies", [])
+    lines = [f"WEEKLY REPORT w/c {week_start}: {len(week)} trade(s), Rs {sum(t['pnl'] for t in week):,.0f} this week",
+             f"All-time paper: Rs {sum(t['pnl'] for t in closed):,.0f} over {len(closed)} trades", ""]
+    for name in ("First-Hour", "First-30", "Engine"):
+        mine = [t for t in closed if t["strategy"] == name]
+        if not mine:
+            continue
+        sc = scorecard(mine)
+        verdict, checks = go_no_go(sc)
+        lines.append(f"[{name}]{'' if name in on else ' (switched off)'} Rs {sc['net']:,.0f}, "
+                     f"{sc['win_rate']}% won, avg win Rs {sc['avg_win']:,.0f} / avg loss Rs {sc['avg_loss']:,.0f}")
+        lines.append(f"  Go/no-go: {verdict}")
+        lines += ["  " + c for c in checks]
+    notify.send("\n".join(lines))
+
+
 def _maybe_daily_summary() -> None:
     if replay.active():
         return _maybe_replay_summary()
@@ -147,7 +208,10 @@ async def _market_loop():
                 await _analyze_and_trade(key)
             except Exception as exc:  # noqa: BLE001
                 log.warning("analysis failed for %s: %s", key, exc)
+                if key == "NIFTY":
+                    _check_health(None, str(exc))
         replay.hold(False)
+        _maybe_weekly_report()
         _maybe_daily_summary()
         if replay.active():
             if replay.finished():  # summary already sent above; hand control back to the live market
@@ -163,7 +227,8 @@ async def _market_loop():
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    notify.send("C0MR4DE Terminal is online. Paper autopilot armed (NIFTY first-hour breakout + engine + first-30).")
+    on = " + ".join(service.load_settings().get("autopilot_strategies", []))
+    notify.send(f"C0MR4DE Terminal (re)started. Paper autopilot armed on NIFTY: {on}.")
     tasks = [asyncio.create_task(_news_loop()), asyncio.create_task(_market_loop())]
     yield
     for t in tasks:
@@ -333,6 +398,7 @@ class Settings(BaseModel):
     max_trades_per_day: int | None = None
     max_daily_loss_pct: float | None = None
     autopilot_instruments: list[str] | None = None
+    autopilot_strategies: list[str] | None = None
 
 
 @app.get("/api/settings")

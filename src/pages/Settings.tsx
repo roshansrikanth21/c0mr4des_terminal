@@ -7,7 +7,7 @@ import { getJSON, inr } from '@/lib/api';
 import { PRESETS, setPreset, setViewMode, useAppearance } from '@/lib/appearance';
 import { ReplayControls } from '@/components/ReplayBar';
 
-interface Risk { capital: number; risk_per_trade_pct: number; max_trades_per_day: number; max_daily_loss_pct: number; autopilot_instruments?: string[] }
+interface Risk { capital: number; risk_per_trade_pct: number; max_trades_per_day: number; max_daily_loss_pct: number; autopilot_instruments?: string[]; autopilot_strategies?: string[] }
 interface Broker { configured: boolean; connected: boolean; note: string }
 
 const FIELDS: [keyof Risk, string, string][] = [
@@ -80,6 +80,10 @@ export function Settings() {
             value={(risk.autopilot_instruments || ['NIFTY']).join('+')}
             options={[['NIFTY', 'NIFTY only'], ['SENSEX', 'SENSEX only'], ['NIFTY+SENSEX', 'Both']]}
             onChange={(v) => setRisk({ ...risk, autopilot_instruments: v.split('+') })} />
+          <Choice label="Autopilot strategies" help="Engine is off by default: weakest backtest and it lost its first live trades. Switching one off never closes a trade it already holds."
+            value={(risk.autopilot_strategies || ['First-Hour', 'First-30']).join('+')}
+            options={[['First-Hour+First-30', 'First-Hour + First-30'], ['First-Hour', 'First-Hour only'], ['First-Hour+First-30+Engine', 'All three']]}
+            onChange={(v) => setRisk({ ...risk, autopilot_strategies: v.split('+') })} />
           <CapitalHealth capital={risk.capital} />
           <div className="text-xs text-muted-foreground font-mono">
             Max risk per trade: {inr(risk.capital * risk.risk_per_trade_pct / 100)} · daily stop: {inr(risk.capital * risk.max_daily_loss_pct / 100)}

@@ -74,14 +74,19 @@ class PaperTrader:
         events = []
         if key not in settings.get("autopilot_instruments", ["NIFTY"]):
             return {"events": [], "open": []}
-        events += self._process(f"{key}|engine", "Engine", a.get("verdict"), a.get("option"), a.get("plan"), a, settings,
+        enabled = settings.get("autopilot_strategies", ["First-Hour", "First-30"])
+
+        def gate(name, verdict):  # a switched-off strategy opens nothing, but still manages a position it holds
+            return verdict if name in enabled else None
+
+        events += self._process(f"{key}|engine", "Engine", gate("Engine", a.get("verdict")), a.get("option"), a.get("plan"), a, settings,
                                 settings["max_trades_per_day"])
         orb = a.get("orb") or {}
-        events += self._process(f"{key}|orb", "First-Hour", orb.get("verdict"), orb.get("option"),
+        events += self._process(f"{key}|orb", "First-Hour", gate("First-Hour", orb.get("verdict")), orb.get("option"),
                                 {"direction": orb.get("direction", 0), "stop": orb.get("stop"), "target": orb.get("target")},
                                 a, settings, 1)
         f30 = a.get("first30") or {}
-        events += self._process(f"{key}|first30", "First-30", f30.get("verdict"), f30.get("option"),
+        events += self._process(f"{key}|first30", "First-30", gate("First-30", f30.get("verdict")), f30.get("option"),
                                 {"direction": f30.get("direction", 0), "stop": f30.get("stop"), "target": f30.get("target")},
                                 a, settings, 1)
         return {"events": events, "open": [p for s, p in self.state["open"].items() if s.startswith(key + "|")]}
@@ -173,6 +178,36 @@ class PaperTrader:
         with self._lock:
             self.state = {"open": {}, "closed": []}
             self._save()
+
+
+def scorecard(trades: list[dict]) -> dict:
+    """The go/no-go numbers for a list of closed trades (oldest first)."""
+    pnl = [t["pnl"] for t in trades]
+    wins, losses = [p for p in pnl if p > 0], [p for p in pnl if p <= 0]
+    streak = worst = 0
+    for p in pnl:
+        streak = streak + 1 if p <= 0 else 0
+        worst = max(worst, streak)
+    avg_w = sum(wins) / len(wins) if wins else 0.0
+    avg_l = -sum(losses) / len(losses) if losses else 0.0
+    return {"trades": len(pnl), "net": round(sum(pnl), 2), "win_rate": round(100 * len(wins) / len(pnl), 1) if pnl else None,
+            "avg_win": round(avg_w, 2), "avg_loss": round(avg_l, 2),
+            "payoff": round(avg_w / avg_l, 2) if avg_l else None, "worst_streak": worst}
+
+
+def go_no_go(sc: dict, need: int = 20) -> tuple[str, list[str]]:
+    """Rules agreed before going live: >=20 trades, win rate >=40%, avg win >=1.5x avg loss, net positive, losing streak <=6."""
+    checks = [
+        (sc["trades"] >= need, f"trades {sc['trades']}/{need}"),
+        ((sc["win_rate"] or 0) >= 40, f"win rate {sc['win_rate'] or 0}% (need 40%)"),
+        ((sc["payoff"] or 0) >= 1.5, f"avg win/avg loss {sc['payoff'] or 0}x (need 1.5x)"),
+        (sc["net"] > 0, f"net Rs {sc['net']:,.0f} (need > 0)"),
+        (sc["worst_streak"] <= 6, f"worst losing streak {sc['worst_streak']} (max 6)"),
+    ]
+    lines = [("OK " if ok else "-- ") + txt for ok, txt in checks]
+    if sc["trades"] < need:
+        return "NOT YET (too few trades)", lines
+    return ("GO" if all(ok for ok, _ in checks) else "NO-GO"), lines
 
 
 paper = PaperTrader()

@@ -193,7 +193,7 @@ def test_paper_trader_lifecycle(tmp_path, monkeypatch):
     from backend.engine import trader
     monkeypatch.setattr(trader, "PAPER_FILE", tmp_path / "paper.json")
     pt = trader.PaperTrader()
-    settings = {"capital": 100000, "risk_per_trade_pct": 1, "max_trades_per_day": 3, "max_daily_loss_pct": 3,
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1, "max_trades_per_day": 3, "max_daily_loss_pct": 3,
                 "autopilot_instruments": ["NIFTY"]}
     base = {"instrument": {"key": "NIFTY"}, "session": {"is_open": True}, "vix": {"value": 14}, "chain": None,
             "score": 0.6, "reasons": [{"text": "x"}], "spot_live": 23000.0, "price": 23000.0}
@@ -252,3 +252,21 @@ def test_replay_clock_freezes_while_engine_busy():
     time.sleep(0.1)
     assert replay.now() > t0
     replay.stop()
+
+
+def test_scorecard_and_go_no_go():
+    from backend.engine.trader import go_no_go, scorecard
+    trades = [{"pnl": p} for p in [-1000, -1000, 3000, -1000, 3500] * 4]
+    sc = scorecard(trades)
+    assert sc["trades"] == 20 and sc["win_rate"] == 40.0 and sc["worst_streak"] == 2
+    assert go_no_go(sc)[0] == "GO"
+    assert go_no_go(scorecard(trades[:5]))[0].startswith("NOT YET")
+
+
+def test_disabled_strategy_opens_nothing(tmp_path):
+    from backend.engine.trader import PaperTrader
+    a = {"instrument": {"key": "NIFTY"}, "verdict": "BUY", "option": {"lots": 1}, "plan": {"direction": 1, "stop": 1},
+         "orb": {}, "first30": {}, "generated_at": "2026-10-23T10:30:00+05:30", "price": 100, "spot_live": 100,
+         "session": {"is_open": True}}
+    res = PaperTrader(tmp_path / "p.json").on_analysis(a, {"autopilot_strategies": ["First-Hour"], "max_trades_per_day": 2})
+    assert res["events"] == [] and res["open"] == []
