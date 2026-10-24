@@ -270,3 +270,14 @@ def test_disabled_strategy_opens_nothing(tmp_path):
          "session": {"is_open": True}}
     res = PaperTrader(tmp_path / "p.json").on_analysis(a, {"autopilot_strategies": ["First-Hour"], "max_trades_per_day": 2})
     assert res["events"] == [] and res["open"] == []
+
+
+def test_lots_are_capped_on_cheap_premiums():
+    from datetime import date, datetime
+    from backend.engine import options
+    from backend.engine.config import IST
+    now = datetime(2026, 10, 13, 14, 15, tzinfo=IST)
+    o = options.plan_trade("NIFTY", 1, 22582, date(2026, 10, 13), 16.9, 200, 400,
+                           {"capital": 10000, "risk_per_trade_pct": 25, "max_trades_per_day": 2, "max_daily_loss_pct": 25},
+                           None, now, otm_steps=1)
+    assert o["lots"] <= options.MAX_LOTS

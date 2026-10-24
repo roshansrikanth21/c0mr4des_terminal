@@ -52,3 +52,4 @@ backend/broker/angel_tokens.json
 # Runtime data (personal, never commit)
 data/
 .claude/
+HANDOFF.md

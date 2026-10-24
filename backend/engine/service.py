@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from . import macro, options, orb, replay, timeline
@@ -78,6 +78,9 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
                       cue_bias=cues["bias"] * cue_w, session=sess)
 
     expiry = date.fromisoformat(sess["expiry"])
+    if expiry == now.date() and now.hour >= 12:
+        # Expiry-afternoon OTM options cost a rupee or two: sizing then buys dozens of lots of a lottery ticket.
+        expiry = timeline.weekly_expiry(key, now.date() + timedelta(days=1))
     chain = options.live_chain(key, expiry, result["price"]) if sess["is_open"] and not replay.active() else None
     settings = load_settings()
     plan = result["plan"]

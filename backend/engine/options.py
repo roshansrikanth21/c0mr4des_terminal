@@ -145,6 +145,9 @@ def pcr(chain: list[dict] | None) -> float | None:
     return round(pe / ce, 2) if ce else None
 
 
+MAX_LOTS = 4  # hard cap: a cheap premium must never turn one signal into a huge position
+
+
 def plan_trade(key: str, direction: int, spot: float, expiry: date, vix: float | None, stop_points: float,
                target_points: float, risk: dict, chain: list[dict] | None = None, now: datetime | None = None,
                otm_steps: int | None = None) -> dict | None:
@@ -181,7 +184,7 @@ def plan_trade(key: str, direction: int, spot: float, expiry: date, vix: float |
     budget = risk["capital"] * risk["risk_per_trade_pct"] / 100
     lots = int(budget // risk_per_lot) if risk_per_lot > 0 else 0
     affordable = int(risk["capital"] // (premium * inst.lot_size)) if premium > 0 else 0
-    lots = max(0, min(lots, affordable))
+    lots = max(0, min(lots, affordable, MAX_LOTS))
     qty = lots * inst.lot_size
     cost = round_trip_cost(premium, max(qty, inst.lot_size))
     return {

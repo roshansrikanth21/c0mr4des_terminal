@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, time, timedelta
 from pathlib import Path
 
-from . import replay, service
+from . import data, replay, service
 from .config import IST
 from .data import get_candles
 from .trader import DATA_DIR, PaperTrader, go_no_go, scorecard
@@ -23,6 +23,8 @@ STRATS = ["First-Hour", "First-30", "Engine"]
 
 
 def run(n_days: int = 40) -> dict:
+    if n_days > 16:  # Angel only serves ~25 days of 5-minute history; Yahoo has 60
+        data.angel.candles = lambda *a, **k: None
     df, source = get_candles("NIFTY", "5m")
     today = datetime.now(IST).date()
     days = sorted({d for d in df.index.date if d < today})[-n_days:]
