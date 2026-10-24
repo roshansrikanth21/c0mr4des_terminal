@@ -15,9 +15,9 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 
 from . import replay, service
-from .config import DATA_DIR, IST
+from .config import IST
 from .data import get_candles
-from .trader import PaperTrader, go_no_go, scorecard
+from .trader import DATA_DIR, PaperTrader, go_no_go, scorecard
 
 STRATS = ["First-Hour", "First-30", "Engine"]
 
