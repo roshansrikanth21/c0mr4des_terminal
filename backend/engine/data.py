@@ -49,6 +49,19 @@ def _token_error(res) -> bool:
     return any(k in msg for k in ("ag8001", "ag8002", "ag8003", "token", "session"))
 
 
+def _mute_smartapi() -> None:
+    """SmartAPI logs every failed request with full headers (session token included) to the journal
+    and to ./logs/<date>/app.log. Turn that logger off; our own warnings say enough."""
+    try:
+        import logzero
+
+        logzero.logger.disabled = True
+        for h in list(logzero.logger.handlers):
+            logzero.logger.removeHandler(h)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class AngelClient:
     """Thin SmartAPI wrapper: login once a day, re-login when the session expires, back off on failure.
 
@@ -60,6 +73,8 @@ class AngelClient:
         self._login_day = None
         self._failed_at = 0.0
         self._lock = threading.Lock()
+        self._throttle = threading.Lock()
+        self._last_call = 0.0
 
     @staticmethod
     def configured() -> bool:
@@ -78,9 +93,9 @@ class AngelClient:
                 import pyotp
                 from SmartApi import SmartConnect
 
-                logging.getLogger("logzero_default").setLevel(logging.CRITICAL)  # SmartAPI logs full request headers incl. the session token
 
                 api = SmartConnect(api_key=os.environ["ANGEL_API_KEY"])
+                _mute_smartapi()
                 totp = pyotp.TOTP(os.environ["ANGEL_TOTP_KEY"]).now()
                 res = api.generateSession(os.environ["ANGEL_CLIENT_ID"], os.environ["ANGEL_PASSWORD"], totp)
                 if not res or not res.get("status"):
@@ -110,7 +125,12 @@ class AngelClient:
             "todate": now.strftime("%Y-%m-%d %H:%M"),
         }
         try:
-            res = api.getCandleData(params)
+            with self._throttle:  # Angel allows ~3 historical calls/sec; bursts of NIFTY+SENSEX tripped it
+                wait = self._last_call + 0.6 - _time.time()
+                if wait > 0:
+                    _time.sleep(wait)
+                res = api.getCandleData(params)
+                self._last_call = _time.time()
             if _token_error(res):
                 log.warning("Angel session expired - logging in again")
                 self.reset()
@@ -175,6 +195,8 @@ def get_candles(key: str, interval: str = "5m") -> tuple[pd.DataFrame, str]:
         if hit and _time.time() - hit[0] < ttl:
             return hit[1], hit[1].attrs.get("source", "cache")
     df, source = angel.candles(inst, interval), "angel_one"
+    if (df is None or df.empty) and hit and hit[1].attrs.get("source") == "angel_one"             and _time.time() - hit[0] < 4 * CACHE_TTL[interval]:
+        return hit[1], "angel_one"  # one failed refresh: a 1-2 minute old live frame beats 15-minute delayed Yahoo
     if df is None or df.empty:
         df, source = _yahoo(inst.yf_symbol, interval), "yahoo_delayed"
     if df is None or df.empty:
