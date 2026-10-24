@@ -90,6 +90,10 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     orb_sig = orb.evaluate(df5, float(prev["close"].iloc[-1]) if len(prev) else None, now)
     if not sess["can_enter"] and orb_sig["verdict"] != "NO TRADE":
         orb_sig["verdict"] = "NO TRADE"
+    if sess["is_expiry_day"] and orb_sig["verdict"] != "NO TRADE":
+        # Expiry-day breakouts are gamma lottery tickets: they dominated the replay P&L and fell to PF 1.15 without them.
+        orb_sig["verdict"] = "NO TRADE"
+        orb_sig["text"] += " Expiry day: First-Hour sits out (no trade)."
     orb_sig["option"] = options.plan_trade(key, orb_sig["direction"], result["price"], expiry, vix["value"] if vix else None,
                                            orb_sig.get("risk_points") or 0, orb_sig.get("target_points") or 0,
                                            settings, chain, now, otm_steps=1) if orb_sig["direction"] else None
