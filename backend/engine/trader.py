@@ -247,17 +247,24 @@ def scorecard(trades: list[dict]) -> dict:
     avg_l = -sum(losses) / len(losses) if losses else 0.0
     return {"trades": len(pnl), "net": round(sum(pnl), 2), "win_rate": round(100 * len(wins) / len(pnl), 1) if pnl else None,
             "avg_win": round(avg_w, 2), "avg_loss": round(avg_l, 2),
-            "payoff": round(avg_w / avg_l, 2) if avg_l else None, "worst_streak": worst}
+            "payoff": round(avg_w / avg_l, 2) if avg_l else None, "worst_streak": worst,
+            # Trades where one lot cost more risk than the settings' budget allows. The paper book always
+            # takes at least 1 lot so the record stays comparable with the lab, but a real account this
+            # small cannot place them - so they must not quietly count towards a GO.
+            "oversize": sum(1 for t in trades if t.get("oversize"))}
 
 
 def go_no_go(sc: dict, need: int = 20) -> tuple[str, list[str]]:
-    """Rules agreed before going live: >=20 trades, win rate >=40%, avg win >=1.5x avg loss, net positive, losing streak <=6."""
+    """Rules agreed before going live: >=20 trades, win rate >=40%, avg win >=1.5x avg loss, net positive,
+    losing streak <=6, and every trade actually affordable inside the risk budget."""
+    over = sc.get("oversize", 0)
     checks = [
         (sc["trades"] >= need, f"trades {sc['trades']}/{need}"),
         ((sc["win_rate"] or 0) >= 40, f"win rate {sc['win_rate'] or 0}% (need 40%)"),
         ((sc["payoff"] or 0) >= 1.5, f"avg win/avg loss {sc['payoff'] or 0}x (need 1.5x)"),
         (sc["net"] > 0, f"net Rs {sc['net']:,.0f} (need > 0)"),
         (sc["worst_streak"] <= 6, f"worst losing streak {sc['worst_streak']} (max 6)"),
+        (over == 0, f"{over} trade(s) were bigger than your risk budget (need 0)"),
     ]
     lines = [("OK " if ok else "-- ") + txt for ok, txt in checks]
     if sc["trades"] < need:

@@ -263,6 +263,18 @@ def test_scorecard_and_go_no_go():
     assert go_no_go(scorecard(trades[:5]))[0].startswith("NOT YET")
 
 
+def test_go_no_go_blocks_trades_the_account_could_not_afford():
+    from backend.engine.trader import go_no_go, scorecard
+    trades = [{"pnl": p} for p in [-1000, -1000, 3000, -1000, 3500] * 4]
+    assert scorecard(trades)["oversize"] == 0
+    trades[3]["oversize"] = True  # one lot risked more than the settings' budget allowed
+    sc = scorecard(trades)
+    assert sc["oversize"] == 1
+    verdict, lines = go_no_go(sc)
+    assert verdict == "NO-GO"
+    assert any("bigger than your risk budget" in ln for ln in lines)
+
+
 def test_disabled_strategy_opens_nothing(tmp_path):
     from backend.engine.trader import PaperTrader
     a = {"instrument": {"key": "NIFTY"}, "verdict": "BUY", "option": {"lots": 1}, "plan": {"direction": 1, "stop": 1},
