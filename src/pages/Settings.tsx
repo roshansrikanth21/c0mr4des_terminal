@@ -7,7 +7,7 @@ import { getJSON, inr } from '@/lib/api';
 import { PRESETS, setPreset, setViewMode, useAppearance } from '@/lib/appearance';
 import { ReplayControls } from '@/components/ReplayBar';
 
-interface Risk { capital: number; risk_per_trade_pct: number; max_trades_per_day: number; max_daily_loss_pct: number; autopilot_instruments?: string[]; autopilot_strategies?: string[] }
+interface Risk { capital: number; risk_per_trade_pct: number; max_trades_per_day: number; max_daily_loss_pct: number; max_open_positions?: number; autopilot_instruments?: string[]; autopilot_strategies?: string[] }
 interface Broker { configured: boolean; connected: boolean; note: string }
 
 const FIELDS: [keyof Risk, string, string][] = [
@@ -15,6 +15,7 @@ const FIELDS: [keyof Risk, string, string][] = [
   ['risk_per_trade_pct', 'Risk per trade (%)', 'Max you can lose on one trade. Pros use 0.5-2%.'],
   ['max_trades_per_day', 'Max trades per day', 'Overtrading is the #1 way option buyers bleed. 2-3 is plenty.'],
   ['max_daily_loss_pct', 'Max daily loss (%)', 'Stop trading for the day after losing this much.'],
+  ['max_open_positions', 'Open at once', 'How many trades can run together. 1 means you never hold two positions at the same time.'],
 ];
 
 export function Settings() {
@@ -71,7 +72,7 @@ export function Settings() {
                 <div className="text-xs font-mono font-bold uppercase tracking-wider">{label}</div>
                 <div className="text-[11px] text-muted-foreground">{help}</div>
               </div>
-              <input type="number" value={risk[k]} step={k === 'capital' ? 1000 : k === 'max_trades_per_day' ? 1 : 0.1}
+              <input type="number" value={risk[k]} step={k === 'capital' ? 1000 : k === 'max_trades_per_day' || k === 'max_open_positions' ? 1 : 0.1}
                 onChange={(e) => setRisk({ ...risk, [k]: Number(e.target.value) })}
                 className="h-10 px-3 rounded-md border border-input bg-transparent font-mono text-sm" />
             </div>

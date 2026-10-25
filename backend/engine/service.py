@@ -7,7 +7,7 @@ import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import macro, options, orb, replay, timeline
+from . import macro, mtf, options, orb, replay, structure, timeline
 from .config import IST, INSTRUMENTS, RISK_DEFAULTS
 from .data import angel, closed_bars, get_candles
 from .news import radar
@@ -35,13 +35,14 @@ LIMITS = {
     "risk_per_trade_pct": (0.1, 100.0),
     "max_trades_per_day": (1, 10),
     "max_daily_loss_pct": (1.0, 100.0),
+    "max_open_positions": (1, 4),
 }
 
 
 def _clamp(key: str, value) -> float | int:
     lo, hi = LIMITS[key]
     v = min(max(float(value), lo), hi)
-    return int(round(v)) if key == "max_trades_per_day" else round(v, 2)
+    return int(round(v)) if key in ("max_trades_per_day", "max_open_positions") else round(v, 2)
 
 
 def load_settings() -> dict:
@@ -91,6 +92,16 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         if raw5.empty:
             raise RuntimeError("Replay: no candles yet for this day/time")
     df5 = closed_bars(raw5, "5m", now)
+    # The 1-minute read is the entry-timing row of the ladder. It is a bonus, never a blocker:
+    # if the feed is slow or missing, the rest of the analysis still runs.
+    try:
+        raw1m, _ = get_candles(key, "1m")
+        if in_replay:
+            raw1m = replay.cut(raw1m, "1m")
+        df1m = closed_bars(raw1m, "1m", now)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("1m candles unavailable: %s", exc)
+        df1m = None
     vix = macro.india_vix()
     news = radar.sentiment()
     cues = macro.global_cues()
@@ -102,6 +113,8 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     cue_bias = 0.0 if in_replay else cues["bias"] * cue_w
     result = evaluate(df5, daily, inst.strike_step, now=now, news_bias=news_bias,
                       cue_bias=cue_bias, session=sess)
+    ladder = mtf.ladder(df5, daily, df1m)
+    yesterday = structure.prev_session(daily, df5)
 
     expiry = date.fromisoformat(sess["expiry"])
     if expiry == now.date() and now.hour >= 12:
@@ -112,6 +125,9 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     plan = result["plan"]
     option = options.plan_trade(key, plan["direction"], result["price"], expiry, vix["value"] if vix else None,
                                 plan["risk_points"], plan["target_points"], settings, chain, now)
+    # Both sides priced, because the owner can only buy what the account can actually fund.
+    sides = options.quote_both_sides(key, result["price"], expiry, vix["value"] if vix else None,
+                                     settings, chain, now)
     prev = daily[daily.index.date < now.date()]
     orb_sig = orb.evaluate(df5, float(prev["close"].iloc[-1]) if len(prev) else None, now)
     if not sess["can_enter"] and orb_sig["verdict"] != "NO TRADE":
@@ -160,6 +176,7 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         "news": news, "global": cues, "candles": chart_payload(raw5), "broker_connected": angel.api is not None,
         "spot_live": (None if in_replay else _spot_ltp(inst)) or float(raw5["close"].iloc[-1]),
         "replay": replay.status(), "orb": orb_sig, "first30": f30, "expiry_play": exp_sig,
+        "mtf": ladder, "yesterday": yesterday, "sides": sides,
         "chains": {expiry.isoformat(): chain, **({exp_sig["option"]["expiry"]: exp_sig.pop("_chain")}
                                                  if exp_sig and exp_sig.get("_chain") else {})},
         "shock": None if in_replay else shock_check(raw5, daily, vix, news),

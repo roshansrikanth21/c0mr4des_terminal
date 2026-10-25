@@ -141,6 +141,61 @@ def htf_levels(intraday: pd.DataFrame, daily: pd.DataFrame) -> list[dict]:
     return out
 
 
+def prev_session(daily: pd.DataFrame, intraday: pd.DataFrame) -> dict | None:
+    """Where yesterday actually ended: its high, low, close, and where in that range it stopped.
+
+    Closing near the high means buyers held it overnight; closing near the low means sellers did.
+    Today's gap is measured against that close, because a gap is the market re-pricing overnight
+    news before anyone can trade it.
+    """
+    if daily is None or daily.empty or intraday is None or intraday.empty:
+        return None
+    today = intraday.index[-1].date()
+    prev = daily[daily.index.date < today]
+    if not len(prev):
+        return None
+    row = prev.iloc[-1]
+    hi, lo, close = float(row["high"]), float(row["low"]), float(row["close"])
+    rng = hi - lo
+    pos = ((close - lo) / rng * 100) if rng > 0 else 50.0
+
+    today_bars = intraday[intraday.index.date == today]
+    open_px = float(today_bars["open"].iloc[0]) if len(today_bars) else None
+    gap = (open_px - close) if open_px is not None else None
+    gap_pct = (gap / close * 100) if gap is not None and close else None
+
+    if pos >= 80:
+        where = "right at the high - buyers held it into the close"
+    elif pos >= 60:
+        where = "in the upper half - buyers finished stronger"
+    elif pos > 40:
+        where = "mid-range - neither side won the close"
+    elif pos > 20:
+        where = "in the lower half - sellers finished stronger"
+    else:
+        where = "right at the low - sellers held it into the close"
+
+    text = (f"Yesterday closed at {close:,.0f} after trading {lo:,.0f}-{hi:,.0f} "
+            f"({rng:,.0f} points of range), finishing {where}.")
+    if gap is not None:
+        if abs(gap_pct or 0) < 0.1:
+            text += " Today opened flat to yesterday's close."
+        else:
+            text += (f" Today opened {gap:+,.0f} points ({gap_pct:+.2f}%) "
+                     f"{'above' if gap > 0 else 'below'} that close - a "
+                     f"{'gap up' if gap > 0 else 'gap down'}.")
+
+    return {
+        "date": prev.index[-1].date().isoformat(),
+        "high": round(hi, 2), "low": round(lo, 2), "close": round(close, 2),
+        "range": round(rng, 2), "close_position_pct": round(pos, 1),
+        "open_today": round(open_px, 2) if open_px is not None else None,
+        "gap_points": round(gap, 2) if gap is not None else None,
+        "gap_pct": round(gap_pct, 2) if gap_pct is not None else None,
+        "text": text,
+    }
+
+
 def swing_zones(piv: list[dict], atr_value: float) -> list[dict]:
     """Cluster swing prices into support/resistance zones; more touches = stronger."""
     prices = sorted(p["price"] for p in piv)

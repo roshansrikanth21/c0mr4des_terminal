@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backend.engine import candles, options, structure, timeline
+from backend.engine import candles, mtf, options, structure, timeline
 from backend.engine.config import IST
 from backend.engine.data import _normalize, closed_bars
 from backend.engine.news import score_text
@@ -374,3 +374,102 @@ def test_expiry_play_is_one_lot_with_capped_loss():
     assert (o["premium"] - o["premium_stop"]) * 65 <= service.EXPIRY_MAX_LOSS + 1
     assert service._expiry_signal("NIFTY", orb_sig, {**sess, "is_expiry_day": False}, 23000, None, {}, None,
                                   date(2026, 10, 27), now, True) is None
+
+
+# ---------------- multi-timeframe ladder ----------------
+def to_daily(df5):
+    return df5.resample("1D").agg({"open": "first", "high": "max", "low": "min",
+                                   "close": "last", "volume": "sum"}).dropna()
+
+
+def test_ladder_reads_an_uptrend_on_every_timeframe():
+    df5 = session_bars(days=25, drift=1.5)
+    out = mtf.ladder(df5, to_daily(df5))
+    assert out["bias"] > 0.2
+    assert out["phase"] in ("aligned", "conflict", "pullback")
+    assert out["counted"] >= 4
+    for row in out["rows"]:
+        if row["available"]:
+            assert row["direction"] >= 0, row
+    assert out["primary"]["direction"] == 1
+
+
+def test_ladder_calls_a_fast_rally_inside_a_downtrend_a_pullback():
+    df5 = session_bars(days=25, drift=-1.5)
+    base = float(df5["close"].iloc[-13])
+    tail = df5.iloc[-12:].copy()
+    tail["close"] = base + np.arange(1, 13) * 10.0
+    tail["open"] = np.r_[base, tail["close"].values[:-1]]
+    tail["high"] = np.maximum(tail["open"], tail["close"]) + 4
+    tail["low"] = np.minimum(tail["open"], tail["close"]) - 4
+    df5 = pd.concat([df5.iloc[:-12], tail])
+
+    out = mtf.ladder(df5, to_daily(df5))
+    assert out["phase"] == "pullback"
+    assert out["bias"] < 0            # the slow timeframes still rule the read
+    assert "pullback" in out["story"].lower()
+
+
+def test_ladder_says_so_when_there_is_no_history():
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    out = mtf.ladder(empty, empty)
+    assert out["phase"] == "unclear"
+    assert out["primary"] is None
+    assert out["counted"] == 0
+
+
+# ---------------- previous session ----------------
+def test_previous_session_reports_close_position_and_gap():
+    daily = pd.DataFrame(
+        {"open": [22900.0, 23000.0], "high": [22960.0, 23100.0], "low": [22880.0, 22900.0],
+         "close": [22920.0, 23085.0], "volume": [0.0, 0.0]},
+        index=pd.DatetimeIndex(["2026-10-15", "2026-10-16"], tz=IST))
+    intraday = make_bars([23150.0, 23160.0, 23170.0], start="2026-10-19 09:15")
+    out = structure.prev_session(daily, intraday)
+    assert out["close"] == 23085.0
+    assert out["range"] == 200.0
+    assert out["close_position_pct"] == 92.5
+    assert out["gap_points"] == 65.0
+    assert "gap up" in out["text"]
+
+
+# ---------------- both option sides ----------------
+def test_both_sides_are_priced_and_affordability_is_honest():
+    now = datetime(2026, 10, 23, 10, 0, tzinfo=IST)
+    expiry = date(2026, 10, 27)
+    poor = options.quote_both_sides("NIFTY", 23000.0, expiry, 14.0, {"capital": 1000.0}, None, now)
+    assert poor["call"]["premium"] > 0 and poor["put"]["premium"] > 0
+    assert poor["affordable"] == []
+    assert "Neither side fits" in poor["text"]
+
+    rich = options.quote_both_sides("NIFTY", 23000.0, expiry, 14.0, {"capital": 10_000_000.0}, None, now)
+    assert rich["affordable"] == ["call", "put"]
+    for side in ("call", "put"):
+        row = rich[side]
+        assert row["lot_cost"] == pytest.approx(row["premium"] * row["lot_size"], rel=0.01)
+        # A long option can go to zero: the worst case is the whole premium, not premium minus stop.
+        assert row["worst_case"] > row["lot_cost"]
+        assert row["theta_per_lot_per_day"] >= 0
+
+
+def test_only_one_position_is_open_at_a_time(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"capital": 100000, "risk_per_trade_pct": 1, "max_trades_per_day": 3,
+                "max_daily_loss_pct": 3, "max_open_positions": 1}
+    a = _entry_analysis("2026-10-21T10:00:00+05:30")
+    first = pt._process("NIFTY|engine", "Engine", "BUY", a["option"], a["plan"], a, settings,
+                        settings["max_trades_per_day"])
+    assert first[0]["type"] == "paper_entry"
+
+    second = pt._process("NIFTY|orb", "First-Hour", "BUY", a["option"], a["plan"], a, settings,
+                         settings["max_trades_per_day"])
+    assert second[0]["type"] == "blocked"
+    assert "one position at a time" in second[0]["reason"]
+    assert len(pt.state["open"]) == 1
+
+    # Raise the cap and the waiting strategy is allowed through - the guard is a setting, not a dead end.
+    loose = {**settings, "max_open_positions": 2}
+    third = pt._process("NIFTY|orb", "First-Hour", "BUY", a["option"], a["plan"], a, loose,
+                        loose["max_trades_per_day"])
+    assert third[0]["type"] == "paper_entry" and len(pt.state["open"]) == 2

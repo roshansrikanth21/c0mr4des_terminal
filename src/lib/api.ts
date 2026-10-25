@@ -50,8 +50,39 @@ export interface Analysis {
   global: { bias: number; text: string; cues: Cue[] };
   candles: Candle[]; broker_connected: boolean; spot_live?: number;
   orb?: OrbSignal; first30?: OrbSignal;
+  mtf?: Mtf; yesterday?: Yesterday | null; sides?: Sides;
   shock?: { active: boolean; reasons: string[]; playbook: string[] } | null;
   paper?: { events: { type: string; reason?: string; trade?: PaperTrade }[]; open: PaperTrade[] };
+}
+
+export interface MtfRow {
+  tf: string; label: string; weight: number; available: boolean; score: number; direction: number;
+  adx: number | null; rsi: number | null; atr: number | null; text: string;
+}
+
+export interface Mtf {
+  rows: MtfRow[]; bias: number; agreement: number;
+  phase: 'aligned' | 'pullback' | 'conflict' | 'unclear';
+  story: string; warning: string | null; counted: number; weights: Record<string, number>;
+  primary: { direction: number; text: string; hold_above?: number; flip_below?: number } | null;
+}
+
+export interface Yesterday {
+  date: string; high: number; low: number; close: number; range: number; close_position_pct: number;
+  open_today: number | null; gap_points: number | null; gap_pct: number | null; text: string;
+}
+
+export interface OptionSide {
+  side: string; option_type: 'CE' | 'PE'; strike: number; symbol_hint: string; expiry: string;
+  moneyness: 'ITM' | 'ATM' | 'OTM'; distance_points: number; premium: number; premium_source: string;
+  lot_size: number; lot_cost: number; charges_round_trip: number; worst_case: number;
+  affordable: boolean; pct_of_capital: number | null; delta: number; theta_per_lot_per_day: number;
+  breakeven: number; iv: number | null; oi: number | null; volume: number | null;
+}
+
+export interface Sides {
+  call: OptionSide; put: OptionSide; affordable: string[]; explain: string[];
+  text: string; capital: number; expiry: string; spot: number; atm: number;
 }
 
 export interface OrbSignal {

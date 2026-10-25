@@ -199,3 +199,119 @@ def plan_trade(key: str, direction: int, spot: float, expiry: date, vix: float |
         "note": ("Position size is 0 lots: your risk-per-trade budget is smaller than one lot's risk. "
                  "Raise capital/risk % in Settings or skip.") if lots == 0 else "",
     }
+
+
+def _liquid_strike(chain: list[dict] | None, atm: float, direction: int, inst, otm_steps: int) -> float:
+    """The strike an owner would actually get filled on: near OTM, with the most open interest.
+
+    Without a live chain we cannot see liquidity, so we fall back to the plain OTM step.
+    """
+    default = atm + direction * otm_steps * inst.strike_step
+    if not chain:
+        return default
+    kind = "CE" if direction > 0 else "PE"
+    lo, hi = atm - 2 * inst.strike_step, atm + 3 * inst.strike_step
+    side = [r for r in chain if lo <= r["strike"] <= hi
+            and ((r["strike"] >= atm) if direction > 0 else (r["strike"] <= atm))]
+    if not side:
+        return default
+    def rank(r):
+        leg = r.get(kind) or {}
+        return (leg.get("oi") or 0, leg.get("volume") or 0)
+    best = max(side, key=rank)
+    return float(best["strike"]) if rank(best) != (0, 0) else default
+
+
+def quote_both_sides(key: str, spot: float, expiry: date, vix: float | None, risk: dict,
+                     chain: list[dict] | None = None, now: datetime | None = None,
+                     otm_steps: int = 1) -> dict:
+    """Price the CALL and the PUT an owner could buy today, side by side, and say which one fits.
+
+    Two things this makes visible that a single ticket cannot:
+
+    * Calls and puts are not symmetric. On the same day the put can cost 50% more than the
+      call: it might be nearer the money, and Indian index options carry a put skew because
+      big players buy downside protection. You cannot compare "a call" with "a put" unless
+      you compare strikes at the same distance from spot.
+    * A long option's worst case is the WHOLE premium, not the premium minus the stop. The
+      stop only caps the loss if it fills.
+    """
+    inst = INSTRUMENTS[key]
+    atm = round(spot / inst.strike_step) * inst.strike_step
+    T = years_to_expiry(expiry, now)
+    sigma = (vix or 14) / 100
+    capital = float(risk.get("capital") or 0)
+    lot = inst.lot_size
+    sides: dict[str, dict] = {}
+
+    for kind, direction in (("CE", 1), ("PE", -1)):
+        strike = _liquid_strike(chain, atm, direction, inst, otm_steps)
+        est = bs(spot, strike, T, sigma, kind)
+        premium, source = est["price"], "estimated (Black-Scholes using India VIX)"
+        row = next((r for r in (chain or []) if r["strike"] == strike), None)
+        leg = (row or {}).get(kind) or {}
+        if leg.get("ltp"):
+            premium = float(leg["ltp"])
+            source = "live (Angel One)"
+            iv = implied_vol(premium, spot, strike, T, kind)
+            if iv:
+                est = bs(spot, strike, T, iv, kind) | {"iv": iv}
+        premium = max(float(premium), 0.05)
+        dist = strike - spot
+        itm = (dist < 0) if kind == "CE" else (dist > 0)
+        cost = premium * lot
+        charges = round_trip_cost(premium, lot)
+        sides["call" if kind == "CE" else "put"] = {
+            "side": f"BUY {kind}", "option_type": kind, "strike": strike,
+            "symbol_hint": f"{inst.key} {expiry.strftime('%d %b').upper()} {int(strike)} {kind}",
+            "expiry": expiry.isoformat(),
+            "moneyness": "ITM" if itm else ("ATM" if abs(dist) < inst.strike_step / 2 else "OTM"),
+            "distance_points": round(dist, 1),
+            "premium": round(premium, 2), "premium_source": source,
+            "lot_size": lot, "lot_cost": round(cost, 2),
+            "charges_round_trip": round(charges, 2),
+            "worst_case": round(cost + charges, 2),
+            "affordable": bool(capital and cost <= capital),
+            "pct_of_capital": round(cost / capital * 100, 1) if capital else None,
+            "delta": round(est.get("delta", 0), 3),
+            "theta_per_lot_per_day": round(abs(est.get("theta_per_day", 0)) * lot, 2),
+            "breakeven": round(strike + premium if kind == "CE" else strike - premium, 2),
+            "iv": est.get("iv"),
+            "oi": leg.get("oi"), "volume": leg.get("volume"),
+        }
+
+    explain: list[str] = []
+    c, p = sides["call"], sides["put"]
+    if c["premium"] > p["premium"] * 1.25:
+        explain.append(f"The call is {c['premium'] / p['premium']:.2f}x the put. Calls are pricing "
+                       f"more risk on the upside.")
+    elif p["premium"] > c["premium"] * 1.25:
+        explain.append(f"The put is {p['premium'] / c['premium']:.2f}x the call. That is put skew: "
+                       f"big players pay up for downside protection, and the market expects sharper "
+                       f"falls than rallies.")
+    else:
+        explain.append("The call and the put cost about the same, so the market is not leaning "
+                       "either way on volatility.")
+    explain.append(f"One lot is premium x {lot}. The premium changes every day with how far the "
+                   f"strike sits from spot, how many days are left, and India VIX - that is why your "
+                   f"one-lot cost moves between about 6k and 10k from day to day.")
+    explain.append(f"These contracts lose roughly Rs {c['theta_per_lot_per_day']:,.0f} (call) and "
+                   f"Rs {p['theta_per_lot_per_day']:,.0f} (put) of value per day to time decay, "
+                   f"before the index moves at all.")
+
+    fits = [k for k, v in sides.items() if v["affordable"]]
+    if len(fits) == 2:
+        text = (f"You can afford either side: call Rs {c['lot_cost']:,.0f}, "
+                f"put Rs {p['lot_cost']:,.0f}.")
+    elif len(fits) == 1:
+        other = "put" if fits[0] == "call" else "call"
+        text = (f"You can only afford the {fits[0]}: Rs {sides[fits[0]]['lot_cost']:,.0f}. "
+                f"The {other} one lot costs Rs {sides[other]['lot_cost']:,.0f}, which is more than "
+                f"your capital - so a {'bearish' if other == 'put' else 'bullish'} trade is not "
+                f"available to you today, however good the setup looks.")
+    else:
+        text = (f"Neither side fits: the call needs Rs {c['lot_cost']:,.0f} and the put "
+                f"Rs {p['lot_cost']:,.0f}, against Rs {capital:,.0f} of capital.")
+
+    return {"call": c, "put": p, "affordable": fits, "explain": explain, "text": text,
+            "capital": capital, "expiry": expiry.isoformat(), "spot": round(spot, 2), "atm": atm}

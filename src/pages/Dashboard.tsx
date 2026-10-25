@@ -13,6 +13,7 @@ import { useDashboardStore, type DashboardTab } from '@/hooks/use-dashboard-stor
 import { setViewMode, useAppearance } from '@/lib/appearance';
 import { SimpleView } from '@/components/SimpleView';
 import { CandleChart } from '@/components/CandleChart';
+import { DecisionPanel } from '@/components/terminal/Decision';
 import {
   GlobalPanel, NewsPanel, OptionPanel, OrbPanel, PaperPanel, ReasonsPanel, StructurePanel, TimelinePanel, VerdictPanel,
 } from '@/components/terminal/Panels';
@@ -150,7 +151,12 @@ export function Dashboard() {
         </TabsList>
         {(['terminal', 'context', 'news'] as DashboardTab[]).map((tab) => (
           <TabsContent key={tab} value={tab} className="mt-0">
-            {activeTab === tab && <DashboardGrid tab={tab} symbol={symbol} data={data} />}
+            {activeTab === tab && (
+              <div className="space-y-6">
+                {tab === 'terminal' && <DecisionPanel a={data} />}
+                <DashboardGrid tab={tab} symbol={symbol} data={data} />
+              </div>
+            )}
           </TabsContent>
         ))}
       </Tabs>

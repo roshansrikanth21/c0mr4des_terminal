@@ -174,11 +174,18 @@ class PaperTrader:
                     events.append({"type": "paper_exit", "trade": closed})
                 self._save()
             elif verdict in ("BUY", "SELL") and option and plan.get("stop") is not None:
+                cap = int(settings.get("max_open_positions", 1) or 0)
+                held = next(iter(self.state["open"].values()), None)
                 mine = [t for t in self.state["closed"] if t.get("slot") == slot]
                 n_today = sum(1 for t in mine if t["opened_at"][:10] == now.date().isoformat())
                 loss_cap = -settings["capital"] * settings["max_daily_loss_pct"] / 100
                 cooling = mine and (now - datetime.fromisoformat(mine[-1]["closed_at"])).total_seconds() < 900
-                if (spot - plan["stop"]) * plan["direction"] <= 0:
+                if cap and held and len(self.state["open"]) >= cap and held.get("slot") != slot:
+                    # One trade at a time: a second strategy must wait its turn instead of stacking risk.
+                    why = (f"one position at a time - {held['strategy']} still holds {held['symbol']}" if cap == 1
+                           else f"{len(self.state['open'])} positions already open (cap {cap})")
+                    events.append({"type": "blocked", "reason": f"{strategy}: {why}"})
+                elif (spot - plan["stop"]) * plan["direction"] <= 0:
                     events.append({"type": "blocked", "reason": f"{strategy}: stop is on the wrong side of price - skipped"})
                 elif cooling:
                     events.append({"type": "blocked", "reason": f"{strategy}: cooling off 15 min after the last exit"})
