@@ -69,9 +69,10 @@ and 50 trades is too few to prove anything. Watch the Signal Log in a live marke
 
 Tested on real hourly NIFTY/SENSEX bars, Nov 2023 to Oct 2026, 1 lot. Option premiums are modelled from real index moves, real India VIX and real time to expiry (theta included), with slippage and full charges.
 
-**The live First-Hour rule skips expiry days** (since 25 Oct), so the number that applies to it is the
-"excluding expiry days" one: **PF 1.15, +₹65k** — roughly break-even. The 1.41 below is the same rule
-*trading* expiry days, where ~70% of the modelled profit came from premiums we trust least.
+**The live First-Hour and First-30 rules skip expiry days** (since 25 Oct), so the number that applies
+to the First-Hour is the "excluding expiry days" one: **PF 1.15, +₹65k** — roughly break-even. The 1.41
+below is the same rule *trading* expiry days, where ~70% of the modelled profit came from premiums we
+trust least.
 
 | Strategy | NIFTY | SENSEX |
 |---|---|---|
