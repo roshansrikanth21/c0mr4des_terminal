@@ -181,7 +181,7 @@ def prev_session(daily: pd.DataFrame, intraday: pd.DataFrame) -> dict | None:
         if abs(gap_pct or 0) < 0.1:
             text += " Today opened flat to yesterday's close."
         else:
-            text += (f" Today opened {gap:+,.0f} points ({gap_pct:+.2f}%) "
+            text += (f" The latest session opened {gap:+,.0f} points ({gap_pct:+.2f}%) "
                      f"{'above' if gap > 0 else 'below'} that close - a "
                      f"{'gap up' if gap > 0 else 'gap down'}.")
 

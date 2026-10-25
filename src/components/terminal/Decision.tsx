@@ -172,7 +172,7 @@ export function DecisionPanel({ a }: { a: Analysis | null }) {
         {/* ---- the two tickets ---- */}
         <div className="p-4 space-y-2">
           <div className="text-[9px] font-mono font-black uppercase tracking-[0.25em] text-muted-foreground">
-            One lot, both sides · expiry {s.expiry}
+            One lot, both sides · expiry {new Date(s.expiry).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
           </div>
           <div className="grid grid-cols-2 gap-2">
             <Ticket side={s.call} highlight={dir > 0} />
