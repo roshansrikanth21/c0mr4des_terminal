@@ -21,9 +21,12 @@ _last_verdict: dict[str, str] = {}
 _lock = threading.Lock()
 
 
-ALL_STRATEGIES = ("First-Hour", "First-30", "Engine")
+ALL_STRATEGIES = ("First-Hour", "First-30", "Engine", "Expiry")
 # Engine is off by default: weakest backtest (PF 1.27) and 0/2 in the first live week.
-DEFAULT_STRATEGIES = ("First-Hour", "First-30")
+# Expiry: the First-Hour signal on Tuesdays, traded with that day's expiring option, 1 lot, Rs 1,000 max loss,
+# scored on its own so lottery days can't flatter or sink the main record.
+DEFAULT_STRATEGIES = ("First-Hour", "First-30", "Expiry")
+EXPIRY_MAX_LOSS = 1000.0
 
 # Anything the Settings page can write is clamped to a sane range (the owner types fast, and a 0 or a
 # negative here would silently disable the risk caps).
@@ -113,6 +116,7 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     orb_sig = orb.evaluate(df5, float(prev["close"].iloc[-1]) if len(prev) else None, now)
     if not sess["can_enter"] and orb_sig["verdict"] != "NO TRADE":
         orb_sig["verdict"] = "NO TRADE"
+    exp_sig = _expiry_signal(key, orb_sig, sess, result["price"], vix, settings, chain, expiry, now, in_replay)
     if sess["is_expiry_day"] and orb_sig["verdict"] != "NO TRADE":
         # Expiry-day breakouts are gamma lottery tickets: they dominated the replay P&L and fell to PF 1.15 without them.
         orb_sig["verdict"] = "NO TRADE"
@@ -123,6 +127,10 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     f30 = orb.first30(df5, now)
     if not sess["is_open"] and f30["verdict"] != "NO TRADE":
         f30["verdict"] = "NO TRADE"
+    if sess["is_expiry_day"] and f30["verdict"] != "NO TRADE":
+        # Same reason as the First-Hour: expiry-day gamma is the least trustworthy part of the replay.
+        f30["verdict"] = "NO TRADE"
+        f30["text"] += " Expiry day: First-30 sits out (no trade)."
     f30["option"] = options.plan_trade(key, f30["direction"], result["price"], expiry, vix["value"] if vix else None,
                                        f30.get("risk_points") or 0, f30.get("target_points") or 0,
                                        settings, chain, now) if f30["direction"] else None
@@ -151,11 +159,36 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         **result, "reasons": reasons, "option": option, "pcr": options.pcr(chain), "chain": chain,
         "news": news, "global": cues, "candles": chart_payload(raw5), "broker_connected": angel.api is not None,
         "spot_live": (None if in_replay else _spot_ltp(inst)) or float(raw5["close"].iloc[-1]),
-        "replay": replay.status(), "orb": orb_sig, "first30": f30,
+        "replay": replay.status(), "orb": orb_sig, "first30": f30, "expiry_play": exp_sig,
+        "chains": {expiry.isoformat(): chain, **({exp_sig["option"]["expiry"]: exp_sig.pop("_chain")}
+                                                 if exp_sig and exp_sig.get("_chain") else {})},
         "shock": None if in_replay else shock_check(raw5, daily, vix, news),
     }
     _log_signal(key, out)
     return out
+
+
+def _expiry_signal(key, orb_sig, sess, price, vix, settings, chain, expiry, now, in_replay) -> dict | None:
+    """Tuesday-only copy of the First-Hour signal, priced on TODAY's expiring contract."""
+    if not sess["is_expiry_day"] or not orb_sig.get("direction"):
+        return None
+    sig = {k: v for k, v in orb_sig.items() if k != "option"}
+    sig["name"] = "Expiry breakout"
+    if not sess["can_enter"]:
+        sig["verdict"] = "NO TRADE"
+    today = now.date()
+    if expiry != today:  # after 12:00 the main chain has rolled to next week; fetch today's contracts
+        chain = options.live_chain(key, today, price) if sess["is_open"] and not in_replay else None
+    o = options.plan_trade(key, sig["direction"], price, today, vix["value"] if vix else None,
+                           sig.get("risk_points") or 0, sig.get("target_points") or 0, settings, chain, now, otm_steps=1)
+    lot = INSTRUMENTS[key].lot_size
+    o["lots"], o["quantity"] = 1, lot
+    o["premium_stop"] = round(max(o["premium_stop"], o["premium"] - EXPIRY_MAX_LOSS / lot, 0.05), 2)
+    sig["option"], sig["_chain"] = o, chain
+    sig["text"] = (f"Expiry-day play ({'NOW' if sig['verdict'] != 'NO TRADE' else 'info'}): {orb_sig.get('text', '')} "
+                   f"Trades today's {o['strike']:.0f} {o['option_type']} at about Rs {o['premium']:.1f}, 1 lot, "
+                   f"max loss Rs {EXPIRY_MAX_LOSS:,.0f}.")
+    return sig
 
 
 def shock_check(df5, daily, vix, news) -> dict | None:

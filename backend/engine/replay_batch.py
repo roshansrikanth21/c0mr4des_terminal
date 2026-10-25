@@ -19,7 +19,7 @@ from .config import IST
 from .data import get_candles
 from .trader import DATA_DIR, PaperTrader, go_no_go, scorecard
 
-STRATS = ["First-Hour", "First-30", "Engine"]
+STRATS = ["First-Hour", "First-30", "Expiry", "Engine"]
 
 
 def run(n_days: int = 40) -> dict:

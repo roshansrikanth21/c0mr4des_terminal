@@ -345,3 +345,20 @@ def test_evaluate_refuses_a_nearly_empty_frame():
     with pytest.raises(RuntimeError):
         evaluate(df, df, 50)
 
+
+
+def test_expiry_play_is_one_lot_with_capped_loss():
+    from datetime import date, datetime
+    from backend.engine import service
+    from backend.engine.config import IST
+    now = datetime(2026, 10, 27, 10, 30, tzinfo=IST)  # a Tuesday expiry
+    orb_sig = {"verdict": "BUY", "direction": 1, "stop": 22900, "target": 23300, "risk_points": 100, "target_points": 200,
+               "text": "breakout"}
+    sess = {"is_expiry_day": True, "can_enter": True, "is_open": True}
+    sig = service._expiry_signal("NIFTY", orb_sig, sess, 23000, {"value": 15}, service.load_settings(), None,
+                                 date(2026, 10, 27), now, in_replay=True)
+    o = sig["option"]
+    assert sig["verdict"] == "BUY" and o["lots"] == 1 and o["expiry"] == "2026-10-27"
+    assert (o["premium"] - o["premium_stop"]) * 65 <= service.EXPIRY_MAX_LOSS + 1
+    assert service._expiry_signal("NIFTY", orb_sig, {**sess, "is_expiry_day": False}, 23000, None, {}, None,
+                                  date(2026, 10, 27), now, True) is None

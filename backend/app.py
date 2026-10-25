@@ -167,7 +167,7 @@ def _maybe_weekly_report() -> None:
     on = service.load_settings().get("autopilot_strategies", [])
     lines = [f"WEEKLY REPORT w/c {week_start}: {len(week)} trade(s), Rs {sum(t['pnl'] for t in week):,.0f} this week",
              f"All-time paper: Rs {sum(t['pnl'] for t in closed):,.0f} over {len(closed)} trades", ""]
-    for name in ("First-Hour", "First-30", "Engine"):
+    for name in ("First-Hour", "First-30", "Expiry", "Engine"):
         mine = [t for t in closed if t["strategy"] == name]
         if not mine:
             continue

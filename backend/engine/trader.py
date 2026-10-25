@@ -115,7 +115,7 @@ class PaperTrader:
         events = []
         if key not in settings.get("autopilot_instruments", ["NIFTY"]):
             return {"events": [], "open": []}
-        enabled = settings.get("autopilot_strategies", ["First-Hour", "First-30"])
+        enabled = settings.get("autopilot_strategies", ["First-Hour", "First-30", "Expiry"])
 
         def gate(name, verdict):  # a switched-off strategy opens nothing, but still manages a position it holds
             return verdict if name in enabled else None
@@ -129,6 +129,10 @@ class PaperTrader:
         f30 = a.get("first30") or {}
         events += self._process(f"{key}|first30", "First-30", gate("First-30", f30.get("verdict")), f30.get("option"),
                                 {"direction": f30.get("direction", 0), "stop": f30.get("stop"), "target": f30.get("target")},
+                                a, settings, 1)
+        ex = a.get("expiry_play") or {}
+        events += self._process(f"{key}|expiry", "Expiry", gate("Expiry", ex.get("verdict")), ex.get("option"),
+                                {"direction": ex.get("direction", 0), "stop": ex.get("stop"), "target": ex.get("target")},
                                 a, settings, 1)
         return {"events": events, "open": [p for s, p in self.state["open"].items() if s.startswith(key + "|")]}
 
@@ -147,7 +151,8 @@ class PaperTrader:
                 if stale:
                     prem, src = float(pos.get("mark") or pos["entry_premium"]), "last mark"
                 else:
-                    prem, src = self._premium_now(pos, spot, now, a.get("chain"))
+                    # mark each position against ITS contract's chain: after the noon roll the main chain is next week's
+                    prem, src = self._premium_now(pos, spot, now, (a.get("chains") or {}).get(pos["expiry"]))
                 pos["mark"] = round(prem, 2)
                 pos["unrealized"] = round((prem - pos["entry_premium"]) * pos["quantity"], 2)
                 tgt = pos.get("index_target")

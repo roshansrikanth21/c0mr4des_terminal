@@ -81,8 +81,8 @@ export function Settings() {
             options={[['NIFTY', 'NIFTY only'], ['SENSEX', 'SENSEX only'], ['NIFTY+SENSEX', 'Both']]}
             onChange={(v) => setRisk({ ...risk, autopilot_instruments: v.split('+') })} />
           <Choice label="Autopilot strategies" help="Engine is off by default: weakest backtest and it lost its first live trades. Switching one off never closes a trade it already holds."
-            value={(risk.autopilot_strategies || ['First-Hour', 'First-30']).join('+')}
-            options={[['First-Hour+First-30', 'First-Hour + First-30'], ['First-Hour', 'First-Hour only'], ['First-Hour+First-30+Engine', 'All three']]}
+            value={(risk.autopilot_strategies || ['First-Hour', 'First-30', 'Expiry']).join('+')}
+            options={[['First-Hour+First-30+Expiry', 'First-Hour + First-30 + Tuesday expiry'], ['First-Hour+First-30', 'First-Hour + First-30'], ['First-Hour', 'First-Hour only'], ['First-Hour+First-30+Expiry+Engine', 'All four']]}
             onChange={(v) => setRisk({ ...risk, autopilot_strategies: v.split('+') })} />
           <CapitalHealth capital={risk.capital} />
           <div className="text-xs text-muted-foreground font-mono">
