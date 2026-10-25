@@ -473,3 +473,12 @@ def test_only_one_position_is_open_at_a_time(tmp_path):
     third = pt._process("NIFTY|orb", "First-Hour", "BUY", a["option"], a["plan"], a, loose,
                         loose["max_trades_per_day"])
     assert third[0]["type"] == "paper_entry" and len(pt.state["open"]) == 2
+
+
+def test_expiry_is_opt_in_by_owner_decision():
+    # Owner call 26 Oct: the 1.41 profit factor comes from expiry days, the least trustworthy prices in
+    # the record, so the Expiry slot must not paper-trade until it has banked its own honest record.
+    from backend.engine.service import DEFAULT_STRATEGIES, ALL_STRATEGIES
+    assert "Expiry" not in DEFAULT_STRATEGIES
+    assert set(DEFAULT_STRATEGIES).issubset(ALL_STRATEGIES)
+    assert set(DEFAULT_STRATEGIES) <= {"First-Hour", "First-30"}

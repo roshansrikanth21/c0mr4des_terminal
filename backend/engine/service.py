@@ -24,8 +24,10 @@ _lock = threading.Lock()
 ALL_STRATEGIES = ("First-Hour", "First-30", "Engine", "Expiry")
 # Engine is off by default: weakest backtest (PF 1.27) and 0/2 in the first live week.
 # Expiry: the First-Hour signal on Tuesdays, traded with that day's expiring option, 1 lot, Rs 1,000 max loss,
-# scored on its own so lottery days can't flatter or sink the main record.
-DEFAULT_STRATEGIES = ("First-Hour", "First-30", "Expiry")
+# scored on its own so lottery days can't flatter or sink the main record. Owner decision 26 Oct: OFF by
+# default — the backtest's 1.41 profit factor lives almost entirely on expiry days, the least trustworthy
+# prices in the record, and it is opt-in until it banks ~20 honest paper trades of its own.
+DEFAULT_STRATEGIES = ("First-Hour", "First-30")
 EXPIRY_MAX_LOSS = 1000.0
 
 # Anything the Settings page can write is clamped to a sane range (the owner types fast, and a 0 or a
