@@ -72,6 +72,7 @@ export interface PaperSummary {
   open: PaperTrade[]; today: { trades: number; pnl: number; wins: number };
   by_strategy: Record<string, { trades: number; wins: number; pnl: number }>;
   all_time: { trades: number; pnl: number; wins: number; win_rate: number | null }; closed: PaperTrade[];
+  go_no_go?: Record<string, { verdict: string; checks: string[]; scorecard: { trades: number; net: number; oversize: number } }>;
   live_trading_enabled: boolean; broker_connected: boolean;
 }
 

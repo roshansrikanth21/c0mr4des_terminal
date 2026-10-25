@@ -36,6 +36,24 @@ export function SignalLog() {
               </div>
             ))}
           </div>
+          {paper.go_no_go && Object.keys(paper.go_no_go).length > 0 && (
+            <div className="border border-border rounded-md p-3 bg-card/40 space-y-2">
+              <div className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">
+                Go / no-go: 20 trades, 40% winners, 1.5x payoff, positive net, streak under 7, and every trade inside the risk budget
+              </div>
+              {Object.entries(paper.go_no_go).map(([name, g]) => (
+                <div key={name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs font-mono">
+                  <span className="w-24 font-bold uppercase">{name}</span>
+                  <span className={cn('font-bold', g.verdict === 'GO' ? 'text-green-500' : g.verdict === 'NO-GO' ? 'text-red-500' : 'text-muted-foreground')}>
+                    {g.verdict}
+                  </span>
+                  <span className="text-muted-foreground">
+                    {g.checks.filter((c) => !c.startsWith('OK ')).join(' / ') || 'all checks passed'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
           {paper.closed.length > 0 && (
             <div className="border border-border rounded-md overflow-auto max-h-96">
               <table className="w-full text-xs font-mono">

@@ -218,6 +218,13 @@ class PaperTrader:
             b["trades"] += 1
             b["wins"] += t["pnl"] > 0
             b["pnl"] = round(b["pnl"] + t["pnl"], 2)
+        # Where each strategy stands on the agreed gate, so the journal page shows the same verdict the
+        # Saturday report sends. Cheap: a handful of closed trades.
+        gate = {}
+        for name in by_strategy:
+            sc = scorecard([t for t in allc if t.get("strategy", "Engine") == name])
+            verdict, checks = go_no_go(sc)
+            gate[name] = {"verdict": verdict, "checks": checks, "scorecard": sc}
         return {
             "by_strategy": by_strategy,
             "open": list(self.state["open"].values()),
@@ -226,6 +233,7 @@ class PaperTrader:
             "all_time": {"trades": len(allc), "pnl": round(sum(t["pnl"] for t in allc), 2), "wins": len(wins),
                          "win_rate": round(len(wins) / len(allc) * 100, 1) if allc else None},
             "closed": list(reversed(allc[-200:])),
+            "go_no_go": gate,
             "live_trading_enabled": live_enabled(), "broker_connected": angel.api is not None,
         }
 
