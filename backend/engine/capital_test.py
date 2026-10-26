@@ -306,7 +306,10 @@ def report() -> dict:
             day_index = (datetime.now(IST).date() - date.fromisoformat(started[:10])).days + 1
         except Exception:  # noqa: BLE001
             day_index = None
-    best = max(cases, key=lambda c: c["return_pct"]) if cases else None
+    best = None
+    traded = [c for c in cases if c["trades"] > 0]
+    if traded:
+        best = max(traded, key=lambda c: c["return_pct"])
     return {
         "started_at": started, "day_index": day_index, "week_days": WEEK_DAYS,
         "cases": cases,
