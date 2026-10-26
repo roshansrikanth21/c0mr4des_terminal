@@ -65,20 +65,34 @@ def _seed() -> list[dict]:
          "change": "lessons() counts named loss patterns in the paper book; every deliberate change gets a row here",
          "evidence": "The manual half of a self-improvement loop: observe and count only - promotions stay human decisions.",
          "status": "promoted", "owner": "owner OK"},
+        {"id": 11, "date": "2026-10-26", "area": "process", "name": "Multi-capital paper study (4 isolated books)",
+         "change": "Rs 10k / 30k / 50k plus a Rs 10k puts-only book, same signals, separate files, 1-2 trades/day, "
+                   "no borrowing, bust-reset at the original stake",
+         "evidence": "Owner request 26 Oct. Runs one week from the first live session; ranks by return on stake, "
+                     "not raw rupees. Four or five trades per case is evidence about sizing, not proof of an edge.",
+         "status": "testing", "owner": "owner request"},
     ]
 
 
 def all() -> list[dict]:
-    """Every experiment, oldest first. Seeds the file on first read."""
+    """Every experiment, oldest first. Seeds the file on first read and adds newly committed rows."""
+    seeds = _seed()
     if not FILE.exists():
-        rows = _seed()
         FILE.parent.mkdir(parents=True, exist_ok=True)
-        FILE.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
-        return rows
+        FILE.write_text("\n".join(json.dumps(r) for r in seeds) + "\n", encoding="utf-8")
+        return seeds
     try:
-        return [json.loads(line) for line in FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
+        rows = [json.loads(line) for line in FILE.read_text(encoding="utf-8").splitlines() if line.strip()]
     except Exception:  # noqa: BLE001 - a corrupt line must not kill the page
         return []
+    # A row committed after this file was created still belongs in the record. Merge it in by id,
+    # but never rewrite a file we could not read.
+    have = {r.get("id") for r in rows}
+    missing = [r for r in seeds if r["id"] not in have]
+    if missing:
+        rows = sorted(rows + missing, key=lambda r: r.get("id", 0))
+        FILE.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    return rows
 
 
 def record(area: str, name: str, change: str, evidence: str, status: str = "testing",

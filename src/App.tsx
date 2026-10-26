@@ -9,6 +9,7 @@ const NewsRadar = lazy(() => import('@/pages/NewsRadar').then((m) => ({ default:
 const Backtest = lazy(() => import('@/pages/Backtest').then((m) => ({ default: m.Backtest })));
 const SignalLog = lazy(() => import('@/pages/SignalLog').then((m) => ({ default: m.SignalLog })));
 const Settings = lazy(() => import('@/pages/Settings').then((m) => ({ default: m.Settings })));
+const CapitalTest = lazy(() => import('@/pages/CapitalTest').then((m) => ({ default: m.CapitalTest })));
 
 function RouteFallback() {
   return (
@@ -30,6 +31,7 @@ function App() {
             <Route path="/news" element={<NewsRadar />} />
             <Route path="/backtest" element={<Backtest />} />
             <Route path="/signals" element={<SignalLog />} />
+            <Route path="/capital" element={<CapitalTest />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

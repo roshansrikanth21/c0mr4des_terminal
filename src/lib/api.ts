@@ -116,6 +116,21 @@ export interface PaperSummary {
   live_trading_enabled: boolean; broker_connected: boolean;
 }
 
+export interface CapitalCase {
+  id: string; label: string; capital: number; rule: string; puts_only: boolean;
+  max_lots: number; risk_pct: number; daily_loss_pct: number;
+  equity: number; era_net: number; net: number; stake: number; eras: number; busts: number;
+  return_pct: number; trades: number; win_rate: number | null; payoff: number | null;
+  worst_streak: number; oversize: number; charges: number; ce: number; pe: number;
+  today: { trades: number; pnl: number };
+  open: PaperTrade[]; closed: PaperTrade[];
+}
+
+export interface CapitalTest {
+  started_at: string | null; day_index: number | null; week_days: number;
+  cases: CapitalCase[]; leader: string | null; note: string; rules: string;
+}
+
 export async function getJSON<T>(url: string, timeout = 30000, init?: RequestInit): Promise<T> {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeout);

@@ -520,13 +520,128 @@ def test_experiment_registry_seeds_once_and_appends(tmp_path, monkeypatch):
     f = tmp_path / "experiments.jsonl"
     monkeypatch.setattr(experiments, "FILE", f)
     rows = experiments.all()
-    assert len(rows) == 10                                              # seeded truth on first read
+    assert len(rows) == 11                                              # seeded truth on first read
     assert all(set(r) >= {"id", "date", "area", "name", "change", "evidence", "status", "owner"} for r in rows)
     assert [r["id"] for r in rows] == sorted({r["id"] for r in rows})   # no duplicate ids
 
     again = experiments.all()
-    assert len(again) == 10                                             # second read does NOT reseed a new copy
+    assert len(again) == 11                                             # second read does NOT reseed a new copy
 
     new = experiments.record("process", "test row", "unit test", "evidence", "testing", "unit")
-    assert new["id"] == 11 and len(experiments.all()) == 11
-    assert len(experiments.all()) == 11                                 # the failed write must not have appended
+    assert new["id"] == 12 and len(experiments.all()) == 12
+    assert len(experiments.all()) == 12                                 # the failed write must not have appended
+
+
+def test_experiment_registry_picks_up_rows_committed_after_it_was_created(tmp_path, monkeypatch):
+    import json as _json
+    from backend.engine import experiments
+    f = tmp_path / "experiments.jsonl"
+    monkeypatch.setattr(experiments, "FILE", f)
+    old = experiments._seed()[:9]                                       # an install older than rows 10-11
+    f.write_text("\n".join(_json.dumps(r) for r in old) + "\n", encoding="utf-8")
+    rows = experiments.all()
+    assert len(rows) == 11 and {10, 11} <= {r["id"] for r in rows}
+    assert len(f.read_text(encoding="utf-8").splitlines()) == 11
+
+    f.write_text("{not json}\n", encoding="utf-8")                      # a corrupt file is never rewritten
+    assert experiments.all() == []
+    assert f.read_text(encoding="utf-8") == "{not json}\n"
+
+
+# ---------------- multi-capital paper experiment ----------------
+def _cap_analysis(when: str = "2026-10-27T10:00:00+05:30", verdict: str = "BUY",
+                  premium: float = 150.0, spot: float = 23000.0) -> dict:
+    direction = 1 if verdict == "BUY" else -1
+    kind = "CE" if direction > 0 else "PE"
+    opt = {"side": f"BUY {kind}", "symbol_hint": f"NIFTY 27 OCT 23000 {kind}", "strike": 23000,
+           "option_type": kind, "expiry": "2026-10-27", "quantity": 65, "lots": 1, "premium": premium,
+           "premium_source": "model", "premium_stop": round(premium * 0.8, 2),
+           "premium_target": round(premium * 1.4, 2), "greeks": {"delta": 0.5}}
+    leg = {"verdict": verdict, "direction": direction,
+           "stop": spot - 50 if direction > 0 else spot + 50,
+           "target": spot + 100 if direction > 0 else spot - 100, "option": opt}
+    return {"instrument": {"key": "NIFTY"}, "session": {"is_open": True}, "vix": {"value": 14},
+            "chain": None, "chains": {}, "score": 0.6, "reasons": [], "spot_live": spot, "price": spot,
+            "generated_at": when, "verdict": "NO TRADE", "option": None, "plan": {},
+            "orb": leg, "first30": {},
+            "sides": {"call": {"lot_cost": 9000.0, "worst_case": 9200.0},
+                      "put": {"lot_cost": 9500.0, "worst_case": 9700.0}}}
+
+
+def _cap_book(tmp_path, monkeypatch, cid: str):
+    from backend.engine import capital_test as ct
+    monkeypatch.setattr(ct, "DATA_DIR", tmp_path)
+    return ct.CaseBook(next(s for s in ct.CASES if s["id"] == cid))
+
+
+def _cap_settings() -> dict:
+    return {"autopilot_instruments": ["NIFTY"], "autopilot_strategies": ["First-Hour", "First-30"],
+            "capital": 10000, "risk_per_trade_pct": 25, "max_trades_per_day": 2,
+            "max_daily_loss_pct": 25, "max_open_positions": 1}
+
+
+def test_capital_cases_size_differently_and_keep_separate_files(tmp_path, monkeypatch):
+    a = _cap_analysis()
+    sizes = {}
+    for cid in ("A", "B", "C"):
+        book = _cap_book(tmp_path, monkeypatch, cid)
+        ev = book.on_analysis(a, _cap_settings())["events"]
+        assert ev and ev[0]["type"] == "paper_entry"
+        pos = ev[0]["trade"]
+        sizes[cid] = pos["quantity"]
+        assert book.path.parent == tmp_path and book.path.name == f"{cid}.json"
+    # risk per lot is Rs 1,950 (30 points x 65), so 20% of each stake buys 1 / 3 / 4 lots
+    assert sizes == {"A": 65, "B": 195, "C": 260}
+    assert len({tmp_path / "A.json", tmp_path / "B.json", tmp_path / "C.json"}) == 3
+    assert not (tmp_path / "D.json").exists(), "no case may write into another case's book"
+
+
+def test_capital_puts_only_case_skips_calls_and_takes_the_put(tmp_path, monkeypatch):
+    book = _cap_book(tmp_path, monkeypatch, "D")
+    assert book.on_analysis(_cap_analysis(verdict="BUY"), _cap_settings())["open"] == []
+
+    ev = book.on_analysis(_cap_analysis(verdict="SELL", premium=140.0), _cap_settings())["events"]
+    assert ev and ev[0]["type"] == "paper_entry"
+    assert ev[0]["trade"]["option_type"] == "PE" and ev[0]["trade"]["dir"] == -1
+
+
+def test_capital_second_trade_needs_a_green_first_trade(tmp_path, monkeypatch):
+    from datetime import date
+    book = _cap_book(tmp_path, monkeypatch, "A")
+    d = date(2026, 10, 27)
+    assert book.budget_today(d) == 1
+    book.state["closed"].append({"pnl": -500.0, "opened_at": "2026-10-27T10:00:00+05:30",
+                                "closed_at": "2026-10-27T11:00:00+05:30"})
+    assert book.budget_today(d) == 1, "a losing day stops at one trade"
+    book.state["closed"][0]["pnl"] = 800.0
+    assert book.budget_today(d) == 2, "only a green first trade unlocks the second"
+
+
+def test_capital_case_busts_resets_and_archives_the_era(tmp_path, monkeypatch):
+    book = _cap_book(tmp_path, monkeypatch, "A")
+    book.state["closed"].append({"pnl": -5000.0, "opened_at": "2026-10-27T10:00:00+05:30",
+                                "closed_at": "2026-10-27T11:00:00+05:30", "charges": 50.0})
+    book._save()
+    assert book.equity() == 5000.0
+
+    ev = book.on_analysis(_cap_analysis(verdict="NO TRADE"), _cap_settings())["events"]
+    assert ev and ev[0]["type"] == "bust" and ev[0]["era"] == 1
+    assert book.equity() == 10000.0 and book.state["closed"] == []
+    snaps = list(tmp_path.glob("A_bust*.json"))
+    assert len(snaps) == 1
+    import json as _json
+    assert _json.loads(snaps[0].read_text(encoding="utf-8"))["closed"][0]["pnl"] == -5000.0
+    assert book.report()["busts"] == 1 and book.report()["net"] == -5000.0
+
+
+def test_capital_case_never_borrows_and_never_resets_an_untraded_book(tmp_path, monkeypatch):
+    book = _cap_book(tmp_path, monkeypatch, "A")
+    a = _cap_analysis()
+    a["sides"] = {"call": {"lot_cost": 12000.0, "worst_case": 12300.0},
+                  "put": {"lot_cost": 12000.0, "worst_case": 12300.0}}
+    out = book.on_analysis(a, _cap_settings())
+    assert out["open"] == [] and out["events"][0]["type"] == "blocked"
+    assert "no trade rather than invented money" in out["events"][0]["reason"]
+    assert book.equity() == 10000.0 and not list(tmp_path.glob("A_bust*.json")), \
+        "a stake that cannot fund a lot is not a loss and must not be reset"
+

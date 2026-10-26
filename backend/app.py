@@ -19,6 +19,7 @@ from pydantic import BaseModel
 load_dotenv(Path(__file__).with_name(".env"))
 
 from .engine import backtest, macro, service, timeline  # noqa: E402
+from .engine import capital_test  # noqa: E402
 from .engine.trader import go_no_go, live_enabled, paper, place_live_order, replay_paper, scorecard  # noqa: E402
 from .engine import replay  # noqa: E402
 from datetime import date as _date  # noqa: E402
@@ -106,6 +107,12 @@ async def _analyze_and_trade(key: str) -> dict:
     if key == "NIFTY":
         _check_health(a)
     a["paper"] = await asyncio.to_thread(book().on_analysis, a, service.load_settings())
+    if not replay.active():
+        # Four isolated paper books on the same signal. Guarded: a study must never stop the desk.
+        try:
+            await asyncio.to_thread(capital_test.on_analysis, a, service.load_settings())
+        except Exception:  # noqa: BLE001
+            log.exception("capital test failed - main loop unaffected")
     LATEST[key], LATEST_AT[key] = a, time.time()
     for ev in a["paper"]["events"]:
         log.info("PAPER %s %s", key, ev)
@@ -288,6 +295,18 @@ def experiments_list():
     from .engine import experiments
 
     return {"experiments": experiments.all()}
+
+
+@app.get("/api/capital-test")
+def capital_test_report():
+    """Four isolated paper books (Rs 10k / 30k / 50k / 10k puts only) on one signal feed."""
+    return capital_test.report()
+
+
+@app.post("/api/capital-test/restart")
+def capital_test_restart():
+    """Archive all four books and start a fresh week. Files are moved, never deleted."""
+    return capital_test.restart()
 
 
 @app.post("/api/paper/reset")

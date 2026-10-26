@@ -9,6 +9,7 @@ import {
   X,
   PlaySquare,
   Radio,
+  FlaskConical,
   Sun,
   Moon
 } from 'lucide-react';
@@ -32,6 +33,7 @@ export function Shell({ children }: ShellProps) {
     { label: 'News Radar', icon: Radio, path: '/news' },
     { label: 'Backtest', icon: PlaySquare, path: '/backtest' },
     { label: 'Trade Journal', icon: History, path: '/signals' },
+    { label: 'Capital Test', icon: FlaskConical, path: '/capital' },
     { label: 'Settings', icon: Settings, path: '/settings' },
   ];
 
