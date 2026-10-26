@@ -1,4 +1,4 @@
-"""Engine tests: deterministic, offline (no network)."""
+﻿"""Engine tests: deterministic, offline (no network)."""
 from datetime import date, datetime
 
 import numpy as np
@@ -482,3 +482,51 @@ def test_expiry_is_opt_in_by_owner_decision():
     assert "Expiry" not in DEFAULT_STRATEGIES
     assert set(DEFAULT_STRATEGIES).issubset(ALL_STRATEGIES)
     assert set(DEFAULT_STRATEGIES) <= {"First-Hour", "First-30"}
+
+
+# ---------------- failure patterns + experiment registry ----------------
+def test_lessons_names_recurring_failure_shapes():
+    from backend.engine.lessons import lessons
+
+    def t(when, reason, pnl, oversize=False):
+        return {"opened_at": when, "reason": reason, "pnl": pnl, "oversize": oversize, "stale": False}
+
+    closed = [
+        t("2026-10-21T14:10:00+05:30", "15:15 square-off", -1097.84),   # late chase, bled to close
+        t("2026-10-26T09:48:00+05:30", "stop", -201.87),               # first-hour stop
+        t("2026-10-23T10:35:00+05:30", "premium stop", -1410.35),      # decay death
+        t("2026-10-23T09:45:00+05:30", "15:15 square-off", 5226.87),   # winner held to close
+        t("2026-10-23T10:20:00+05:30", "stop", -1837.72, oversize=True),
+    ]
+    out = lessons(closed)
+    assert out["counts"]["late_entry"] == 1
+    assert out["counts"]["bled_to_close"] == 1
+    assert out["counts"]["early_loss"] == 3
+    assert out["counts"]["decay_death"] == 1
+    assert out["counts"]["winners_held_to_close"] == 1
+    assert out["counts"]["oversize_loss"] == 1
+
+    # the standing warnings survive: tiny sample + concentrated profit
+    names = {f["name"] for f in out["flags"]}
+    assert "sample" in names and "luck" in names
+    assert out["losses"] == 4
+
+    empty = lessons([])
+    assert "No paper trades yet" in empty["text"] and empty["net"] == 0.0
+
+
+def test_experiment_registry_seeds_once_and_appends(tmp_path, monkeypatch):
+    from backend.engine import experiments
+    f = tmp_path / "experiments.jsonl"
+    monkeypatch.setattr(experiments, "FILE", f)
+    rows = experiments.all()
+    assert len(rows) == 10                                              # seeded truth on first read
+    assert all(set(r) >= {"id", "date", "area", "name", "change", "evidence", "status", "owner"} for r in rows)
+    assert [r["id"] for r in rows] == sorted({r["id"] for r in rows})   # no duplicate ids
+
+    again = experiments.all()
+    assert len(again) == 10                                             # second read does NOT reseed a new copy
+
+    new = experiments.record("process", "test row", "unit test", "evidence", "testing", "unit")
+    assert new["id"] == 11 and len(experiments.all()) == 11
+    assert len(experiments.all()) == 11                                 # the failed write must not have appended

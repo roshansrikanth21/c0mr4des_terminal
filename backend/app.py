@@ -282,6 +282,14 @@ def paper_summary():
     return paper.summary()
 
 
+@app.get("/api/experiments")
+def experiments_list():
+    """Every deliberate change to strategy or process, with its evidence and status."""
+    from .engine import experiments
+
+    return {"experiments": experiments.all()}
+
+
 @app.post("/api/paper/reset")
 def paper_reset():
     book().reset()

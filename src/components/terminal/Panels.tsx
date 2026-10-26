@@ -349,6 +349,14 @@ export function PaperPanel({ a }: { a: Analysis | null }) {
           ))}
         </div>
       )}
+      {sum.lessons && sum.lessons.flags?.length > 0 && (
+        <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1">
+          <div className="text-[9px] font-mono font-black uppercase tracking-[0.25em] text-amber-500/90">Honest read</div>
+          {sum.lessons.flags.map((f) => (
+            <p key={f.name} className="text-[10px] leading-snug text-muted-foreground">· {f.text}</p>
+          ))}
+        </div>
+      )}
       {opens.length ? opens.map((open) => (
         <div key={open.slot || open.opened_at} className={cn('mt-3 rounded-md border p-3', open.dir > 0 ? 'border-green-500/40 bg-green-500/5' : 'border-red-500/40 bg-red-500/5')}>
           <div className="flex justify-between items-center">

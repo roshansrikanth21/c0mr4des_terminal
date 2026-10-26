@@ -21,6 +21,7 @@ from pathlib import Path
 
 from .config import INSTRUMENTS, IST
 from .data import angel
+from .lessons import lessons
 from .options import MAX_LOTS, bs, implied_vol, round_trip_cost, years_to_expiry
 
 log = logging.getLogger("engine.trader")
@@ -240,6 +241,7 @@ class PaperTrader:
             "all_time": {"trades": len(allc), "pnl": round(sum(t["pnl"] for t in allc), 2), "wins": len(wins),
                          "win_rate": round(len(wins) / len(allc) * 100, 1) if allc else None},
             "closed": list(reversed(allc[-200:])),
+            "lessons": lessons(allc),
             "go_no_go": gate,
             "live_trading_enabled": live_enabled(), "broker_connected": angel.api is not None,
         }
