@@ -272,6 +272,16 @@ def preopen(d: Desk) -> tuple[list[dict], dict]:
         detail = "not started yet - the clock starts on the first live session"
     checks.append({"name": "Capital test", "status": "OK", "detail": detail})
 
+    sp = d.get("/api/spreads")
+    facts["spreads"] = sp
+    pos = sp.get("open")
+    detail = (f"stake {money(sp.get('stake'))} | equity {money(sp.get('equity'))} | "
+              f"{sp.get('trades', 0)} closed | net {money(sp.get('net'))}")
+    if pos:
+        detail += (f" | open {pos.get('symbol_hint')} "
+                   f"credit {money(pos.get('credit_value'))} mark {pos.get('mark')}")
+    checks.append({"name": "Spreads", "status": "OK", "detail": detail})
+
     sides = sig.get("sides") or {}
     call, put = sides.get("call") or {}, sides.get("put") or {}
     if call or put:
@@ -385,6 +395,33 @@ def review(d: Desk) -> tuple[list[dict], dict]:
     else:
         checks.append({"name": "Capital", "status": "OK",
                        "detail": "not started - the week begins on the first live session"})
+
+    sp = d.get("/api/spreads")
+    facts["spreads"] = sp
+    pos = sp.get("open")
+    checks.append({
+        "name": "Spreads",
+        "status": "OK",
+        "detail": (f"stake {money(sp.get('stake'))} | equity {money(sp.get('equity'))} | "
+                   f"net {money(sp.get('net'))} | {sp.get('trades', 0)} closed"
+                   + (f" | win rate {sp.get('win_rate')}%" if sp.get("win_rate") is not None else "")),
+    })
+    for t in [x for x in (sp.get("closed") or []) if str(x.get("closed_at", ""))[:10] == today_str]:
+        checks.append({
+            "name": "  spread",
+            "status": "OK",
+            "detail": (f"{str(t.get('opened_at', ''))[11:16]} {t.get('label')} "
+                       f"{int(t.get('short_strike', 0))}/{int(t.get('long_strike', 0))} | "
+                       f"credit {t.get('credit')} -> debit {t.get('exit_debit')} "
+                       f"({t.get('reason')}) | {money(t.get('pnl', 0))}"),
+        })
+    if pos:
+        checks.append({
+            "name": "  open",
+            "status": "OK",
+            "detail": (f"{pos.get('symbol_hint')} | credit {money(pos.get('credit_value'))} | "
+                       f"mark {pos.get('mark')} | unrealized {money(pos.get('unrealized', 0))}"),
+        })
 
     testing = [e for e in exps if e.get("status") == "testing"]
     if testing:

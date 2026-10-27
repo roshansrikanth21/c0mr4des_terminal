@@ -705,3 +705,76 @@ def test_capital_cases_inherit_the_entry_gate(tmp_path, monkeypatch):
     ev = book.on_analysis(a, _cap_settings())["events"]
     assert ev and ev[0]["type"] == "blocked" and "theta" in ev[0]["reason"]
     assert book.state["open"] == {}
+
+
+# ---------------- defined-risk credit spreads ----------------
+def _spread_analysis(when: str = "2026-10-28T10:00:00+05:30", spot: float = 25000.0,
+                     verdict: str = "BUY") -> dict:
+    return {"instrument": {"key": "NIFTY"}, "session": {"is_open": True, "expiry": "2026-11-03"},
+            "vix": {"value": 15}, "chains": {}, "chain": None, "score": 0.6, "reasons": [],
+            "spot_live": spot, "price": spot, "generated_at": when,
+            "orb": {"verdict": verdict, "direction": 1 if verdict == "BUY" else -1}}
+
+
+def test_credit_spread_is_defined_risk_and_direction_maps():
+    from backend.engine import spreads
+    now = datetime(2026, 10, 28, 10, 0, tzinfo=IST)
+    exp = date(2026, 11, 3)
+    bull = spreads.plan("NIFTY", 1, 25000.0, exp, 15, now)
+    assert bull["kind"] == "bull_put" and bull["option_type"] == "PE"
+    assert bull["long_strike"] < bull["short_strike"] < 25000.0
+    assert bull["credit"] > 0 and bull["credit_value"] == pytest.approx(bull["credit"] * 65, rel=0.01)
+    assert bull["margin"] == pytest.approx(bull["width"] * 65)          # defined risk: the width
+    assert bull["max_loss"] > 0 and bull["stop_debit"] == pytest.approx(bull["credit"] * 2, rel=0.01)
+    assert bull["target_debit"] == pytest.approx(bull["credit"] * 0.5, rel=0.01)
+    assert bull["credit_pct_of_width"] >= 8.0
+
+    bear = spreads.plan("NIFTY", -1, 25000.0, exp, 15, now)
+    assert bear["kind"] == "bear_call" and bear["option_type"] == "CE"
+    assert 25000.0 < bear["short_strike"] < bear["long_strike"]
+
+
+def test_spread_book_takes_half_the_credit(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    out = b.on_analysis(_spread_analysis())
+    assert out["events"][0]["type"] == "spread_entry"
+    pos = out["open"]
+    assert pos["margin"] <= b.equity
+    # 200 points in favour closes the spread at roughly half the credit
+    ev = b.on_analysis(_spread_analysis("2026-10-28T11:30:00+05:30", spot=25200.0))["events"]
+    assert ev[0]["type"] == "spread_exit"
+    assert ev[0]["trade"]["reason"] == "target (50% of credit)" and ev[0]["trade"]["pnl"] > 0
+    assert b.report()["trades"] == 1 and b.equity > 50000.0
+
+
+def test_spread_book_stops_at_twice_the_credit(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    b.on_analysis(_spread_analysis())
+    ev = b.on_analysis(_spread_analysis("2026-10-28T11:30:00+05:30", spot=24700.0))["events"]
+    assert ev[0]["trade"]["reason"] == "stop (2x credit)"
+    assert -3500 < ev[0]["trade"]["pnl"] < 0, "the stop must cap the loss near the credit, not the width"
+
+
+def test_spread_book_never_borrows_and_never_stacks(tmp_path):
+    from backend.engine import spreads
+    poor = spreads.SpreadBook(tmp_path / "poor.json", {"stake": 5000.0})
+    out = poor.on_analysis(_spread_analysis())
+    assert out["open"] is None and out["events"][0]["type"] == "blocked"
+    assert "never borrowed" in out["events"][0]["reason"]
+
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    b.on_analysis(_spread_analysis())
+    second = b.on_analysis(_spread_analysis("2026-10-28T10:30:00+05:30", verdict="SELL"))
+    assert second["events"] == [] and second["open"]["kind"] == "bull_put", "one spread at a time"
+
+
+def test_spread_book_time_stop_and_one_trade_a_day(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    b.on_analysis(_spread_analysis())
+    ev = b.on_analysis(_spread_analysis("2026-10-28T14:35:00+05:30"))["events"]
+    assert ev[0]["trade"]["reason"] == "14:30 time stop"
+    again = b.on_analysis(_spread_analysis("2026-10-28T14:45:00+05:30"))
+    assert again["events"] == [] and again["open"] is None, "one spread a day"

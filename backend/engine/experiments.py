@@ -81,6 +81,14 @@ def _seed() -> list[dict]:
                      "puts 92% of individual derivatives losses in options. The 20% rule therefore sits out the last "
                      "1-2 days before expiry by design.",
          "status": "testing", "owner": "owner request"},
+        {"id": 13, "date": "2026-10-27", "area": "strategy", "name": "Defined-risk credit spreads (bull put / bear call)",
+         "change": "Sell a ~0.20-delta leg and buy a ~0.08-delta leg as protection, on the First-Hour signal: "
+                   "one spread a day, Rs 50k stake, close at 50% of the credit or at 2x the credit, 14:30 time stop",
+         "evidence": "VRP study 2016-2024: implied volatility exceeded realised on 79.5% of NIFTY days, so the "
+                     "documented edge is on the sell side; naked selling needs Rs 1-1.5 lakh of margin per lot, "
+                     "while a 250-point spread blocks about Rs 16k. The long-option book kept losing to theta "
+                     "(premium stops before the index stop). Paper only - this book never sends an order.",
+         "status": "testing", "owner": "owner request"},
     ]
 
 

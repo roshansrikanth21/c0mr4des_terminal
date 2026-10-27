@@ -20,6 +20,7 @@ load_dotenv(Path(__file__).with_name(".env"))
 
 from .engine import backtest, macro, service, timeline  # noqa: E402
 from .engine import capital_test  # noqa: E402
+from .engine import spreads  # noqa: E402
 from .engine.trader import go_no_go, live_enabled, paper, place_live_order, replay_paper, scorecard  # noqa: E402
 from .engine import replay  # noqa: E402
 from datetime import date as _date  # noqa: E402
@@ -113,6 +114,11 @@ async def _analyze_and_trade(key: str) -> dict:
             await asyncio.to_thread(capital_test.on_analysis, a, service.load_settings())
         except Exception:  # noqa: BLE001
             log.exception("capital test failed - main loop unaffected")
+        # The credit-spread book is its own experiment: same signal, the other side of theta.
+        try:
+            await asyncio.to_thread(spreads.on_analysis, a, service.load_settings())
+        except Exception:  # noqa: BLE001
+            log.exception("spread book failed - main loop unaffected")
     LATEST[key], LATEST_AT[key] = a, time.time()
     for ev in a["paper"]["events"]:
         log.info("PAPER %s %s", key, ev)
@@ -307,6 +313,12 @@ def capital_test_report():
 def capital_test_restart():
     """Archive all four books and start a fresh week. Files are moved, never deleted."""
     return capital_test.restart()
+
+
+@app.get("/api/spreads")
+def spreads_report():
+    """Defined-risk credit spreads: the same signal, theta collected instead of paid."""
+    return spreads.report()
 
 
 @app.post("/api/paper/reset")
