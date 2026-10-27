@@ -19,10 +19,10 @@ import threading
 from datetime import date, datetime, time
 from pathlib import Path
 
-from .config import INSTRUMENTS, IST
+from .config import ENTRY_RULES, INSTRUMENTS, IST
 from .data import angel
 from .lessons import lessons
-from .options import MAX_LOTS, bs, implied_vol, round_trip_cost, years_to_expiry
+from .options import MAX_LOTS, bs, entry_blockers, implied_vol, round_trip_cost, years_to_expiry
 
 log = logging.getLogger("engine.trader")
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -30,6 +30,7 @@ PAPER_FILE = DATA_DIR / "paper_trades.json"
 REPLAY_FILE = DATA_DIR / "replay_paper.json"
 ORDER_LOG = DATA_DIR / "live_orders.jsonl"
 SQUARE_OFF = time(15, 15)
+TIME_STOP = time(*ENTRY_RULES["time_stop"])  # cut the last-hour bleed instead of holding to 15:15
 
 
 def live_enabled() -> bool:
@@ -160,12 +161,17 @@ class PaperTrader:
                 hit_stop = (spot <= pos["index_stop"]) if d > 0 else (spot >= pos["index_stop"])
                 hit_tgt = tgt is not None and ((spot >= tgt) if d > 0 else (spot <= tgt))
                 eod = now.time() >= SQUARE_OFF or not a["session"]["is_open"]
+                # The clock is the most reliable edge a long option has: after 14:30 the remaining
+                # time value bleeds faster than an intraday move can pay for it.
+                tstop = not stale and now.time() >= TIME_STOP
                 # premium-based stop as a backstop (theta can kill a position before the index stop hits)
                 prem_stop = prem <= pos["premium_stop"]
-                if stale or hit_stop or hit_tgt or eod or prem_stop:
+                if stale or hit_stop or hit_tgt or eod or prem_stop or tstop:
                     reason = ("stale (square-off missed)" if stale
                               else "target" if hit_tgt else "stop" if hit_stop
-                              else "premium stop" if prem_stop else "15:15 square-off")
+                              else "premium stop" if prem_stop
+                              else f"{TIME_STOP:%H:%M} time stop" if tstop and not eod
+                              else "15:15 square-off")
                     cost = round_trip_cost((pos["entry_premium"] + prem) / 2, pos["quantity"])
                     pnl = round((prem - pos["entry_premium"]) * pos["quantity"] - cost, 2)
                     closed = {**pos, "closed_at": now.isoformat(), "exit_spot": spot, "exit_premium": round(prem, 2),
@@ -181,6 +187,7 @@ class PaperTrader:
                 n_today = sum(1 for t in mine if t["opened_at"][:10] == now.date().isoformat())
                 loss_cap = -settings["capital"] * settings["max_daily_loss_pct"] / 100
                 cooling = mine and (now - datetime.fromisoformat(mine[-1]["closed_at"])).total_seconds() < 900
+                blockers = entry_blockers(option, INSTRUMENTS[key].lot_size, now)
                 if cap and held and len(self.state["open"]) >= cap and held.get("slot") != slot:
                     # One trade at a time: a second strategy must wait its turn instead of stacking risk.
                     why = (f"one position at a time - {held['strategy']} still holds {held['symbol']}" if cap == 1
@@ -194,6 +201,10 @@ class PaperTrader:
                     events.append({"type": "blocked", "reason": f"{strategy}: max {max_trades} trade(s)/day reached"})
                 elif self.day_pnl(now.date()) <= loss_cap:
                     events.append({"type": "blocked", "reason": "Daily loss limit hit - done for the day"})
+                elif blockers:
+                    why = "; ".join(b["detail"] for b in blockers)
+                    events.append({"type": "blocked", "reason": f"{strategy}: {why}", "gate": blockers})
+                    self._note_gate(now, strategy, blockers)
                 else:
                     o, p = option, plan
                     # Paper always takes at least 1 lot (same as the lab), and flags when that breaks your risk budget.
@@ -214,11 +225,31 @@ class PaperTrader:
                     self.state["open"][slot] = pos
                     self._save()
                     events.append({"type": "paper_entry", "trade": pos})
+                    self._note_gate(now, strategy, [])
         return events
+
+    def _note_gate(self, now: datetime, strategy: str, blockers: list[dict]) -> None:
+        """Remember the last entry decision so the desk can say why nothing is trading.
+
+        Written only when the reason changes: the loop runs every 15 seconds and a disk write per
+        tick would be pure noise.
+        """
+        sig = [b["name"] for b in blockers]
+        prev = self.state.get("last_gate") or {}
+        if prev.get("strategy") == strategy and prev.get("blocked") == sig:
+            prev["at"] = now.isoformat()
+            return
+        self.state["last_gate"] = {
+            "at": now.isoformat(), "strategy": strategy, "blocked": sig,
+            "reasons": [b["detail"] for b in blockers],
+            "values": {b["name"]: b["value"] for b in blockers},
+        }
+        self._save()
 
     def summary(self, day: date | None = None) -> dict:
         today = self.today_closed(day=day)
         allc = self.state["closed"]
+        hh, mm = ENTRY_RULES["no_entry_after"]
         wins = [t for t in allc if t["pnl"] > 0]
         by_strategy = {}
         for t in allc:
@@ -243,6 +274,13 @@ class PaperTrader:
             "closed": list(reversed(allc[-200:])),
             "lessons": lessons(allc),
             "go_no_go": gate,
+            "entry_rules": {
+                "no_entry_after": f"{hh:02d}:{mm:02d}",
+                "time_stop": f"{TIME_STOP:%H:%M}",
+                "max_charge_pct": ENTRY_RULES["max_charge_pct"],
+                "max_theta_pct": ENTRY_RULES["max_theta_pct"],
+            },
+            "last_gate": self.state.get("last_gate"),
             "live_trading_enabled": live_enabled(), "broker_connected": angel.api is not None,
         }
 

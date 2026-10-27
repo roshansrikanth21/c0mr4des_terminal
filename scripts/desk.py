@@ -221,6 +221,24 @@ def preopen(d: Desk) -> tuple[list[dict], dict]:
                "does not, the loop is down; see incident.",
     })
 
+    rules = paper.get("entry_rules") or {}
+    gate = paper.get("last_gate") or {}
+    blocked = gate.get("blocked") or []
+    gate_age = ago(gate.get("at", "")) if blocked else ""
+    detail = (f"last entry {rules.get('no_entry_after', '--')} | "
+              f"time stop {rules.get('time_stop', '--')} | "
+              f"charges <= {rules.get('max_charge_pct', '--')}% | "
+              f"theta <= {rules.get('max_theta_pct', '--')}%/day")
+    if blocked:
+        detail += f" | blocked {gate_age}: " + "; ".join(gate.get("reasons") or blocked)
+    checks.append({
+        "name": "Entry gate",
+        "status": "OK",
+        "detail": detail,
+        "fix": "A blocked gate is the rule working: the contract is too close to expiry or too "
+               "cheap to pay for its own costs. No trade is the correct outcome.",
+    })
+
     settings = d.get("/api/settings")
     facts["settings"] = settings
     strat = settings.get("autopilot_strategies") or []
@@ -316,6 +334,17 @@ def review(d: Desk) -> tuple[list[dict], dict]:
                        f"{entry} -> {exit_} ({t.get('reason', '?')}) | "
                        f"{money(t.get('pnl', 0))}"),
         })
+
+    rules = paper.get("entry_rules") or {}
+    last = paper.get("last_gate") or {}
+    blocked = last.get("blocked") or []
+    rule_line = (f"last entry {rules.get('no_entry_after', '--')} | "
+                 f"time stop {rules.get('time_stop', '--')} | "
+                 f"charges <= {rules.get('max_charge_pct', '--')}% | "
+                 f"theta <= {rules.get('max_theta_pct', '--')}%/day")
+    if blocked:
+        rule_line += f" | last block {ago(last.get('at', ''))}: " + "; ".join(last.get("reasons") or blocked)
+    checks.append({"name": "Entry rules", "status": "OK", "detail": rule_line})
 
     lessons = paper.get("lessons") or {}
     flags = lessons.get("flags") or []

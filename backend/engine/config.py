@@ -46,6 +46,23 @@ HOLIDAYS = {
     date(2026, 11, 10), date(2026, 11, 24), date(2026, 12, 25),
 }
 
+# Entry/exit discipline for long options (26 Oct 2026, experiment A+B).
+#
+# Two numbers decide whether a long option is worth opening at all, and both are measured against
+# the premium actually paid, not the notional:
+#   * charges - a flat Rs 20/order plus STT is brutal on a cheap contract: Rs 45 of costs on a
+#     Rs 2,000 lot is 2.2%, while the same trade on a Rs 12,000 lot pays 0.6%.
+#   * theta   - the daily rent. It is ~8% of premium a week out, but 30%+ on a 1-day contract, and
+#     SEBI's FY26 data puts 92% of individual losses in options bought near expiry.
+# The clock rules target the two shapes the paper book actually showed: entries after 13:00 that
+# bought a move already spent, and positions bled all the way to the 15:15 square-off.
+ENTRY_RULES = {
+    "max_charge_pct": 1.0,      # round-trip charges must stay under 1% of premium turnover
+    "max_theta_pct": 20.0,      # one day of theta must stay under 20% of premium (blocks ~1-2 DTE)
+    "no_entry_after": (13, 0),  # no fresh longs in the afternoon chop
+    "time_stop": (14, 30),      # cut what is still open before the last-hour decay
+}
+
 # Charges for BUYING options (round trip). Rates as fractions of premium turnover.
 CHARGES = {
     "brokerage_per_order": 20.0,       # flat discount-broker fee

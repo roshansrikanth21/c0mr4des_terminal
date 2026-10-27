@@ -71,6 +71,16 @@ def _seed() -> list[dict]:
          "evidence": "Owner request 26 Oct. Runs one week from the first live session; ranks by return on stake, "
                      "not raw rupees. Four or five trades per case is evidence about sizing, not proof of an edge.",
          "status": "testing", "owner": "owner request"},
+        {"id": 12, "date": "2026-10-27", "area": "risk", "name": "Cost + theta gate, afternoon cut-off, 14:30 time stop",
+         "change": "Refuse a long option when round-trip charges exceed 1% of premium or one day of theta exceeds 20% "
+                   "of premium; no fresh entries after 13:00; force-close whatever is still open at 14:30 instead of "
+                   "holding to the 15:15 square-off",
+         "evidence": "Paper book 26 Oct: charges were 2.3% on a Rs 3.4k lot, 2 trades died on the premium stop before "
+                     "the index stop, 2 entries after 13:00, 2 bled to square-off (avg Rs 1,468 vs Rs 1,056 stops). "
+                     "Theta on a 1-DTE NIFTY ATM option is ~51% of premium per day vs ~9% at 6 DTE, and SEBI FY26 "
+                     "puts 92% of individual derivatives losses in options. The 20% rule therefore sits out the last "
+                     "1-2 days before expiry by design.",
+         "status": "testing", "owner": "owner request"},
     ]
 
 

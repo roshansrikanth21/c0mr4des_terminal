@@ -6,10 +6,10 @@ import logging
 import math
 import os
 import time as _time
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
-from .config import CHARGES, IST, INSTRUMENTS
+from .config import CHARGES, ENTRY_RULES, IST, INSTRUMENTS
 from .data import angel
 
 log = logging.getLogger("engine.options")
@@ -84,6 +84,49 @@ def round_trip_cost(premium: float, qty: int) -> float:
     stamp = buy * ch["stamp_buy"]
     gst = (brokerage + exch + sebi) * ch["gst"]
     return round(brokerage + exch + sebi + stt + stamp + gst, 2)
+
+
+def entry_blockers(option: dict, lot_size: int, now: datetime, rules: dict | None = None) -> list[dict]:
+    """Why this long option should not be opened right now. Empty list = clear.
+
+    Charges and theta are both measured against the premium paid. Missing greeks mean "cannot
+    judge", not "fine" - they never block, so old records and hand-built tests still replay.
+    """
+    r = {**ENTRY_RULES, **(rules or {})}
+    out: list[dict] = []
+    premium = float(option.get("premium") or 0)
+    lot = int(option.get("lot_size") or lot_size or 0)
+    if premium <= 0 or lot <= 0:
+        return out
+    turnover = premium * lot
+
+    cost = option.get("charges_round_trip")
+    cost = float(cost) if cost is not None else round_trip_cost(premium, lot)
+    charge_pct = cost / turnover * 100
+    if charge_pct > r["max_charge_pct"]:
+        out.append({
+            "name": "charges", "value": round(charge_pct, 2), "limit": r["max_charge_pct"],
+            "detail": (f"charges are {charge_pct:.1f}% of the Rs {turnover:,.0f} premium "
+                       f"(limit {r['max_charge_pct']}%) - too cheap a contract to overcome the cost"),
+        })
+
+    theta_day = (option.get("greeks") or {}).get("theta_per_day")
+    if theta_day is not None:
+        theta_pct = abs(float(theta_day)) * lot / turnover * 100
+        if theta_pct > r["max_theta_pct"]:
+            out.append({
+                "name": "theta", "value": round(theta_pct, 2), "limit": r["max_theta_pct"],
+                "detail": (f"one day of theta is {theta_pct:.1f}% of premium "
+                           f"(limit {r['max_theta_pct']}%) - too close to expiry"),
+            })
+
+    hh, mm = r["no_entry_after"]
+    if now.time() >= time(hh, mm):
+        out.append({
+            "name": "clock", "value": now.strftime("%H:%M"), "limit": f"{hh:02d}:{mm:02d}",
+            "detail": f"no fresh longs after {hh:02d}:{mm:02d} - afternoon chop, worst theta of the day",
+        })
+    return out
 
 
 # ---------------- live option chain (Angel One only) ----------------

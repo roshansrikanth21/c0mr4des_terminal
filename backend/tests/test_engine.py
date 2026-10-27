@@ -519,17 +519,18 @@ def test_experiment_registry_seeds_once_and_appends(tmp_path, monkeypatch):
     from backend.engine import experiments
     f = tmp_path / "experiments.jsonl"
     monkeypatch.setattr(experiments, "FILE", f)
+    n = len(experiments._seed())                                        # committed truth, whatever its size
     rows = experiments.all()
-    assert len(rows) == 11                                              # seeded truth on first read
+    assert len(rows) == n                                               # seeded on first read
     assert all(set(r) >= {"id", "date", "area", "name", "change", "evidence", "status", "owner"} for r in rows)
     assert [r["id"] for r in rows] == sorted({r["id"] for r in rows})   # no duplicate ids
 
     again = experiments.all()
-    assert len(again) == 11                                             # second read does NOT reseed a new copy
+    assert len(again) == n                                              # second read does NOT reseed a new copy
 
     new = experiments.record("process", "test row", "unit test", "evidence", "testing", "unit")
-    assert new["id"] == 12 and len(experiments.all()) == 12
-    assert len(experiments.all()) == 12                                 # the failed write must not have appended
+    assert new["id"] == n + 1 and len(experiments.all()) == n + 1
+    assert len(experiments.all()) == n + 1                              # the failed write must not have appended
 
 
 def test_experiment_registry_picks_up_rows_committed_after_it_was_created(tmp_path, monkeypatch):
@@ -537,11 +538,12 @@ def test_experiment_registry_picks_up_rows_committed_after_it_was_created(tmp_pa
     from backend.engine import experiments
     f = tmp_path / "experiments.jsonl"
     monkeypatch.setattr(experiments, "FILE", f)
-    old = experiments._seed()[:9]                                       # an install older than rows 10-11
+    seeds = experiments._seed()
+    old = seeds[:9]                                                     # an install older than rows 10+
     f.write_text("\n".join(_json.dumps(r) for r in old) + "\n", encoding="utf-8")
     rows = experiments.all()
-    assert len(rows) == 11 and {10, 11} <= {r["id"] for r in rows}
-    assert len(f.read_text(encoding="utf-8").splitlines()) == 11
+    assert len(rows) == len(seeds) and {r["id"] for r in seeds[9:]} <= {r["id"] for r in rows}
+    assert len(f.read_text(encoding="utf-8").splitlines()) == len(seeds)
 
     f.write_text("{not json}\n", encoding="utf-8")                      # a corrupt file is never rewritten
     assert experiments.all() == []
@@ -645,3 +647,61 @@ def test_capital_case_never_borrows_and_never_resets_an_untraded_book(tmp_path, 
     assert book.equity() == 10000.0 and not list(tmp_path.glob("A_bust*.json")), \
         "a stake that cannot fund a lot is not a loss and must not be reset"
 
+
+
+# ---------------- A+B: cost/theta gate and time discipline (26 Oct 2026) ----------------
+def _gated_option(premium: float, theta_per_day: float, lot: int = 65) -> dict:
+    return {"side": "BUY CE", "symbol_hint": "NIFTY 27 OCT 23000 CE", "strike": 23000, "option_type": "CE",
+            "expiry": "2026-10-27", "lots": 1, "premium": premium, "premium_stop": round(premium * 0.8, 2),
+            "premium_target": round(premium * 1.4, 2), "lot_size": lot,
+            "greeks": {"delta": 0.5, "theta_per_day": theta_per_day}}
+
+
+def test_entry_gate_blocks_near_expiry_theta_and_cheap_contracts():
+    now = datetime(2026, 10, 21, 10, 0, tzinfo=IST)
+    assert options.entry_blockers(_gated_option(190.0, -16.0), 65, now) == [], \
+        "a week-out ATM option pays ~8% theta and ~0.6% charges - it must pass"
+    near = options.entry_blockers(_gated_option(120.0, -40.0), 65, now)
+    assert [b["name"] for b in near] == ["theta"] and near[0]["value"] > 20
+    cheap = options.entry_blockers(_gated_option(25.0, -1.0), 65, now)
+    assert [b["name"] for b in cheap] == ["charges"], "a Rs 1,625 lot cannot carry Rs 50 of costs"
+    late = options.entry_blockers(_gated_option(190.0, -16.0), 65, datetime(2026, 10, 21, 13, 5, tzinfo=IST))
+    assert [b["name"] for b in late] == ["clock"]
+    # Missing greeks mean "cannot judge", not "blocked": old books and hand-built tests still replay.
+    assert options.entry_blockers({"premium": 190.0}, 65, now) == []
+
+
+def test_entry_gate_blocks_the_trade_and_says_why(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"]}
+    a = _entry_analysis("2026-10-21T10:00:00+05:30")
+    a["option"] = {**a["option"], "premium": 120.0, "premium_stop": 100.0,
+                   "greeks": {"delta": 0.5, "theta_per_day": -40.0}}
+    ev = pt.on_analysis(a, settings)["events"]
+    assert ev[0]["type"] == "blocked" and "theta" in ev[0]["reason"]
+    assert not pt.state["open"]
+    gate = pt.summary()["last_gate"]
+    assert gate["blocked"] == ["theta"] and gate["reasons"]
+    assert pt.summary()["entry_rules"]["no_entry_after"] == "13:00"
+
+
+def test_time_stop_closes_the_last_hour_bleed(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"]}
+    assert pt.on_analysis(_entry_analysis("2026-10-21T10:00:00+05:30"), settings)["events"][0]["type"] == "paper_entry"
+    # Same spot, still inside stop and target, but past 14:30: the clock takes it out.
+    ev = pt.on_analysis(_entry_analysis("2026-10-21T14:35:00+05:30"), settings)["events"][0]
+    assert ev["type"] == "paper_exit" and ev["trade"]["reason"] == "14:30 time stop"
+
+
+def test_capital_cases_inherit_the_entry_gate(tmp_path, monkeypatch):
+    book = _cap_book(tmp_path, monkeypatch, "C")
+    a = _cap_analysis()
+    a["orb"]["option"] = {**a["orb"]["option"], "greeks": {"delta": 0.5, "theta_per_day": -40.0}}
+    ev = book.on_analysis(a, _cap_settings())["events"]
+    assert ev and ev[0]["type"] == "blocked" and "theta" in ev[0]["reason"]
+    assert book.state["open"] == {}
