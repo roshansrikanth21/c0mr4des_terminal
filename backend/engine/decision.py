@@ -316,11 +316,11 @@ def refit(keys=("NIFTY", "SENSEX"), force: bool = False) -> dict:
     if "instrument" in df.columns:
         per = {}
         for k in sorted(df["instrument"].unique()):
-            w = walk_forward(df[df["instrument"] == k])
-            per[k] = {"ok": w.get("ok"), "oos_auc": w.get("oos_auc"),
-                      "trades": w.get("oos_trades"), "all_net": w.get("all_net"),
+            sub_wf = walk_forward(df[df["instrument"] == k])
+            per[k] = {"ok": sub_wf.get("ok"), "oos_auc": sub_wf.get("oos_auc"),
+                      "trades": sub_wf.get("oos_trades"), "all_net": sub_wf.get("all_net"),
                       "slices": {s.replace(f"{k} ", ""): v.get("auc")
-                                 for s, v in (w.get("slices") or {}).items()}}
+                                 for s, v in (sub_wf.get("slices") or {}).items()}}
         wf["per_instrument"] = per
     # Promotion needs BOTH heads, and the EV head must show a *material* gain, not a rounding error.
     # +1,790 on +151,687 is noise: a filter has to earn at least 10% more while actually dropping
