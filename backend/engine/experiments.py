@@ -158,8 +158,12 @@ def _seed() -> list[dict]:
                      "The run also found a real bug: features() and mtf_align() used a 120-bar window, which "
                      "resamples to 40 15m bars, short of the 55 the 15m EMA50 needs - so the 15m half of "
                      "ema_align was ALWAYS 'unknown' and the model's -0.75 coefficient was 5m-only. With a "
-                     "240-bar window the coefficient falls to -0.32 and the R head's 4/4-fold stability "
-                     "disappears (1/4), so the earlier stability was partly an artefact of the bug.",
+                     "240-bar window the coefficient falls to -0.41 (VM refit, 222 rows; -0.32 on the 194-row "
+                     "local run) - still negative, but the -0.75 was 5m-only. The refit on the VM gives OOS AUC "
+                     "0.533, down from 0.566 with the bug, and the R head is positive in 4/4 folds but tiny "
+                     "(r_corr 0.18/0.07/0.06/0.10), so it ranks barely better than chance. Slice AUCs 0.42 / "
+                     "0.50 / 0.51 / 0.56 say the pooled 0.533 is mostly the model telling NIFTY and SENSEX apart, "
+                     "not good trades from bad. Stays SHADOW; no filter earns its keep.",
          "status": "rejected", "owner": "owner request"},
     ]
 
