@@ -369,6 +369,7 @@ def card() -> dict:
     wf = m.get("walk_forward") or {}
     return {"version": m.get("version"), "status": m.get("status"), "samples": m.get("samples"),
             "sessions": m.get("sessions"), "span": m.get("span"), "base_rate": m.get("base_rate"),
+            "source": m.get("source"),
             "breakeven": m.get("breakeven"), "threshold": m.get("threshold"),
             "coefficients": m.get("coefficients"), "ev_coefficients": m.get("ev_coefficients"),
             "promotion": m.get("promotion"),
