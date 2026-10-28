@@ -1,4 +1,4 @@
-"""Paper autopilot + gated live orders.
+﻿"""Paper autopilot + gated live orders.
 
 PAPER (default): every live BUY/SELL verdict opens a simulated option position at the live premium
 (Angel One LTP when connected, otherwise a Black-Scholes estimate), then exits on the index stop,
@@ -143,6 +143,7 @@ class PaperTrader:
         now = datetime.fromisoformat(a["generated_at"])
         spot = a.get("spot_live") or a["price"]
         events = []
+        self._note_day_rules(settings)
         with self._lock:
             pos = self.state["open"].get(slot)
             if pos:
@@ -185,7 +186,7 @@ class PaperTrader:
                 held = next(iter(self.state["open"].values()), None)
                 mine = [t for t in self.state["closed"] if t.get("slot") == slot]
                 n_today = sum(1 for t in mine if t["opened_at"][:10] == now.date().isoformat())
-                loss_cap = -settings["capital"] * settings["max_daily_loss_pct"] / 100
+                loss_cap = -settings["capital"] * settings.get("max_daily_loss_pct", 25.0) / 100
                 profit_cap = settings["capital"] * float(settings.get("daily_profit_pct", 20.0)) / 100
                 day_pnl = self.day_pnl(now.date())
                 room = -loss_cap + day_pnl        # the unspent part of today's loss limit
@@ -194,12 +195,6 @@ class PaperTrader:
                 risk_rs = round((option["premium"] - option.get("premium_stop", option["premium"])) * qty, 2)
                 # Keep the day's circuit breakers in the book so the desk can show them without
                 # re-reading settings. Written only when they change.
-                rules = {"profit_stop": round(profit_cap, 2), "loss_stop": round(-loss_cap, 2),
-                         "profit_pct": round(float(settings.get("daily_profit_pct", 20.0)), 2),
-                         "loss_pct": round(float(settings["max_daily_loss_pct"]), 2)}
-                if self.state.get("day_rules") != rules:
-                    self.state["day_rules"] = rules
-                    self._save()
                 cooling = mine and (now - datetime.fromisoformat(mine[-1]["closed_at"])).total_seconds() < 900
                 blockers = entry_blockers(option, INSTRUMENTS[key].lot_size, now)
                 if cap and held and len(self.state["open"]) >= cap and held.get("slot") != slot:
@@ -247,6 +242,18 @@ class PaperTrader:
                     events.append({"type": "paper_entry", "trade": pos})
                     self._note_gate(now, strategy, [])
         return events
+
+    def _note_day_rules(self, settings: dict) -> None:
+        """Keep today's circuit breakers in the book so the desk can show them even on a quiet day."""
+        profit_pct = round(float(settings.get("daily_profit_pct", 20.0)), 2)
+        loss_pct = round(float(settings.get("max_daily_loss_pct", 25.0)), 2)
+        capital = float(settings.get("capital", 10000.0))
+        rules = {"profit_stop": round(capital * profit_pct / 100, 2),
+                 "loss_stop": round(capital * loss_pct / 100, 2),
+                 "profit_pct": profit_pct, "loss_pct": loss_pct}
+        if self.state.get("day_rules") != rules:
+            self.state["day_rules"] = rules
+            self._save()
 
     def _note_gate(self, now: datetime, strategy: str, blockers: list[dict]) -> None:
         """Remember the last entry decision so the desk can say why nothing is trading.
@@ -391,7 +398,7 @@ def place_live_order(key: str, expiry: str, strike: float, kind: str, lots: int,
     if side == "BUY":
         if len([t for t in _order_log_today() if t.get("side") == "BUY" and t.get("ok")]) >= settings["max_trades_per_day"]:
             return {"ok": False, "error": "Max trades per day reached."}
-        if paper.day_pnl() <= -settings["capital"] * settings["max_daily_loss_pct"] / 100:
+        if paper.day_pnl() <= -settings["capital"] * settings.get("max_daily_loss_pct", 25.0) / 100:
             return {"ok": False, "error": "Daily loss limit reached."}
         max_lots = int(settings["capital"] // (limit_price * INSTRUMENTS[key].lot_size)) if limit_price > 0 else 0
         if lots > max_lots:
@@ -429,3 +436,4 @@ def _order_log_today() -> list[dict]:
     d = datetime.now(IST).date().isoformat()
     rows = [json.loads(x) for x in ORDER_LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
     return [r for r in rows if str(r.get("at", ""))[:10] == d]
+
