@@ -472,18 +472,32 @@ def review(d: Desk) -> tuple[list[dict], dict]:
                        "detail": "not fitted - run: desk.py decision-refit"})
     else:
         wf_ev = dc.get("best_ev_filter") or {}
+        age = dc.get("age_days")
         checks.append({
             "name": "Decision",
-            "status": "OK" if dc.get("status") == "active" else "WARN",
+            "status": "WARN" if (dc.get("status") != "active" or (age or 0) > 8) else "OK",
             "detail": (f"{dc.get('status', '?').upper()} | {dc.get('version')} on "
                        f"{dc.get('samples')} rows / {dc.get('sessions')} sessions | "
                        f"OOS AUC {dc.get('oos_auc')} | best EV filter "
                        f"{money(wf_ev.get('net', 0))} on {wf_ev.get('trades', 0)} vs "
-                       f"{money(dc.get('all_net', 0))} taking all | needs "
-                       f"{dc.get('min_live')} rows + 10% to promote"),
+                       f"{money(dc.get('all_net', 0))} taking all | fitted "
+                       f"{age if age is not None else '?'}d ago"
+                       + (" | STALE - the weekly refit did not run" if (age or 0) > 8 else "")),
         })
+    sc = dec.get("shadow") or {}
+    if sc.get("trades"):
+        checks.append({
+            "name": "  shadow",
+            "status": "OK",
+            "detail": (f"{sc['trades']} scored | said {sc.get('predicted_p')}% green, got "
+                       f"{sc.get('actual_win_rate')}% | said {sc.get('predicted_ev_r')}R, got "
+                       f"{sc.get('actual_r')}R | rank corr {sc.get('rank_corr')} | "
+                       f"brier {sc.get('brier')}"),
+        })
+    elif sc:
+        checks.append({"name": "  shadow", "status": "OK", "detail": sc.get("reason", "")})
     for key, live in dec.items():
-        if key == "card":
+        if key in ("card", "shadow"):
             continue
         for name, v in (live or {}).items():
             if not v or v.get("p_win") is None:

@@ -109,6 +109,59 @@ def _logloss(y: np.ndarray, p: np.ndarray) -> float:
     return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
 
 
+def _rank(a: np.ndarray) -> np.ndarray:
+    order = np.argsort(a, kind="mergesort")
+    out = np.empty(len(a), dtype=float)
+    sa = a[order]
+    i = 0
+    while i < len(sa):
+        j = i
+        while j + 1 < len(sa) and sa[j + 1] == sa[i]:
+            j += 1
+        out[order[i:j + 1]] = (i + j) / 2.0
+        i = j + 1
+    return out
+
+
+def _spearman(a: np.ndarray, b: np.ndarray) -> float | None:
+    if len(a) < 3 or len(set(a.tolist())) < 2 or len(set(b.tolist())) < 2:
+        return None
+    return float(np.corrcoef(_rank(a), _rank(b))[0, 1])
+
+
+def scorecard(closed: list[dict]) -> dict:
+    """Score the model on REAL closed paper trades that carry a shadow decision.
+
+    This is the loop that matters: the backtest can only tell us what the model thinks about
+    history. These rows are what it said before the outcome was known.
+    """
+    rows = []
+    for t in closed or []:
+        d = t.get("decision") or {}
+        if d.get("p_win") is None:
+            continue
+        risk = (float(t.get("entry_premium") or 0) - float(t.get("premium_stop") or 0)) * float(t.get("quantity") or 0)
+        pnl = float(t.get("pnl") or 0)
+        rows.append((float(d["p_win"]), float(d.get("ev_r") or 0.0), pnl, (pnl / risk) if risk else 0.0))
+    if not rows:
+        return {"trades": 0, "reason": "no closed trade carries a shadow decision yet"}
+    p = np.array([r[0] for r in rows])
+    ev = np.array([r[1] for r in rows])
+    pnl = np.array([r[2] for r in rows])
+    r = np.array([r[3] for r in rows])
+    y = (pnl > 0).astype(float)
+    return {
+        "trades": int(len(rows)),
+        "predicted_p": round(float(p.mean() * 100), 1),
+        "actual_win_rate": round(float(y.mean() * 100), 1),
+        "brier": round(_brier(y, p), 4),
+        "predicted_ev_r": round(float(ev.mean()), 3),
+        "actual_r": round(float(r.mean()), 3),
+        "rank_corr": (round(_spearman(ev, r), 3) if _spearman(ev, r) is not None else None),
+        "net": round(float(pnl.sum())),
+    }
+
+
 def _fit_lin(X: np.ndarray, y: np.ndarray, l2: float = L2) -> np.ndarray:
     """Ridge on the R-multiple. Closed form, bias unpenalised."""
     pen = l2 * np.r_[0.0, np.ones(X.shape[1] - 1)]
@@ -367,9 +420,14 @@ def card() -> dict:
         return {"status": "none", "reason": "not fitted yet - run refit",
                 "min_live": MIN_LIVE, "min_auc": MIN_AUC}
     wf = m.get("walk_forward") or {}
+    age = None
+    try:
+        age = int((pd.Timestamp.now(tz=IST) - pd.Timestamp(m["fitted_at"])).total_seconds() // 86400)
+    except Exception:  # noqa: BLE001
+        pass
     return {"version": m.get("version"), "status": m.get("status"), "samples": m.get("samples"),
             "sessions": m.get("sessions"), "span": m.get("span"), "base_rate": m.get("base_rate"),
-            "source": m.get("source"),
+            "source": m.get("source"), "fitted_at": m.get("fitted_at"), "age_days": age,
             "breakeven": m.get("breakeven"), "threshold": m.get("threshold"),
             "coefficients": m.get("coefficients"), "ev_coefficients": m.get("ev_coefficients"),
             "promotion": m.get("promotion"),

@@ -16,7 +16,7 @@ import pandas as pd
 from . import timeline
 from .backtest import SLIPPAGE, _option_price, _vix_lookup
 from .config import INSTRUMENTS
-from .data import closed_bars, get_candles
+from .data import closed_bars, get_candles, long_history
 from .indicators import atr, ema
 from .options import round_trip_cost, years_to_expiry
 from .signal import evaluate
@@ -43,7 +43,7 @@ def first30_direction(day, ctx, stop_mode="range", rr=None):
     return [{"i": i, "dir": d, "stop": stop, "target": tgt}]
 
 
-def first_hour_breakout(day, ctx, rr=2.0, max_trades=1):
+def first_hour_breakout(day, ctx, rr=2.0, max_trades=1, filter_fn=None):
     """The live First-Hour rule, exactly: 09:15-10:15 range, the first 5m CLOSE outside it after
     10:15 that is ALSO on the right side of yesterday's close. Fill at the next bar's open, stop at
     the other side of the range, target rr x risk. `orb.evaluate` is the same rule in live form."""
@@ -60,12 +60,53 @@ def first_hour_breakout(day, ctx, rr=2.0, max_trades=1):
         i = int(day.index.get_loc(ts)) + 1  # we can only fill after the bar that closed outside
         if i >= len(day):
             return []
+        if filter_fn and not filter_fn(d, day, i, ctx):
+            continue
         fill = float(day.open.iloc[i])
         stop = lo if d > 0 else hi
         if (fill - stop) * d <= 0:  # gapped through the stop: not a trade
             return []
         return [{"i": i, "dir": d, "stop": stop, "target": fill + d * rr * abs(fill - stop)}]
     return []
+
+
+def mtf_align(day, i, ctx, d) -> tuple[bool, bool]:
+    """(5m agrees with the trade, 15m agrees with the trade) using only bars BEFORE the fill.
+
+    The decision engine's win head put the strongest single weight on this feature, and the sign
+    was negative - aligned trends went with a LOWER probability of a green trade. That is a
+    hypothesis about breakouts (by the time 5m and 15m agree, the move has already happened), and
+    a lab run is the only way to see whether it survives as money.
+    """
+    hist, start = ctx["hist"], ctx["day_start"]
+    before = hist.iloc[max(0, start + i - 240):start + i]  # 240 5m bars ~= 60 15m bars
+    if len(before) < 55:
+        return False, False
+    up5 = 1 if ema(before.close, 20).iloc[-1] > ema(before.close, 50).iloc[-1] else -1
+    b15 = before.resample("15min").agg({"open": "first", "high": "max", "low": "min",
+                                        "close": "last", "volume": "sum"}).dropna()
+    if len(b15) < 55:
+        return d * up5 > 0, False
+    up15 = 1 if ema(b15.close, 20).iloc[-1] > ema(b15.close, 50).iloc[-1] else -1
+    return d * up5 > 0, d * up15 > 0
+
+
+def not_aligned(d, day, i, ctx) -> bool:
+    """Skip the trade when BOTH timeframes already agree with it (the model's negative sign)."""
+    a5, a15 = mtf_align(day, i, ctx, d)
+    return not (a5 and a15)
+
+
+def only_aligned(d, day, i, ctx) -> bool:
+    """The conventional rule: take the trade only when both timeframes agree with it."""
+    a5, a15 = mtf_align(day, i, ctx, d)
+    return a5 and a15
+
+
+def skip_5m_aligned(d, day, i, ctx) -> bool:
+    """Skip when the 5m alone agrees - isolates the faster timeframe."""
+    a5, _ = mtf_align(day, i, ctx, d)
+    return not a5
 
 
 def orb30_breakout(day, ctx, rr=2.0, filter_fn=None, max_trades=1):
@@ -356,8 +397,9 @@ def _execute(key, day, entries, ctx, feature_fn=None):
 
 
 def run(key: str, strategy, label: str, **kw) -> dict:
-    df5, _ = get_candles(key, "5m")
-    df5 = closed_bars(df5, "5m")
+    # The lab is research, so it wants the LONGEST history, not the freshest frame: on the VM that
+    # is Angel's 100-day 5m window (69 sessions) instead of the 25-day live one (13 sessions).
+    df5 = closed_bars(long_history(key, "5m"), "5m")
     daily, _ = get_candles(key, "1d")
     vix = _vix_lookup()
     inst = INSTRUMENTS[key]

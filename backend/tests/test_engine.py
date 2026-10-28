@@ -971,3 +971,22 @@ def test_a_paper_entry_carries_the_shadow_decision(tmp_path):
     assert ev["type"] == "paper_entry", "the decision engine must not veto an entry while in shadow"
     assert "decision" in ev["trade"], "every fill records what the model thought of it"
 
+
+
+def test_shadow_scorecard_compares_what_it_said_to_what_happened():
+    from backend.engine import decision
+
+    def trade(p, ev, pnl, risk):
+        return {"pnl": pnl, "entry_premium": risk, "premium_stop": 0.0, "quantity": 1.0,
+                "decision": {"p_win": p, "ev_r": ev}}
+
+    closed = [trade(0.30, -0.2, -1000, 1000), trade(0.55, 0.6, 1000, 1000),
+              trade(0.70, 0.9, 2000, 1000), {"pnl": 500, "decision": None}]
+    sc = decision.scorecard(closed)
+    assert sc["trades"] == 3, "trades without a recorded decision are not scored"
+    assert sc["actual_win_rate"] == 66.7
+    assert sc["predicted_p"] == 51.7
+    assert sc["rank_corr"] == 1.0, "the model ranked the loser last and the biggest winner first"
+    assert sc["net"] == 2000
+    assert decision.scorecard([])["trades"] == 0
+

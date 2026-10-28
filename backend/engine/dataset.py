@@ -40,7 +40,10 @@ FEATURES = (
 def features(day, i0: int, ctx: dict, d: int, stop: float, entry: float) -> dict | None:
     """State at the entry bar. `day` is the session's 5m bars, `i0` the bar we fill at."""
     hist, start = ctx["hist"], ctx["day_start"]
-    before = hist.iloc[max(0, start + i0 - 120):start + i0]  # strictly before the fill
+    # 240 5m bars is ~3 sessions, which is the minimum that gives the 15m EMA50 anything to chew
+    # on (60 15m bars). At 120 bars the 15m read was silently always "unknown", so ema_align was
+    # really a 5m-only feature - the bug the ema_align lab run exposed.
+    before = hist.iloc[max(0, start + i0 - 240):start + i0]  # strictly before the fill
     if len(before) < 20 or i0 < 6:
         return None
     a = float(atr(before, 14).iloc[-1])

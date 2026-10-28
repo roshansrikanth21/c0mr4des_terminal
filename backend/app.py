@@ -330,6 +330,10 @@ def decision_card():
     from .engine import decision
 
     out = {"card": decision.card()}
+    try:
+        out["shadow"] = decision.scorecard(paper.summary().get("closed") or [])
+    except Exception:  # noqa: BLE001
+        out["shadow"] = {"trades": 0, "reason": "paper book unavailable"}
     for key in ("NIFTY", "SENSEX"):
         a = LATEST.get(key)
         if not a:

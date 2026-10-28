@@ -146,6 +146,21 @@ def _seed() -> list[dict]:
                      "stays SHADOW. Promotion needs 200+ rows, OOS AUC >=0.55, an EV filter worth >=10% while "
                      "dropping >=15% of trades, and the R ranking right in 3 of 4 folds.",
          "status": "testing", "owner": "owner request"},
+        {"id": 19, "date": "2026-10-28", "area": "strategy", "name": "First-Hour: skip when 5m and 15m trend already agree",
+         "change": "Tested the decision engine's strongest coefficient as a real filter: skip the First-Hour "
+                   "breakout when both the 5m and the 15m EMA20/50 already agree with the trade direction. "
+                   "Four variants on the lab harness, same 2R target, same history.",
+         "evidence": "NIFTY: baseline 48 trades +Rs 26,180 (PF 1.57, halves -747/+26,927); skip_aligned 19 "
+                     "trades +Rs 15,974 (PF 2.06, halves +9,381/+6,593); only_aligned 45 +Rs 14,551 (PF 1.33). "
+                     "SENSEX: baseline 52 +Rs 19,135 (PF 1.36); skip_aligned 23 -Rs 4,504 (PF 0.82, BOTH halves "
+                     "negative); only_aligned 44 +Rs 17,452. The filter helps NIFTY and loses money on SENSEX on "
+                     "19-23 trades - that is a coin landing the same way twice, not an edge. REJECTED as a rule. "
+                     "The run also found a real bug: features() and mtf_align() used a 120-bar window, which "
+                     "resamples to 40 15m bars, short of the 55 the 15m EMA50 needs - so the 15m half of "
+                     "ema_align was ALWAYS 'unknown' and the model's -0.75 coefficient was 5m-only. With a "
+                     "240-bar window the coefficient falls to -0.32 and the R head's 4/4-fold stability "
+                     "disappears (1/4), so the earlier stability was partly an artefact of the bug.",
+         "status": "rejected", "owner": "owner request"},
     ]
 
 
