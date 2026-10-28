@@ -19,7 +19,7 @@ import pandas as pd
 from . import lab, timeline
 from .backtest import _vix_lookup
 from .config import INSTRUMENTS
-from .data import closed_bars, get_candles
+from .data import closed_bars, get_candles, long_history
 from .indicators import atr, ema, linreg_slope
 
 FEATURES = (
@@ -81,8 +81,8 @@ def features(day, i0: int, ctx: dict, d: int, stop: float, entry: float) -> dict
 
 def build(key: str, strategy, label: str, **kw) -> pd.DataFrame:
     """Every trade `strategy` would take on the stored history, with its entry-time features."""
-    df5, _ = get_candles(key, "5m")
-    df5 = closed_bars(df5, "5m")
+    df5 = closed_bars(long_history(key, "5m"), "5m")
+    source = df5.attrs.get("source") or "unknown"
     daily, _ = get_candles(key, "1d")
     vix = _vix_lookup()
     inst = INSTRUMENTS[key]
@@ -113,6 +113,7 @@ def build(key: str, strategy, label: str, **kw) -> pd.DataFrame:
     if not df.empty:
         df = df.sort_values(["day", "time"]).reset_index(drop=True)
         df["label"] = label
+    df.attrs["source"] = source
     return df
 
 

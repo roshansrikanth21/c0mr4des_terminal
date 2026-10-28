@@ -215,12 +215,13 @@ def refit(keys=("NIFTY", "SENSEX")) -> dict:
             frames.append(d)
     if not frames:
         return {"ok": False, "reason": "no training rows - no intraday history available"}
+    source = frames[0].attrs.get("source") or "unknown"
     df = pd.concat(frames, ignore_index=True).sort_values(["day", "time"]).reset_index(drop=True)
     card = {
         "version": f"lr-{date.today().isoformat()}",
         "fitted_at": pd.Timestamp.now(tz=IST).isoformat(),
         "samples": int(len(df)), "sessions": int(df["day"].nunique()),
-        "span": f"{df['day'].min()} .. {df['day'].max()}",
+        "span": f"{df['day'].min()} .. {df['day'].max()}", "source": source,
         "base_rate": round(float(df["win"].mean() * 100), 1),
         "features": list(MODEL_FEATURES), "l2": L2,
     }
