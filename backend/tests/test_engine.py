@@ -852,3 +852,110 @@ def test_day_state_reports_the_room_and_the_stop(tmp_path):
     assert day["pnl"] == -1200.0 and day["room"] == 1300.0 and day["stopped"] is None
     assert day["profit_stop"] == 2000.0 and day["loss_stop"] == 2500.0
 
+
+
+# ---------------- decision engine ----------------
+def _feature_frame(days: int = 30, per_day: int = 2) -> "pd.DataFrame":
+    """Synthetic training table: a real signal on range_atr, plus noise."""
+    import numpy as np
+    import pandas as pd
+    from backend.engine.dataset import FEATURES
+
+    rng = np.random.default_rng(7)
+    rows = []
+    for d in range(days):
+        for k in range(per_day):
+            f = {name: float(rng.normal()) for name in FEATURES}
+            signal = f["range_atr"]
+            win = 1 if signal > 0.4 else 0
+            rows.append({"day": f"2026-08-{d + 1:02d}", "time": f"2026-08-{d + 1:02d}T10:{k}5:00",
+                         "slice": "NIFTY First-Hour", **f, "win": win,
+                         "pnl": 2000.0 if win else -1000.0, "r": 2.0 if win else -1.0,
+                         "is_first30": float(k)})
+    return pd.DataFrame(rows)
+
+
+def test_auc_is_one_for_perfect_separation_and_zero_for_inverted():
+    import numpy as np
+    from backend.engine.decision import _auc
+
+    y = np.array([0, 0, 1, 1], dtype=float)
+    assert _auc(y, np.array([0.1, 0.2, 0.8, 0.9])) == 1.0
+    assert _auc(y, np.array([0.9, 0.8, 0.2, 0.1])) == 0.0
+    assert abs(_auc(y, np.array([0.5, 0.5, 0.5, 0.5])) - 0.5) < 1e-9
+
+
+def test_walk_forward_only_scores_days_it_did_not_train_on():
+    from backend.engine import decision
+
+    df = _feature_frame()
+    wf = decision.walk_forward(df)
+    assert wf["ok"] is True
+    assert wf["oos_trades"] == len(df), "every row is scored exactly once, out of sample"
+    for f in wf["folds"]:
+        assert f["train_days"] + f["test_days"] == 30, "folds are a partition of the sessions"
+        assert f["train_days"] > 0 and f["test_days"] > 0
+    assert wf["oos_auc"] > 0.7, "a clean synthetic signal must survive walk-forward"
+    # Both heads are reported, and the EV head is the one promotion depends on.
+    assert "win_filters" in wf and "ev_filters" in wf
+
+
+def test_decision_cannot_trade_below_the_sample_floor(tmp_path, monkeypatch):
+    import json
+
+    from backend.engine import decision
+
+    monkeypatch.setattr(decision, "MODEL_FILE", tmp_path / "m.json")
+    card = {"version": "t", "status": "active", "samples": decision.MIN_LIVE - 1,
+            "w": [0.0] + [0.0] * len(decision.MODEL_FEATURES), "w_ev": [0.0] + [0.0] * len(decision.MODEL_FEATURES),
+            "mu": [0.0] * len(decision.MODEL_FEATURES), "sd": [1.0] * len(decision.MODEL_FEATURES),
+            "breakeven": 0.33, "threshold": 0.0}
+    (tmp_path / "m.json").write_text(json.dumps(card), encoding="utf-8")
+    out = decision.decide({"range_atr": 1.0}, "First-Hour")
+    assert out["action"] == "SHADOW", "a promoted-looking model under the floor still cannot decide"
+    assert out["confidence"] in ("none", "low")
+
+
+def test_a_promoted_model_answers_go_or_no_go_on_expected_r(tmp_path, monkeypatch):
+    import json
+
+    from backend.engine import decision
+
+    monkeypatch.setattr(decision, "MODEL_FILE", tmp_path / "m.json")
+    n = len(decision.MODEL_FEATURES)
+    card = {"version": "t", "status": "active", "samples": decision.MIN_LIVE,
+            "w": [0.0] * (n + 1), "w_ev": [0.5] + [0.0] * n,
+            "mu": [0.0] * n, "sd": [1.0] * n, "breakeven": 0.33, "threshold": 0.0}
+    (tmp_path / "m.json").write_text(json.dumps(card), encoding="utf-8")
+    go = decision.decide({"range_atr": 1.0}, "First-Hour")
+    assert go["action"] == "GO" and go["ev_r"] > 0
+    card["w_ev"] = [-0.5] + [0.0] * n
+    (tmp_path / "m.json").write_text(json.dumps(card), encoding="utf-8")
+    no = decision.decide({"range_atr": 1.0}, "First-Hour")
+    assert no["action"] == "NO_GO" and no["ev_r"] < 0
+
+
+def test_features_never_read_the_bar_they_fill_on():
+    """The entry fills at bar i0's open, so nothing from i0 onwards may enter the feature vector."""
+    import numpy as np
+    import pandas as pd
+
+    from backend.engine.dataset import features
+
+    idx = pd.date_range("2026-10-28 09:15", periods=30, freq="5min", tz="Asia/Kolkata")
+    rng = np.random.default_rng(3)
+    close = 22600 + np.cumsum(rng.normal(0, 3, len(idx)))
+    day = pd.DataFrame({"open": close, "high": close + 4, "low": close - 4,
+                        "close": close, "volume": 0.0}, index=idx)
+    ctx = {"hist": day, "day_start": 0, "pdh": 22700.0, "pdl": 22500.0, "pdc": 22600.0,
+           "vix": 13.0, "expiry": None}
+    before = features(day, 20, ctx, 1, 22600.0, float(day.open.iloc[20]))
+
+    future = day.copy()
+    future.iloc[21:, :] = future.iloc[21:, :] * 1.10  # rewrite every bar AFTER the fill
+    ctx2 = {**ctx, "hist": future}
+    after = features(future, 20, ctx2, 1, 22600.0, float(day.open.iloc[20]))
+
+    assert before is not None and after is not None
+    assert before == after, "a feature that changes when future bars change is lookahead"
+

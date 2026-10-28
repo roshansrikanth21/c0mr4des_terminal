@@ -131,6 +131,21 @@ def _seed() -> list[dict]:
                      "would refuse almost every ORB trade (one lot's honest stop is Rs 2,300-5,000), so the "
                      "limit stays at 25% and the room rule does the work. Judge after 20 trades.",
          "status": "testing", "owner": "owner request"},
+        {"id": 18, "date": "2026-10-28", "area": "process", "name": "Local decision engine (the alternative to a hosted one)",
+         "change": "New engine/decision.py + engine/dataset.py. Structured entry-time state in, typed "
+                   "probabilistic output out, policy left in deterministic code. Two heads: P(green) and "
+                   "expected R-multiple. It runs in SHADOW - it records a probability next to every paper "
+                   "fill but cannot block or allow a trade until it is promoted on out-of-sample evidence.",
+         "evidence": "Trained on 194 rows / 55 sessions of the two live rules (NIFTY + SENSEX, Yahoo 60-day "
+                     "5m limit - Angel has no session on the VM, so this is the whole history). Walk-forward "
+                     "OOS AUC 0.64 (folds 0.53-0.85, so unstable). The important result is negative: the win "
+                     "head is a good ranker and still useless as a filter - keeping only p>=0.30 nets "
+                     "+Rs 78,432 vs +Rs 151,687 taking every trade, because First-30 wins 32% and carries the "
+                     "profit. The EV head does no better: best filter +Rs 153,477 on 187/194 trades is a "
+                     "0.1% gain on a 96% keep rate, which is noise. Verdict: no filter earns its keep, so it "
+                     "stays SHADOW. Promotion needs 200+ rows, OOS AUC >=0.55, an EV filter worth >=10% while "
+                     "dropping >=15% of trades, and the R ranking right in 3 of 4 folds.",
+         "status": "testing", "owner": "owner request"},
     ]
 
 

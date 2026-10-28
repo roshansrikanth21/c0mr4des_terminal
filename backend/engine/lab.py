@@ -21,7 +21,7 @@ from .indicators import atr, ema
 from .options import round_trip_cost, years_to_expiry
 from .signal import evaluate
 
-T930, T945, T1000, T1500, T1515 = time(9, 30), time(9, 45), time(10, 0), time(15, 0), time(15, 15)
+T930, T945, T1000, T1015, T1500, T1515 = time(9, 30), time(9, 45), time(10, 0), time(10, 15), time(15, 0), time(15, 15)
 
 
 # ------------------------------------------------------------------ strategies
@@ -41,6 +41,31 @@ def first30_direction(day, ctx, stop_mode="range", rr=None):
     entry_ref = c
     tgt = entry_ref + d * rr * abs(entry_ref - stop) if rr else None
     return [{"i": i, "dir": d, "stop": stop, "target": tgt}]
+
+
+def first_hour_breakout(day, ctx, rr=2.0, max_trades=1):
+    """The live First-Hour rule, exactly: 09:15-10:15 range, the first 5m CLOSE outside it after
+    10:15 that is ALSO on the right side of yesterday's close. Fill at the next bar's open, stop at
+    the other side of the range, target rr x risk. `orb.evaluate` is the same rule in live form."""
+    first = day[day.index.time < T1015]
+    if len(first) < 12:
+        return []
+    hi, lo = float(first.high.max()), float(first.low.min())
+    pdc = ctx.get("pdc")
+    for ts, bar in day[day.index.time >= T1015].iterrows():
+        c = float(bar.close)
+        d = 1 if c > hi else -1 if c < lo else 0
+        if d == 0 or (pdc is not None and (c - pdc) * d <= 0):
+            continue
+        i = int(day.index.get_loc(ts)) + 1  # we can only fill after the bar that closed outside
+        if i >= len(day):
+            return []
+        fill = float(day.open.iloc[i])
+        stop = lo if d > 0 else hi
+        if (fill - stop) * d <= 0:  # gapped through the stop: not a trade
+            return []
+        return [{"i": i, "dir": d, "stop": stop, "target": fill + d * rr * abs(fill - stop)}]
+    return []
 
 
 def orb30_breakout(day, ctx, rr=2.0, filter_fn=None, max_trades=1):
@@ -285,7 +310,7 @@ def first30_plus_engine(day, ctx, **kw):
 
 
 # ------------------------------------------------------------------ executor
-def _execute(key, day, entries, ctx):
+def _execute(key, day, entries, ctx, feature_fn=None):
     inst = INSTRUMENTS[key]
     trades = []
     busy_until = -1
@@ -324,7 +349,9 @@ def _execute(key, day, entries, ctx):
         cost = round_trip_cost((prem_in + prem_out) / 2, inst.lot_size)
         trades.append({"time": day.index[i0].isoformat(), "dir": d, "entry": round(entry, 2), "exit": round(exit_px, 2),
                        "reason": reason, "points": round((exit_px - entry) * d, 2),
-                       "pnl": round((prem_out - prem_in) * inst.lot_size - cost, 2)})
+                       "pnl": round((prem_out - prem_in) * inst.lot_size - cost, 2),
+                       "risk_rs": round(abs(entry - stop) * inst.lot_size, 2),
+                       "features": feature_fn(day, i0, ctx, d, stop, entry) if feature_fn else None})
     return trades
 
 

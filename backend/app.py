@@ -321,6 +321,41 @@ def spreads_report():
     return spreads.report()
 
 
+@app.get("/api/decision")
+def decision_card():
+    """Our own decision engine: the model, its out-of-sample evidence, and today's live read.
+
+    SHADOW means it records a probability next to every entry but cannot block or allow one.
+    """
+    from .engine import decision
+
+    out = {"card": decision.card()}
+    for key in ("NIFTY", "SENSEX"):
+        a = LATEST.get(key)
+        if not a:
+            continue
+        live = {}
+        for name, sig in (("First-Hour", a.get("orb")), ("First-30", a.get("first30"))):
+            opt = (sig or {}).get("option") or {}
+            if not sig or not sig.get("direction"):
+                continue
+            feats = decision.live_features(a, sig["direction"], sig.get("stop") or opt.get("premium_stop") or 0,
+                                           a.get("spot_live") or a.get("price"), expiry=opt.get("expiry"))
+            live[f"{key} {name}"] = decision.decide(feats, name)
+        out[key] = live
+    return out
+
+
+@app.post("/api/decision/refit")
+def decision_refit():
+    """Explicit refit. Never called by the trading loop - a model must not retune itself mid-session."""
+    from .engine import decision
+
+    card = decision.refit()
+    return {"card": {k: v for k, v in card.items() if k != "walk_forward"},
+            "walk_forward": card.get("walk_forward")}
+
+
 @app.post("/api/paper/reset")
 def paper_reset():
     book().reset()

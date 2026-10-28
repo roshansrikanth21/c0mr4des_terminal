@@ -131,12 +131,24 @@ class Desk:
                     f"{path} returned HTML, not JSON. The server on {self.url} is an older "
                     "build or a static server - use --ssh, or restart that server."
                 ) from exc
+            raise DeskError(f"{path} did not return JSON: {body[:200]!r}")
+
+    def post(self, path: str, timeout: int = 240) -> dict:
+        """Only used for explicit, owner-initiated actions (e.g. a model refit). Never a trade."""
+        if self.host:
+            body = self.ssh(f"curl -sS --max-time {timeout} -X POST '{REMOTE_URL}{path}'", timeout=timeout + 20)
+        else:
+            req = urllib.request.Request(self.url + path, method="POST", data=b"")
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                body = res.read().decode("utf-8")
+        try:
+            return json.loads(body)
+        except Exception as exc:  # noqa: BLE001
             raise DeskError(f"{path} did not return JSON: {body[:200]!r}") from exc
 
 
 def line(status: str, name: str, detail: str) -> str:
     return f"[{status:<4}] {name:<13} {detail}"
-
 
 def emit(checks: list[dict], facts: dict, as_json: bool) -> None:
     if as_json:
@@ -447,6 +459,44 @@ def review(d: Desk) -> tuple[list[dict], dict]:
                        f"mark {pos.get('mark')} | unrealized {money(pos.get('unrealized', 0))}"),
         })
 
+    try:
+        dec = d.get("/api/decision")
+    except DeskError as exc:
+        dec = {}
+        checks.append({"name": "Decision", "status": "WARN",
+                       "detail": f"not available on this server ({exc})"})
+    facts["decision"] = dec
+    dc = dec.get("card") or {}
+    if dc.get("status") == "none":
+        checks.append({"name": "Decision", "status": "WARN",
+                       "detail": "not fitted - run: desk.py decision-refit"})
+    else:
+        wf_ev = dc.get("best_ev_filter") or {}
+        checks.append({
+            "name": "Decision",
+            "status": "OK" if dc.get("status") == "active" else "WARN",
+            "detail": (f"{dc.get('status', '?').upper()} | {dc.get('version')} on "
+                       f"{dc.get('samples')} rows / {dc.get('sessions')} sessions | "
+                       f"OOS AUC {dc.get('oos_auc')} | best EV filter "
+                       f"{money(wf_ev.get('net', 0))} on {wf_ev.get('trades', 0)} vs "
+                       f"{money(dc.get('all_net', 0))} taking all | needs "
+                       f"{dc.get('min_live')} rows + 10% to promote"),
+        })
+    for key, live in dec.items():
+        if key == "card":
+            continue
+        for name, v in (live or {}).items():
+            if not v or v.get("p_win") is None:
+                continue
+            checks.append({
+                "name": f"  {name}",
+                "status": "OK",
+                "detail": (f"P(green) {float(v['p_win']) * 100:.0f}% vs break-even "
+                           f"{float(v.get('breakeven') or 0) * 100:.0f}% | expected "
+                           f"{float(v.get('ev_r') or 0):+.2f}R | {v.get('action')} "
+                           f"({v.get('confidence')})"),
+            })
+
     testing = [e for e in exps if e.get("status") == "testing"]
     if testing:
         checks.append({
@@ -589,10 +639,34 @@ def triage(checks: list[dict], facts: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------- main
+def decision_refit(d: Desk) -> tuple[list[dict], dict]:
+    """Refit the decision model. Explicit, owner-initiated, never part of the trading loop."""
+    out = d.post("/api/decision/refit")
+    card = out.get("card") or {}
+    wf = out.get("walk_forward") or {}
+    best_ev = (card.get("best_ev_filter") or {})
+    checks = [{
+        "name": "Decision",
+        "status": "OK" if card.get("ok") else "WARN",
+        "detail": (f"{card.get('status', '?').upper()} | {card.get('version')} | "
+                   f"{card.get('samples')} rows / {card.get('sessions')} sessions | "
+                   f"OOS AUC {wf.get('oos_auc')} | best EV filter {money(best_ev.get('net', 0))} "
+                   f"on {best_ev.get('trades', 0)} vs {money(wf.get('all_net', 0))} taking all"),
+    }, {"name": "  verdict", "status": "OK", "detail": str(card.get("promotion") or card.get("reason") or "")}]
+    for f in (wf.get("ev_filters") or []):
+        checks.append({"name": f"  ev>={f['threshold']}", "status": "OK",
+                       "detail": f"{f['trades']:>3} trades | {money(f['net'])} | win {f['win_rate']}%"})
+    for f in (wf.get("folds") or []):
+        checks.append({"name": f"  fold {f['fold']}", "status": "OK",
+                       "detail": (f"train {f['train']:>3} ({f['train_days']}d) test {f['test']:>2} "
+                                  f"({f['test_days']}d) | AUC {f['auc']} | R corr {f.get('r_corr')}")})
+    return checks, {"decision": out}
+
+
 def main(argv=None) -> int:
     cfg = local_config()
     ap = argparse.ArgumentParser(description="Read-only c0mr4des desk checks.")
-    ap.add_argument("command", choices=("preopen", "review", "incident"))
+    ap.add_argument("command", choices=("preopen", "review", "incident", "decision-refit"))
     ap.add_argument("--url", default=os.getenv("C0MR4DES_URL") or cfg.get("url") or DEFAULT_URL)
     default_host = os.getenv("C0MR4DES_SSH") or cfg.get("ssh")
     ap.add_argument("--ssh", nargs="?", const=default_host, default=None,
@@ -604,7 +678,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     d = Desk(args.url, args.ssh, args.key)
-    run = {"preopen": preopen, "review": review, "incident": incident}[args.command]
+    run = {"preopen": preopen, "review": review, "incident": incident,
+           "decision-refit": decision_refit}[args.command]
     via = f"ssh {args.ssh}" if args.ssh else args.url
     try:
         checks, facts = run(d)

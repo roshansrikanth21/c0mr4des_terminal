@@ -237,6 +237,16 @@ class PaperTrader:
                            "premium_target": o["premium_target"], "iv": iv, "entry_spot": spot,
                            "index_stop": p["stop"], "index_target": p.get("target"), "opened_at": now.isoformat(),
                            "score": a["score"], "mark": o["premium"], "unrealized": 0.0}
+                    # Shadow decision engine: it records a probability next to the fill so the
+                    # model can be scored against reality later. It does NOT block or allow anything
+                    # until it has been promoted on out-of-sample evidence (see engine/decision.py).
+                    try:
+                        from . import decision
+
+                        feats = decision.live_features(a, p["direction"], p["stop"], spot, expiry=o["expiry"])
+                        pos["decision"] = decision.decide(feats, strategy)
+                    except Exception:  # noqa: BLE001
+                        pos["decision"] = None
                     self.state["open"][slot] = pos
                     self._save()
                     events.append({"type": "paper_entry", "trade": pos})
