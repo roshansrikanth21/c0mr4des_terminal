@@ -803,3 +803,52 @@ def test_target_plan_is_two_r_and_knows_its_break_even():
     assert short_side["breakeven_win_rate"] == 33.3
     flat = orb.target_plan(22800.0, 22800.0)
     assert flat["risk_points"] == 0 and flat["breakeven_win_rate"] is None
+
+
+# ---------------- daily circuit breakers ----------------
+def _closed_on(day: str, pnl: float, slot: str = "NIFTY|orb", strategy: str = "First-Hour") -> dict:
+    return {"pnl": pnl, "slot": slot, "strategy": strategy, "instrument": "NIFTY",
+            "opened_at": f"{day}T10:00:00+05:30", "closed_at": f"{day}T11:00:00+05:30"}
+
+
+def _day_settings(capital: float = 10000.0, profit_pct: float = 20.0, loss_pct: float = 25.0) -> dict:
+    return {"autopilot_strategies": ["Engine"], "capital": capital, "risk_per_trade_pct": 25,
+            "max_trades_per_day": 3, "max_daily_loss_pct": loss_pct,
+            "daily_profit_pct": profit_pct, "autopilot_instruments": ["NIFTY"]}
+
+
+def test_day_stops_once_the_profit_target_is_banked(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    pt.state["closed"].append(_closed_on("2026-10-21", 2000.0))       # +20% of Rs 10k
+    ev = pt.on_analysis(_entry_analysis("2026-10-21T14:00:00+05:30"), _day_settings())["events"]
+    assert ev[0]["type"] == "blocked" and "profit target" in ev[0]["reason"]
+    assert not pt.state["open"]
+    assert pt.state["day_rules"]["profit_stop"] == 2000.0
+
+
+def test_a_trade_cannot_risk_more_than_the_day_has_left(tmp_path):
+    from backend.engine import trader
+    # Rs 10k book, 25% daily loss limit = Rs 2,500. The trade below risks (150-120)*65 = Rs 1,950.
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    pt.state["closed"].append(_closed_on("2026-10-21", -2000.0))      # only Rs 500 of room left
+    ev = pt.on_analysis(_entry_analysis("2026-10-21T12:00:00+05:30"), _day_settings())["events"]
+    assert ev[0]["type"] == "blocked" and "only Rs 500" in ev[0]["reason"]
+    assert not pt.state["open"], "a trade that could breach the day must never be opened"
+
+    fits = trader.PaperTrader(tmp_path / "q.json")
+    fits.state["closed"].append(_closed_on("2026-10-21", -400.0))     # Rs 2,100 of room, trade needs 1,950
+    ev = fits.on_analysis(_entry_analysis("2026-10-21T12:00:00+05:30"), _day_settings())["events"]
+    assert ev[0]["type"] == "paper_entry"
+
+
+def test_day_state_reports_the_room_and_the_stop(tmp_path):
+    from datetime import date as _d
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    pt.state["closed"].append(_closed_on("2026-10-21", -1200.0))
+    pt.on_analysis(_entry_analysis("2026-10-21T14:00:00+05:30"), _day_settings())   # records the rules
+    day = pt.summary(day=_d(2026, 10, 21))["day"]
+    assert day["pnl"] == -1200.0 and day["room"] == 1300.0 and day["stopped"] is None
+    assert day["profit_stop"] == 2000.0 and day["loss_stop"] == 2500.0
+

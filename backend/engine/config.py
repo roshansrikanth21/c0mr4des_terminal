@@ -80,6 +80,10 @@ RISK_DEFAULTS = {
     "risk_per_trade_pct": 25.0,
     "max_trades_per_day": 2,
     "max_daily_loss_pct": 25.0,
+    # Bank the day once this much is made (+20% of capital = Rs 2,000 on a Rs 10k book) and take
+    # no more entries. Both of the record's best days handed part of a big win back to a later
+    # entry; the cap is there to keep the win, not to chase a bigger one.
+    "daily_profit_pct": 20.0,
     # One position at a time. The owner wants to learn one trade before juggling three: the
     # strategies run in parallel slots, and without this cap two of them can be long at once.
     "max_open_positions": 1,

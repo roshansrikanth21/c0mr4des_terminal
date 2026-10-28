@@ -186,6 +186,20 @@ class PaperTrader:
                 mine = [t for t in self.state["closed"] if t.get("slot") == slot]
                 n_today = sum(1 for t in mine if t["opened_at"][:10] == now.date().isoformat())
                 loss_cap = -settings["capital"] * settings["max_daily_loss_pct"] / 100
+                profit_cap = settings["capital"] * float(settings.get("daily_profit_pct", 20.0)) / 100
+                day_pnl = self.day_pnl(now.date())
+                room = -loss_cap + day_pnl        # the unspent part of today's loss limit
+                lots = max(1, option.get("lots", 0))
+                qty = lots * INSTRUMENTS[key].lot_size
+                risk_rs = round((option["premium"] - option.get("premium_stop", option["premium"])) * qty, 2)
+                # Keep the day's circuit breakers in the book so the desk can show them without
+                # re-reading settings. Written only when they change.
+                rules = {"profit_stop": round(profit_cap, 2), "loss_stop": round(-loss_cap, 2),
+                         "profit_pct": round(float(settings.get("daily_profit_pct", 20.0)), 2),
+                         "loss_pct": round(float(settings["max_daily_loss_pct"]), 2)}
+                if self.state.get("day_rules") != rules:
+                    self.state["day_rules"] = rules
+                    self._save()
                 cooling = mine and (now - datetime.fromisoformat(mine[-1]["closed_at"])).total_seconds() < 900
                 blockers = entry_blockers(option, INSTRUMENTS[key].lot_size, now)
                 if cap and held and len(self.state["open"]) >= cap and held.get("slot") != slot:
@@ -199,8 +213,16 @@ class PaperTrader:
                     events.append({"type": "blocked", "reason": f"{strategy}: cooling off 15 min after the last exit"})
                 elif n_today >= max_trades:
                     events.append({"type": "blocked", "reason": f"{strategy}: max {max_trades} trade(s)/day reached"})
-                elif self.day_pnl(now.date()) <= loss_cap:
+                elif day_pnl >= profit_cap:
+                    events.append({"type": "blocked", "reason": (
+                        f"Daily profit target Rs {profit_cap:,.0f} hit - Rs {day_pnl:,.0f} banked, "
+                        "done for the day")})
+                elif day_pnl <= loss_cap:
                     events.append({"type": "blocked", "reason": "Daily loss limit hit - done for the day"})
+                elif risk_rs > room:
+                    events.append({"type": "blocked", "reason": (
+                        f"{strategy}: this trade risks Rs {risk_rs:,.0f} but only Rs {max(room, 0):,.0f} of "
+                        "the day's loss limit is left - no entry that could breach the day")})
                 elif blockers:
                     why = "; ".join(b["detail"] for b in blockers)
                     events.append({"type": "blocked", "reason": f"{strategy}: {why}", "gate": blockers})
@@ -208,8 +230,6 @@ class PaperTrader:
                 else:
                     o, p = option, plan
                     # Paper always takes at least 1 lot (same as the lab), and flags when that breaks your risk budget.
-                    lots = max(1, o.get("lots", 0))
-                    qty = lots * INSTRUMENTS[key].lot_size
                     oversize = o.get("lots", 0) < 1
                     exp = date.fromisoformat(o["expiry"])
                     iv = (o["greeks"].get("iv")
@@ -264,8 +284,22 @@ class PaperTrader:
             sc = scorecard([t for t in allc if t.get("strategy", "Engine") == name])
             verdict, checks = go_no_go(sc)
             gate[name] = {"verdict": verdict, "checks": checks, "scorecard": sc}
+        dr = self.state.get("day_rules") or {}
+        day_pnl = round(self.day_pnl(day), 2)
+        day_state = {"pnl": day_pnl}
+        if dr:
+            stop_profit = float(dr.get("profit_stop") or 0)
+            stop_loss = float(dr.get("loss_stop") or 0)
+            day_state.update({
+                "profit_stop": stop_profit, "loss_stop": stop_loss,
+                "room": round(max(stop_loss + day_pnl, 0.0), 2),
+                "stopped": ("profit" if day_pnl >= stop_profit
+                            else "loss" if day_pnl <= -stop_loss else None),
+            })
         return {
             "by_strategy": by_strategy,
+            "day": day_state,
+            "day_rules": dr or None,
             "open": list(self.state["open"].values()),
             "today": {"trades": len(today), "pnl": round(sum(t["pnl"] for t in today), 2),
                       "wins": sum(1 for t in today if t["pnl"] > 0)},

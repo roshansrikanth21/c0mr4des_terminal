@@ -119,6 +119,18 @@ def _seed() -> list[dict]:
                      "+Rs 26,093, 1R +40,561, 1.5R +46,169, 2R +49,207 (PF 2.02), 3R +40,335; SENSEX peaks at 2R "
                      "too (+Rs 29,981, PF 1.53). 2R beats 1R in both halves of the sample on both indices.",
          "status": "promoted", "owner": "owner request"},
+        {"id": 17, "date": "2026-10-28", "area": "process", "name": "Daily profit stop + a loss room one trade cannot breach",
+         "change": "No new entries once the day banks +20% of capital (Rs 2,000 on Rs 10k). No new entries "
+                   "once the day is down 25%. Every entry must also risk no more than the day's remaining "
+                   "loss room, so a single fill can never breach the daily limit.",
+         "evidence": "Replay of the real 10 trades: actual -Rs 3,293. The room rule alone turns 28 Oct from "
+                     "-Rs 5,743 into -Rs 653, because the 10:20 trade risked Rs 4,846 with only Rs 2,500 of "
+                     "room. The exact numbers cannot be chosen from 10 trades: a Rs 1,200 per-trade ceiling "
+                     "replays +Rs 3,447 and Rs 1,000 replays -Rs 1,780 - a Rs 200 move flips the sign, because "
+                     "the biggest winner risked Rs 1,158 and the biggest loser Rs 4,846. At Rs 1,200 the book "
+                     "would refuse almost every ORB trade (one lot's honest stop is Rs 2,300-5,000), so the "
+                     "limit stays at 25% and the room rule does the work. Judge after 20 trades.",
+         "status": "testing", "owner": "owner request"},
     ]
 
 

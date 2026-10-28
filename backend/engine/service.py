@@ -37,6 +37,7 @@ LIMITS = {
     "risk_per_trade_pct": (0.1, 100.0),
     "max_trades_per_day": (1, 10),
     "max_daily_loss_pct": (1.0, 100.0),
+    "daily_profit_pct": (1.0, 100.0),
     "max_open_positions": (1, 4),
 }
 

@@ -368,6 +368,18 @@ def review(d: Desk) -> tuple[list[dict], dict]:
         rule_line += f" | last block {ago(last.get('at', ''))}: " + "; ".join(last.get("reasons") or blocked)
     checks.append({"name": "Entry rules", "status": "OK", "detail": rule_line})
 
+    dr = paper.get("day_rules") or {}
+    day = paper.get("day") or {}
+    if dr:
+        day_line = (f"profit stop {money(dr.get('profit_stop'))} (+{dr.get('profit_pct')}%) | "
+                    f"loss stop {money(dr.get('loss_stop'))} (-{dr.get('loss_pct')}%) | "
+                    f"a trade may only risk the room left")
+        if day.get("stopped"):
+            day_line += f" | STOPPED ({day['stopped']}) at {money(day.get('pnl', 0))}"
+        elif day.get("room") is not None:
+            day_line += f" | room left today {money(day.get('room'))}"
+        checks.append({"name": "Day rules", "status": "OK", "detail": day_line})
+
     lessons = paper.get("lessons") or {}
     flags = lessons.get("flags") or []
     checks.append({
