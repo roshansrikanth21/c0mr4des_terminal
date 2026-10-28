@@ -678,6 +678,10 @@ def decision_refit(d: Desk) -> tuple[list[dict], dict]:
         checks.append({"name": f"  fold {f['fold']}", "status": "OK",
                        "detail": (f"train {f['train']:>3} ({f['train_days']}d) test {f['test']:>2} "
                                   f"({f['test_days']}d) | AUC {f['auc']} | R corr {f.get('r_corr')}")})
+    for k, v in (wf.get("per_instrument") or {}).items():
+        checks.append({"name": f"  {k} only", "status": "OK",
+                       "detail": (f"OOS AUC {v.get('oos_auc')} on {v.get('trades')} trades vs pooled "
+                                  f"{wf.get('oos_auc')} | slices {v.get('slices')}")})
     return checks, {"decision": out}
 
 

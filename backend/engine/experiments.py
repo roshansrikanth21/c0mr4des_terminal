@@ -185,14 +185,17 @@ def _seed() -> list[dict]:
                    "Yahoo) or when the session count shrinks below 90% of the current model's. A refused refit "
                    "returns the existing card with refit_refused set and does NOT overwrite the model file. "
                    "POST /api/decision/refit?force=1 overrides.",
-         "evidence": "Found while re-running the dataset build: on 28 Oct the VM's Angel feed started "
-                     "returning EMPTY for 5m and 15m, so long_history silently fell back to Yahoo - 60 "
-                     "sessions from 2026-08-03 instead of 64 from 2026-07-24. The model card still said "
-                     "angel_one / 222 rows. Two bugs: (1) a refit during an outage would have replaced a "
-                     "working 222-row model with a 194-row delayed-feed one and called it a refit; (2) a "
-                     "dataset under MIN_TRAIN overwrote the good model with w=null, which blanks every shadow "
-                     "decision until someone notices. The weekly cron runs unattended, so this would have "
-                     "happened on a Monday morning with no warning.",
+         "evidence": "Found while re-running the dataset build from a shell instead of through the "
+                     "service: a standalone process has no Angel session, so angel.candles() returned "
+                     "empty and long_history silently fell back to Yahoo - 60 sessions from 2026-08-03 "
+                     "instead of the service's 64 from 2026-07-24, while the model card still said "
+                     "angel_one / 222 rows. Inside the running service the feed was fine, so there was no "
+                     "outage - the lesson is that the SAME refit produces a different dataset depending on "
+                     "whether the broker session is live, and nothing said so. Two real bugs came out of it: "
+                     "(1) an unattended Monday refit with a logged-out broker would have replaced a working "
+                     "222-row model with a 194-row delayed-feed one and called it a refit; (2) a dataset "
+                     "under MIN_TRAIN overwrote the good model with w=null, which blanks every shadow "
+                     "decision until someone notices. Both are now refused instead of applied.",
          "status": "promoted", "owner": "owner request"},
     ]
 

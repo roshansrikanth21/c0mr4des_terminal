@@ -311,6 +311,17 @@ def refit(keys=("NIFTY", "SENSEX"), force: bool = False) -> dict:
     breakeven = (abs(loss_avg) / (win_avg + abs(loss_avg))) if win_avg > 0 and loss_avg < 0 else 0.5
 
     wf = walk_forward(df)
+    # Does splitting by instrument help? Answered here, on the real training frame, because a
+    # separate script has no broker session and would silently measure the Yahoo fallback instead.
+    if "instrument" in df.columns:
+        per = {}
+        for k in sorted(df["instrument"].unique()):
+            w = walk_forward(df[df["instrument"] == k])
+            per[k] = {"ok": w.get("ok"), "oos_auc": w.get("oos_auc"),
+                      "trades": w.get("oos_trades"), "all_net": w.get("all_net"),
+                      "slices": {s.replace(f"{k} ", ""): v.get("auc")
+                                 for s, v in (w.get("slices") or {}).items()}}
+        wf["per_instrument"] = per
     # Promotion needs BOTH heads, and the EV head must show a *material* gain, not a rounding error.
     # +1,790 on +151,687 is noise: a filter has to earn at least 10% more while actually dropping
     # trades (<=85% kept), and the R ranking has to be right in at least 3 of 4 folds.
@@ -481,5 +492,6 @@ def card() -> dict:
             "best_win_filter": wf.get("best_win_filter"),
             "best_ev_filter": wf.get("best_ev_filter"),
             "ev_filters": wf.get("ev_filters"),
+            "per_instrument": wf.get("per_instrument"),
             "slices": wf.get("slices"), "folds": wf.get("folds"),
             "min_live": MIN_LIVE, "min_auc": MIN_AUC}
