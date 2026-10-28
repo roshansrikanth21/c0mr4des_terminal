@@ -64,6 +64,46 @@ def orb30_breakout(day, ctx, rr=2.0, filter_fn=None, max_trades=1):
     return out
 
 
+def orb_two_candles(day, ctx, target_points=None, rr=None, max_trades=1,
+                    min_range=None, max_range=None, filter_fn=None):
+    """The toddler rule: range = the first two 15-minute candles (09:15-09:45).
+
+    Wait for a 15-minute CLOSE outside the range (a wick through it is not a trade), enter on
+    the next bar, stop at the opposite end of the range, and take a fixed number of points.
+    One trade a day. `target_points` wins over `rr` when both are given.
+    """
+    first = day[day.index.time < T945]
+    if len(first) < 6:
+        return []
+    hi, lo = float(first.high.max()), float(first.low.min())
+    rng = hi - lo
+    if min_range is not None and rng < min_range:
+        return []
+    if max_range is not None and rng > max_range:
+        return []
+
+    b15 = day.resample("15min").agg({"open": "first", "high": "max",
+                                     "low": "min", "close": "last"}).dropna()
+    for ts, bar in b15[b15.index.time >= T945].iterrows():
+        c = float(bar.close)
+        d = 1 if c > hi else -1 if c < lo else 0
+        if d == 0:
+            continue
+        if filter_fn and not filter_fn(d, day, ctx):
+            continue
+        after = day.index[day.index >= ts + pd.Timedelta(minutes=15)]
+        if not len(after):
+            break
+        i = int(day.index.get_loc(after[0]))
+        if i >= len(day) - 1:
+            break
+        stop = lo if d > 0 else hi
+        tgt = (c + d * target_points if target_points
+               else c + d * rr * abs(c - stop) if rr else None)
+        return [{"i": i, "dir": d, "stop": stop, "target": tgt, "range": round(rng, 2)}]
+    return []
+
+
 def gap_follow(day, ctx, rr=2.0):
     """Gap beyond previous day's range and the first 15 min holds the gap -> trade in the gap direction."""
     pdh, pdl = ctx.get("pdh"), ctx.get("pdl")

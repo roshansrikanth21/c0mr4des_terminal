@@ -89,6 +89,24 @@ def _seed() -> list[dict]:
                      "while a 250-point spread blocks about Rs 16k. The long-option book kept losing to theta "
                      "(premium stops before the index stop). Paper only - this book never sends an order.",
          "status": "testing", "owner": "owner request"},
+        {"id": 14, "date": "2026-10-28", "area": "strategy", "name": "Fixed 10-point target on the 30-minute opening range",
+         "change": "The rule as taught: range = the first two 15-minute candles (09:15-09:45), enter on a 15-minute "
+                   "CLOSE outside it, stop at the opposite end, take a flat 10 points, one trade a day",
+         "evidence": "Tested on 60 sessions of 5m NIFTY/SENSEX. NIFTY: 55 trades, 87.3% winners, -81 index points "
+                     "(avg win +9.9 vs avg loss -79.6). SENSEX: 55 trades, 96.4% winners, +164 index points, but "
+                     "-Rs 7,268 in the option account after charges, slippage and theta. A 10-point target is 0.12R "
+                     "on NIFTY (median opening range 87 points) and 0.03R on SENSEX (median 297); the same 10 points "
+                     "is roughly 0.5R on ES, where the rule was learned. The structure transfers, the number does not.",
+         "status": "rejected", "owner": "owner request"},
+        {"id": 15, "date": "2026-10-28", "area": "strategy", "name": "Shorten the opening range from 60 to 30 minutes",
+         "change": "Range 09:15-09:45 instead of 09:15-10:15, 5-minute close confirmation, stop at the opposite end, "
+                   "2R target. Same entry gate, same one-trade-a-day cap.",
+         "evidence": "Same 60 sessions, index points at 2R: NIFTY +1,265 (09:45) vs +213 (10:15); SENSEX +3,013 vs "
+                     "+480. The ordering holds in both halves of the sample for both indices. Option account: NIFTY "
+                     "+Rs 65,160, PF 2.27, 52 trades; SENSEX +Rs 37,858, PF 1.62, 54 trades. Caveat: the second half "
+                     "of the window trended, so half2 (+Rs 56k) dwarfs half1 (+Rs 8.9k) - this is a promising "
+                     "variant, not an established edge. One lot needs ~Rs 50k (max drawdown Rs 9,824).",
+         "status": "proposed", "owner": "owner request"},
     ]
 
 
