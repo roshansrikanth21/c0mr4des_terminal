@@ -4,7 +4,9 @@ Rules:
 1. 09:15-10:15 builds the first-hour range.
 2. After 10:15, the first 5-minute CLOSE above the range high = BUY (CE); below the low = SELL (PE).
 3. Filter: only BUY above yesterday's close, only SELL below it (trade with the day's side).
-4. Stop: the opposite side of the range. Target: 2x the risk. Exit by 15:15 regardless.
+4. Stop: the opposite side of the range. Target: 2x the risk (never a fixed number of points -
+   see target_plan: a flat 10-point target needs an 86.6% win rate on a quiet NIFTY day and
+   94.7% on a wide one, while 2R needs 33.3% every day). Exit by 15:15 regardless.
 5. One trade per day. No new entry after 15:00.
 
 Evidence (modelled option premiums from real index + real India VIX, theta, slippage, charges, 1 lot):
@@ -21,6 +23,34 @@ import pandas as pd
 
 RR = 2.0
 T945, T1015, T1500 = time(9, 45), time(10, 15), time(15, 0)
+
+
+def target_plan(entry: float, stop: float, rr: float = RR) -> dict:
+    """Stop, target and the win rate that target demands.
+
+    A fixed number of points is the wrong instruction, because the stop is not fixed: the
+    distance from the entry to the other end of the range changes every morning. With a flat
+    10-point target the break-even win rate drifts with the range - 86.6% on a quiet NIFTY day,
+    94.7% on a wide one - so the same rule is easy one day and impossible the next. Sizing the
+    target as a multiple of the risk pins the requirement at 1/(1+rr) every single day.
+    """
+    risk = abs(entry - stop)
+    if risk <= 0:
+        return {"risk_points": 0.0, "target": entry, "target_points": 0.0, "breakeven_win_rate": None}
+    d = 1 if entry > stop else -1
+    return {
+        "risk_points": round(risk, 2),
+        "target": round(entry + d * rr * risk, 2),
+        "target_points": round(rr * risk, 2),
+        "breakeven_win_rate": breakeven_win_rate(risk, rr * risk),
+    }
+
+
+def breakeven_win_rate(risk_points: float, target_points: float) -> float | None:
+    """Win rate at which a target of `target_points` against a `risk_points` stop breaks even."""
+    if risk_points <= 0 or target_points <= 0:
+        return None
+    return round(risk_points / (risk_points + target_points) * 100, 1)
 
 
 def evaluate(df5: pd.DataFrame, prev_close: float | None, now: datetime) -> dict:
@@ -53,7 +83,7 @@ def evaluate(df5: pd.DataFrame, prev_close: float | None, now: datetime) -> dict
         return {**base, **info, "status": "triggered" if live else "taken",
                 "verdict": ("BUY" if d > 0 else "SELL") if live else "NO TRADE", "direction": d,
                 "trigger_time": ts.isoformat(), "entry": c, "stop": stop, "target": target, "risk_points": risk,
-                "target_points": RR * risk,
+                "target_points": RR * risk, "breakeven_win_rate": breakeven_win_rate(risk, RR * risk),
                 "text": (f"{'NOW: ' if live else ''}Price closed {word} of the first-hour range at {ts.strftime('%H:%M')} "
                          f"({c:.0f}), on the {'right' if side_ok else 'wrong'} side of yesterday's close. "
                          f"Stop {stop:.0f} (other side of the range), target {target:.0f} (2x risk)."

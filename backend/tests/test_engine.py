@@ -778,3 +778,28 @@ def test_spread_book_time_stop_and_one_trade_a_day(tmp_path):
     assert ev[0]["trade"]["reason"] == "14:30 time stop"
     again = b.on_analysis(_spread_analysis("2026-10-28T14:45:00+05:30"))
     assert again["events"] == [] and again["open"] is None, "one spread a day"
+
+
+# ---------------- the target must scale with the range, not be a fixed number ----------------
+def test_fixed_points_demand_a_different_win_rate_every_day():
+    from backend.engine import orb
+    # Same 10-point target, three different mornings: the requirement moves with the stop.
+    assert orb.breakeven_win_rate(64, 10) == 86.5
+    assert orb.breakeven_win_rate(95, 10) == 90.5
+    assert orb.breakeven_win_rate(178, 10) == 94.7
+    # 2R demands the same number whatever the range is.
+    assert orb.breakeven_win_rate(64, 128) == 33.3
+    assert orb.breakeven_win_rate(178, 356) == 33.3
+
+
+def test_target_plan_is_two_r_and_knows_its_break_even():
+    from backend.engine import orb
+    long_side = orb.target_plan(22800.0, 22704.0, 2.0)
+    assert long_side["risk_points"] == 96.0
+    assert long_side["target"] == 22992.0 and long_side["target_points"] == 192.0
+    assert long_side["breakeven_win_rate"] == 33.3
+    short_side = orb.target_plan(22800.0, 22896.0, 2.0)
+    assert short_side["target"] == 22608.0
+    assert short_side["breakeven_win_rate"] == 33.3
+    flat = orb.target_plan(22800.0, 22800.0)
+    assert flat["risk_points"] == 0 and flat["breakeven_win_rate"] is None

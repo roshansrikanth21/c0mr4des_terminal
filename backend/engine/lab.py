@@ -64,13 +64,16 @@ def orb30_breakout(day, ctx, rr=2.0, filter_fn=None, max_trades=1):
     return out
 
 
-def orb_two_candles(day, ctx, target_points=None, rr=None, max_trades=1,
+def orb_two_candles(day, ctx, rr=2.0, target_points=None, max_trades=1,
                     min_range=None, max_range=None, filter_fn=None):
     """The toddler rule: range = the first two 15-minute candles (09:15-09:45).
 
     Wait for a 15-minute CLOSE outside the range (a wick through it is not a trade), enter on
-    the next bar, stop at the opposite end of the range, and take a fixed number of points.
-    One trade a day. `target_points` wins over `rr` when both are given.
+    the next bar, stop at the opposite end of the range, and take `rr` times the risk.
+
+    `target_points` exists only to replay the flat-point variant, which loses: with a fixed
+    target the break-even win rate moves with the day's range, so the same rule is easy on a
+    quiet morning and impossible on a wide one. Keep it at 2R.
     """
     first = day[day.index.time < T945]
     if len(first) < 6:

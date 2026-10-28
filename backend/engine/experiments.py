@@ -107,6 +107,18 @@ def _seed() -> list[dict]:
                      "of the window trended, so half2 (+Rs 56k) dwarfs half1 (+Rs 8.9k) - this is a promising "
                      "variant, not an established edge. One lot needs ~Rs 50k (max drawdown Rs 9,824).",
          "status": "proposed", "owner": "owner request"},
+        {"id": 16, "date": "2026-10-28", "area": "strategy", "name": "Target is 2R, never a fixed number of points",
+         "change": "Replace the flat 10-point target with 2x the entry-to-stop distance (orb.target_plan). "
+                   "The desk prints today's 2R target in points and the win rate it needs, plus what a flat "
+                   "10-point target would have needed on the same range.",
+         "evidence": "A fixed target has a moving break-even: risk/(risk+target) is 86.5% on a quiet NIFTY "
+                     "morning (64-pt stop), 90.5% at the median (95) and 94.7% on a wide one (178), while the "
+                     "rule actually wins ~87% - so it is break-even on quiet days and a certain loser on wide "
+                     "ones. SENSEX is worse still: 95.7%-98.2% needed against 96.4% achieved. An R-multiple pins "
+                     "the requirement at 1/(1+k) every day: 33.3% at 2R. Ladder on 60 sessions: NIFTY 0.5R "
+                     "+Rs 26,093, 1R +40,561, 1.5R +46,169, 2R +49,207 (PF 2.02), 3R +40,335; SENSEX peaks at 2R "
+                     "too (+Rs 29,981, PF 1.53). 2R beats 1R in both halves of the sample on both indices.",
+         "status": "promoted", "owner": "owner request"},
     ]
 
 

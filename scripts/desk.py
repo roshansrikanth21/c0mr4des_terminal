@@ -304,6 +304,18 @@ def preopen(d: Desk) -> tuple[list[dict], dict]:
                    f"{(sig.get('orb') or {}).get('status', '--')}"),
     })
 
+    # The target has to be an R-multiple: a flat number of points demands a different win rate
+    # every morning, because the stop is the other side of a range that changes size daily.
+    ob = sig.get("orb") or {}
+    rng = ob.get("range_points")
+    if rng:
+        checks.append({
+            "name": "ORB target",
+            "status": "OK",
+            "detail": (f"range {rng:.0f} pts | 2R target {2 * rng:.0f} pts (needs 33.3% wins) | "
+                       f"a flat 10-pt target today would need {round(rng / (rng + 10) * 100, 1)}% wins"),
+        })
+
     facts["generated_at"] = sig.get("generated_at")
     return checks, facts
 
