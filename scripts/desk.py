@@ -644,7 +644,7 @@ def decision_refit(d: Desk) -> tuple[list[dict], dict]:
     out = d.post("/api/decision/refit")
     card = out.get("card") or {}
     wf = out.get("walk_forward") or {}
-    best_ev = (card.get("best_ev_filter") or {})
+    best_ev = (wf.get("best_ev_filter") or {})
     checks = [{
         "name": "Decision",
         "status": "OK" if card.get("ok") else "WARN",

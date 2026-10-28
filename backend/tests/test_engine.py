@@ -959,3 +959,15 @@ def test_features_never_read_the_bar_they_fill_on():
     assert before is not None and after is not None
     assert before == after, "a feature that changes when future bars change is lookahead"
 
+
+
+def test_a_paper_entry_carries_the_shadow_decision(tmp_path):
+    """The model records its read next to every fill. It must never be able to block one."""
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"]}
+    ev = pt.on_analysis(_entry_analysis("2026-10-21T10:00:00+05:30"), settings)["events"][0]
+    assert ev["type"] == "paper_entry", "the decision engine must not veto an entry while in shadow"
+    assert "decision" in ev["trade"], "every fill records what the model thought of it"
+
