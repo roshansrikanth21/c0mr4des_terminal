@@ -990,3 +990,86 @@ def test_shadow_scorecard_compares_what_it_said_to_what_happened():
     assert sc["net"] == 2000
     assert decision.scorecard([])["trades"] == 0
 
+
+
+def test_refit_refuses_to_train_on_a_worse_feed():
+    """The weekly cron runs unattended. One broker outage must not silently replace a
+    broker-feed model with a shorter delayed-feed one."""
+    from backend.engine import decision
+
+    prev = {"w": [0.5], "source": "angel_one", "sessions": 64, "version": "lr-old"}
+    assert decision._downgrade(prev, "yahoo_delayed", 60), "delayed feed is a downgrade"
+    assert decision._downgrade(prev, "angel_one", 40), "same source, 40 vs 64 sessions is a shrink"
+    assert decision._downgrade(prev, "angel_one", 70) is None, "more history is a normal refit"
+    assert decision._downgrade(prev, "angel_one", 60) is None, "a small shrink is tolerated"
+    upgraded = {"w": [0.5], "source": "yahoo_delayed", "sessions": 60}
+    assert decision._downgrade(upgraded, "angel_one", 64) is None, "the broker feed is an upgrade"
+    assert decision._downgrade(None, "yahoo_delayed", 10) is None, "the first fit has nothing to lose"
+    weightless = {"source": "angel_one", "sessions": 64}
+    assert decision._downgrade(weightless, "yahoo_delayed", 60) is None, "no weights, no model to protect"
+
+    kept = decision._kept(prev, "feed downgraded")
+    assert kept["ok"] is False
+    assert kept["refit_refused"] == "feed downgraded"
+    assert kept["w"] == [0.5] and kept["version"] == "lr-old", "the working model survives a refusal"
+
+
+
+def test_daily_summary_groups_by_the_day_the_trade_opened():
+    from backend.engine import daily
+
+    closed = [
+        {"opened_at": "2026-10-28T09:45:00+05:30", "pnl": -653, "strategy": "First-Hour"},
+        {"opened_at": "2026-10-28T10:20:00+05:30", "pnl": -5090, "strategy": "First-Hour"},
+        {"opened_at": "2026-10-27T09:50:00+05:30", "pnl": 1200, "strategy": "First-30"},
+    ]
+    days = daily.by_day(closed)
+    assert [d["date"] for d in days] == ["2026-10-28", "2026-10-27"], "newest day first"
+    assert days[0]["trades"] == 2 and days[0]["pnl"] == -5743 and days[0]["wins"] == 0
+    assert days[1]["wins"] == 1 and days[1]["win_rate"] == 100.0
+
+    paper = {"closed": closed, "today": {"trades": 2, "pnl": -5743, "wins": 0},
+             "all_time": {"trades": 3, "pnl": -4543, "win_rate": 33.3},
+             "open": [], "day_rules": {"profit_stop": 2000, "loss_stop": 2500},
+             "day": {"pnl": -5743, "stopped": "loss"}}
+    rep = daily.report(paper, day="2026-10-28")
+    assert rep["trades"] == 2 and rep["pnl"] == -5743 and rep["stopped"] == "loss"
+    assert rep["days"][0]["date"] == "2026-10-28"
+
+    body = daily.text(rep)
+    assert "2 trade(s)" in body and "Rs -5,743" in body, "the number the owner asked for is in the first line"
+    assert "LOSS limit hit" in body and "All time: 3 trades" in body
+    assert all(ord(ch) < 128 for ch in body), "phone messages stay ASCII"
+
+
+def test_daily_summary_says_so_when_nothing_traded():
+    from backend.engine import daily
+
+    rep = daily.report({"closed": [], "today": {"trades": 0, "pnl": 0, "wins": 0},
+                        "all_time": {"trades": 0, "pnl": 0, "win_rate": None}}, day="2026-10-28")
+    body = daily.text(rep)
+    assert "0 trade(s)" in body
+    assert "No trades today" in body
+
+
+
+def test_registry_moves_a_status_but_never_rewrites_evidence(tmp_path, monkeypatch):
+    import json
+
+    from backend.engine import experiments
+
+    monkeypatch.setattr(experiments, "FILE", tmp_path / "experiments.jsonl")
+    seeds = experiments._seed()
+    stale = [dict(r) for r in seeds]
+    stale = [dict(r, status="proposed") if r["id"] == 15 else r for r in stale]
+    experiments.FILE.write_text("\n".join(json.dumps(r) for r in stale) + "\n", encoding="utf-8")
+
+    old_evidence = next(r["evidence"] for r in stale if r["id"] == 15)
+    rows = experiments.all()
+    row15 = next(r for r in rows if r["id"] == 15)
+    assert row15["status"] == "testing", "the code can move a row out of proposed"
+    assert row15["evidence"] == old_evidence, "the evidence column is history and stays put"
+
+    rows = experiments.all()
+    assert next(r for r in rows if r["id"] == 15)["evidence"] == old_evidence, "stable across reads"
+

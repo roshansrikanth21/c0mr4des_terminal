@@ -43,16 +43,22 @@ def first30_direction(day, ctx, stop_mode="range", rr=None):
     return [{"i": i, "dir": d, "stop": stop, "target": tgt}]
 
 
-def first_hour_breakout(day, ctx, rr=2.0, max_trades=1, filter_fn=None):
+def first_hour_breakout(day, ctx, rr=2.0, max_trades=1, filter_fn=None, range_minutes=60):
     """The live First-Hour rule, exactly: 09:15-10:15 range, the first 5m CLOSE outside it after
     10:15 that is ALSO on the right side of yesterday's close. Fill at the next bar's open, stop at
-    the other side of the range, target rr x risk. `orb.evaluate` is the same rule in live form."""
-    first = day[day.index.time < T1015]
-    if len(first) < 12:
+    the other side of the range, target rr x risk. `orb.evaluate` is the same rule in live form.
+
+    `range_minutes=30` moves the range to 09:15-09:45 and the trigger to 09:45 - the same rule with
+    only the window changed, which is the only honest way to compare the two (registry row 15).
+    """
+    end = T945 if range_minutes == 30 else T1015
+    need = 6 if range_minutes == 30 else 12
+    first = day[day.index.time < end]
+    if len(first) < need:
         return []
     hi, lo = float(first.high.max()), float(first.low.min())
     pdc = ctx.get("pdc")
-    for ts, bar in day[day.index.time >= T1015].iterrows():
+    for ts, bar in day[day.index.time >= end].iterrows():
         c = float(bar.close)
         d = 1 if c > hi else -1 if c < lo else 0
         if d == 0 or (pdc is not None and (c - pdc) * d <= 0):
@@ -110,24 +116,12 @@ def skip_5m_aligned(d, day, i, ctx) -> bool:
 
 
 def orb30_breakout(day, ctx, rr=2.0, filter_fn=None, max_trades=1):
-    """30-min opening range breakout: first CLOSE beyond the range after 09:45, stop at the other side."""
-    first = day[day.index.time < T945]
-    if len(first) < 6:
-        return []
-    hi, lo = first.high.max(), first.low.min()
-    out = []
-    for i in range(len(first), len(day) - 1):
-        if day.index[i].time() >= T1500 or len(out) >= max_trades:
-            break
-        c = day.close.iloc[i]
-        d = 1 if c > hi else -1 if c < lo else 0
-        if d == 0 or (filter_fn and not filter_fn(d, day, i, ctx)):
-            continue
-        stop = lo if d > 0 else hi
-        risk = abs(c - stop)
-        out.append({"i": i + 1, "dir": d, "stop": stop, "target": c + d * rr * risk if rr else None})
-        break
-    return out
+    """30-min opening range breakout. Delegates so the two windows cannot drift apart.
+
+    This used to be a separate implementation without the yesterday's-close side filter, which
+    made any First-Hour vs 30-min comparison silently unfair. Same rule, shorter window.
+    """
+    return first_hour_breakout(day, ctx, rr=rr, filter_fn=filter_fn, range_minutes=30)
 
 
 def orb_two_candles(day, ctx, rr=2.0, target_points=None, max_trades=1,

@@ -42,6 +42,34 @@ def send(text: str) -> None:
         threading.Thread(target=_send, args=(text,), daemon=True).start()
 
 
+def send_now(text: str) -> bool:
+    """Blocking send, for the daily summary where the caller wants to know it left.
+
+    Returns False when nothing is configured or every channel failed, so the cron log and the
+    API response can say so instead of claiming a message the owner never received.
+    """
+    if not configured():
+        return False
+    ok = False
+    token, chat = os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID")
+    if token and chat:
+        try:
+            r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                              json={"chat_id": chat, "text": text, "disable_web_page_preview": True},
+                              timeout=15)
+            ok = ok or r.ok
+        except Exception as exc:  # noqa: BLE001
+            log.warning("telegram send failed: %s", exc)
+    topic = os.getenv("NTFY_TOPIC")
+    if topic:
+        try:
+            r = requests.post(f"https://ntfy.sh/{topic}", data=text.encode("utf-8"), timeout=15)
+            ok = ok or r.ok
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ntfy send failed: %s", exc)
+    return ok
+
+
 def fmt_event(ev: dict) -> str | None:
     t = ev.get("trade") or {}
     if ev["type"] == "paper_entry":

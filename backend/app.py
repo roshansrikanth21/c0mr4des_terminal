@@ -351,13 +351,37 @@ def decision_card():
 
 
 @app.post("/api/decision/refit")
-def decision_refit():
-    """Explicit refit. Never called by the trading loop - a model must not retune itself mid-session."""
+def decision_refit(force: bool = False):
+    """Explicit refit. Never called by the trading loop - a model must not retune itself mid-session.
+
+    `force=1` overrides the guard that refuses to train on a worse feed than the model on disk.
+    """
     from .engine import decision
 
-    card = decision.refit()
+    card = decision.refit(force=force)
     return {"card": {k: v for k, v in card.items() if k != "walk_forward"},
             "walk_forward": card.get("walk_forward")}
+
+
+@app.get("/api/daily")
+def daily_report(day: str | None = None):
+    """Today's trades and P&L, the last two weeks, and the all-time total. Read-only."""
+    from .engine import daily
+
+    rep = daily.report(paper.summary(), day=day)
+    return {"report": rep, "text": daily.text(rep)}
+
+
+@app.post("/api/daily/send")
+def daily_send(day: str | None = None):
+    """Push the daily summary to the phone. Used by the evening cron; safe to call any time."""
+    from .engine import daily, notify
+
+    rep = daily.report(paper.summary(), day=day)
+    body = daily.text(rep)
+    sent = notify.send_now(body)
+    log.info("daily summary %s: sent=%s", rep["date"], sent)
+    return {"sent": sent, "configured": notify.configured(), "date": rep["date"], "text": body}
 
 
 @app.post("/api/paper/reset")

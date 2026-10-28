@@ -101,12 +101,18 @@ def _seed() -> list[dict]:
         {"id": 15, "date": "2026-10-28", "area": "strategy", "name": "Shorten the opening range from 60 to 30 minutes",
          "change": "Range 09:15-09:45 instead of 09:15-10:15, 5-minute close confirmation, stop at the opposite end, "
                    "2R target. Same entry gate, same one-trade-a-day cap.",
-         "evidence": "Same 60 sessions, index points at 2R: NIFTY +1,265 (09:45) vs +213 (10:15); SENSEX +3,013 vs "
-                     "+480. The ordering holds in both halves of the sample for both indices. Option account: NIFTY "
-                     "+Rs 65,160, PF 2.27, 52 trades; SENSEX +Rs 37,858, PF 1.62, 54 trades. Caveat: the second half "
-                     "of the window trended, so half2 (+Rs 56k) dwarfs half1 (+Rs 8.9k) - this is a promising "
-                     "variant, not an established edge. One lot needs ~Rs 50k (max drawdown Rs 9,824).",
-         "status": "proposed", "owner": "owner request"},
+         "evidence": "Re-tested apples-to-apples (2026-10-28): the earlier comparison used a separate "
+                     "orb30_breakout() that did NOT apply the yesterday's-close side filter, so it was not the "
+                     "same rule. orb30_breakout now delegates to first_hour_breakout(range_minutes=30). Same 69 "
+                     "sessions, 2R, 1 lot: NIFTY 60min 48 tr +Rs 26,180 PF 1.57 win 47.9% (halves -747/+26,927) vs "
+                     "30min 48 tr +Rs 59,488 PF 2.47 win 58.3% (halves +5,634/+53,854). SENSEX 60min 52 tr +Rs "
+                     "19,135 PF 1.36 (halves -13,829/+32,964) vs 30min 52 tr +Rs 27,798 PF 1.54 (halves "
+                     "-10,902/+38,700). Trade count is identical, so this is a better entry and stop on the same "
+                     "days, not a different selection. BUT the rupee table flatters it: with 1 lot fixed a tighter "
+                     "range means a closer stop and a smaller move to 2R. In R (what a risk-sized book earns) NIFTY "
+                     "goes 0.023R -> 0.099R per trade, SENSEX is FLAT (0.004R -> 0.003R). NIFTY half1 stays "
+                     "negative (-0.048R). Verdict: promising on NIFTY, no evidence on SENSEX, NOT promoted.",
+         "status": "testing", "owner": "owner request"},
         {"id": 16, "date": "2026-10-28", "area": "strategy", "name": "Target is 2R, never a fixed number of points",
          "change": "Replace the flat 10-point target with 2x the entry-to-stop distance (orb.target_plan). "
                    "The desk prints today's 2R target in points and the win rate it needs, plus what a flat "
@@ -165,11 +171,39 @@ def _seed() -> list[dict]:
                      "0.50 / 0.51 / 0.56 say the pooled 0.533 is mostly the model telling NIFTY and SENSEX apart, "
                      "not good trades from bad. Stays SHADOW; no filter earns its keep.",
          "status": "rejected", "owner": "owner request"},
+        {"id": 20, "date": "2026-10-28", "area": "process", "name": "Per-day trade count and P&L, pushed to the phone",
+         "change": "New engine/daily.py: closed trades grouped by the day they were OPENED (the book's own "
+                   "convention), rendered as a short ASCII message. GET /api/daily (read-only), "
+                   "POST /api/daily/send, desk.py daily [--send]. Evening cron 15:45 IST on weekdays.",
+         "evidence": "Answers the owner's question directly: trades today, P&L today, the last ten trading "
+                     "days, all-time, and whether a day stop fired. Uses the same opened_at[:10] grouping as "
+                     "PaperTrader.today_closed, so the message and the journal cannot disagree. Tests pin the "
+                     "grouping, the loss-stop wording, the empty day, and that the text stays ASCII.",
+         "status": "promoted", "owner": "owner request"},
+        {"id": 21, "date": "2026-10-28", "area": "infra", "name": "A refit may not train on a worse feed than the model on disk",
+         "change": "decision.refit(force=False) now refuses when the training feed is a downgrade (Angel -> "
+                   "Yahoo) or when the session count shrinks below 90% of the current model's. A refused refit "
+                   "returns the existing card with refit_refused set and does NOT overwrite the model file. "
+                   "POST /api/decision/refit?force=1 overrides.",
+         "evidence": "Found while re-running the dataset build: on 28 Oct the VM's Angel feed started "
+                     "returning EMPTY for 5m and 15m, so long_history silently fell back to Yahoo - 60 "
+                     "sessions from 2026-08-03 instead of 64 from 2026-07-24. The model card still said "
+                     "angel_one / 222 rows. Two bugs: (1) a refit during an outage would have replaced a "
+                     "working 222-row model with a 194-row delayed-feed one and called it a refit; (2) a "
+                     "dataset under MIN_TRAIN overwrote the good model with w=null, which blanks every shadow "
+                     "decision until someone notices. The weekly cron runs unattended, so this would have "
+                     "happened on a Monday morning with no warning.",
+         "status": "promoted", "owner": "owner request"},
     ]
 
 
 def all() -> list[dict]:
-    """Every experiment, oldest first. Seeds the file on first read and adds newly committed rows."""
+    """Every experiment, oldest first.
+
+    Seeds the file on first read, adds newly committed rows, and lets a row's STATUS move
+    (proposed -> testing -> promoted/rejected) when the code says so. Evidence is never rewritten:
+    the record of what was believed at the time has to survive, or the registry is just a diary.
+    """
     seeds = _seed()
     if not FILE.exists():
         FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -181,10 +215,18 @@ def all() -> list[dict]:
         return []
     # A row committed after this file was created still belongs in the record. Merge it in by id,
     # but never rewrite a file we could not read.
-    have = {r.get("id") for r in rows}
-    missing = [r for r in seeds if r["id"] not in have]
-    if missing:
-        rows = sorted(rows + missing, key=lambda r: r.get("id", 0))
+    by_id = {r.get("id"): r for r in rows}
+    changed = False
+    for s in seeds:
+        cur = by_id.get(s["id"])
+        if cur is None:
+            rows.append(s)
+            changed = True
+        elif cur.get("status") != s["status"]:
+            cur["status"] = s["status"]
+            changed = True
+    if changed:
+        rows = sorted(rows, key=lambda r: r.get("id", 0))
         FILE.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
     return rows
 

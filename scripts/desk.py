@@ -659,14 +659,18 @@ def decision_refit(d: Desk) -> tuple[list[dict], dict]:
     card = out.get("card") or {}
     wf = out.get("walk_forward") or {}
     best_ev = (wf.get("best_ev_filter") or {})
+    refused = card.get("refit_refused")
     checks = [{
         "name": "Decision",
         "status": "OK" if card.get("ok") else "WARN",
         "detail": (f"{card.get('status', '?').upper()} | {card.get('version')} | "
                    f"{card.get('samples')} rows / {card.get('sessions')} sessions | "
+                   f"source {card.get('source')} | "
                    f"OOS AUC {wf.get('oos_auc')} | best EV filter {money(best_ev.get('net', 0))} "
                    f"on {best_ev.get('trades', 0)} vs {money(wf.get('all_net', 0))} taking all"),
-    }, {"name": "  verdict", "status": "OK", "detail": str(card.get("promotion") or card.get("reason") or "")}]
+    }, {"name": "  verdict",
+        "status": "WARN" if refused else "OK",
+        "detail": str(refused or card.get("promotion") or card.get("reason") or "")}]
     for f in (wf.get("ev_filters") or []):
         checks.append({"name": f"  ev>={f['threshold']}", "status": "OK",
                        "detail": f"{f['trades']:>3} trades | {money(f['net'])} | win {f['win_rate']}%"})
@@ -677,10 +681,18 @@ def decision_refit(d: Desk) -> tuple[list[dict], dict]:
     return checks, {"decision": out}
 
 
+def daily(d: Desk, send: bool = False) -> tuple[list[dict], dict]:
+    """The phone summary, printed. `--send` also pushes it (the one POST this command makes)."""
+    out = d.post("/api/daily/send") if send else d.get("/api/daily")
+    return [], {"daily": out.get("report") or {}, "text": out.get("text") or "",
+                "sent": out.get("sent")}
+
+
 def main(argv=None) -> int:
     cfg = local_config()
     ap = argparse.ArgumentParser(description="Read-only c0mr4des desk checks.")
-    ap.add_argument("command", choices=("preopen", "review", "incident", "decision-refit"))
+    ap.add_argument("command", choices=("preopen", "review", "incident", "decision-refit", "daily"))
+    ap.add_argument("--send", action="store_true", help="daily: push the summary to the phone")
     ap.add_argument("--url", default=os.getenv("C0MR4DES_URL") or cfg.get("url") or DEFAULT_URL)
     default_host = os.getenv("C0MR4DES_SSH") or cfg.get("ssh")
     ap.add_argument("--ssh", nargs="?", const=default_host, default=None,
@@ -693,7 +705,7 @@ def main(argv=None) -> int:
 
     d = Desk(args.url, args.ssh, args.key)
     run = {"preopen": preopen, "review": review, "incident": incident,
-           "decision-refit": decision_refit}[args.command]
+           "decision-refit": decision_refit, "daily": lambda dd: daily(dd, args.send)}[args.command]
     via = f"ssh {args.ssh}" if args.ssh else args.url
     try:
         checks, facts = run(d)
@@ -720,6 +732,15 @@ def main(argv=None) -> int:
         print(f"via {via}")
         print("-" * 78)
     emit(checks, facts, args.json)
+
+    if args.command == "daily":
+        if not args.json:
+            print(facts.get("text") or "")
+            if args.send:
+                print("-" * 78)
+                print("Sent." if facts.get("sent")
+                      else "NOT sent - no TELEGRAM_BOT_TOKEN/CHAT_ID or NTFY_TOPIC, or the send failed.")
+        return 0
 
     if args.command == "incident" and not args.json:
         print("-" * 78)
@@ -750,7 +771,6 @@ def main(argv=None) -> int:
     elif args.command == "review" and not args.json:
         print("-" * 78)
         print("Review is read-only. Nothing above changed a book, a setting or an order.")
-
     return 0 if not any(c["status"] == "FAIL" for c in checks) else 1
 
 

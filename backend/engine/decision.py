@@ -248,10 +248,18 @@ def walk_forward(df: pd.DataFrame, folds: int = FOLDS) -> dict:
 
 
 # ------------------------------------------------------------------ training
-def refit(keys=("NIFTY", "SENSEX")) -> dict:
-    """Build the dataset, fit, validate, and save. Records a failure as loudly as a success."""
+def refit(keys=("NIFTY", "SENSEX"), force: bool = False) -> dict:
+    """Build the dataset, fit, validate, and save. Records a failure as loudly as a success.
+
+    A refit that would train on a worse dataset than the model already on disk is REFUSED and the
+    existing model is left untouched (`force=True` overrides). The weekly cron runs unattended:
+    without this guard, one Angel outage on a Monday morning would silently replace a 64-session
+    broker-feed model with a 60-session delayed-feed one, and the AUC would move for data reasons
+    while the version number claimed a refit had happened.
+    """
     from . import lab
 
+    prev = load()
     frames = []
     for key in keys:
         for label, fn_name, kw in TRAINED:
@@ -267,22 +275,29 @@ def refit(keys=("NIFTY", "SENSEX")) -> dict:
             d[STRATEGY_FEATURE] = 1.0 if label == "First-30" else 0.0
             frames.append(d)
     if not frames:
-        return {"ok": False, "reason": "no training rows - no intraday history available"}
+        return _kept(prev, "no training rows - no intraday history available")
     source = frames[0].attrs.get("source") or "unknown"
     df = pd.concat(frames, ignore_index=True).sort_values(["day", "time"]).reset_index(drop=True)
+    sessions = int(df["day"].nunique())
     card = {
         "version": f"lr-{date.today().isoformat()}",
         "fitted_at": pd.Timestamp.now(tz=IST).isoformat(),
-        "samples": int(len(df)), "sessions": int(df["day"].nunique()),
+        "samples": int(len(df)), "sessions": sessions,
         "span": f"{df['day'].min()} .. {df['day'].max()}", "source": source,
         "base_rate": round(float(df["win"].mean() * 100), 1),
         "features": list(MODEL_FEATURES), "l2": L2,
     }
     if len(df) < MIN_TRAIN:
+        if prev and prev.get("w"):
+            return _kept(prev, f"only {len(df)} rows < {MIN_TRAIN}; kept the existing model")
         card.update({"ok": False, "status": "shadow", "w": None,
                      "reason": f"{len(df)} rows < {MIN_TRAIN}: not enough to fit anything honest"})
         _save(card)
         return card
+    if not force:
+        why = _downgrade(prev, source, sessions)
+        if why:
+            return _kept(prev, why)
 
     X, y = matrix(df, MODEL_FEATURES)
     mu, sd = X[:, 1:].mean(axis=0), X[:, 1:].std(axis=0)
@@ -332,6 +347,36 @@ def refit(keys=("NIFTY", "SENSEX")) -> dict:
 def _save(card: dict) -> None:
     MODEL_FILE.parent.mkdir(parents=True, exist_ok=True)
     MODEL_FILE.write_text(json.dumps(card, indent=2), encoding="utf-8")
+
+
+# A live broker feed is a better training source than a delayed one. Refitting from a worse feed
+# is not a refit, it is a different dataset wearing the same version number.
+SOURCE_RANK = {"angel_one": 2, "yahoo_delayed": 1, "unknown": 0}
+
+
+def _downgrade(prev: dict | None, source: str, sessions: int) -> str | None:
+    """Why this refit would train on a worse dataset than the model already on disk."""
+    if not prev or not prev.get("w"):
+        return None
+    old_src = prev.get("source") or "unknown"
+    if SOURCE_RANK.get(source, 0) < SOURCE_RANK.get(old_src, 0):
+        return (f"feed downgraded {old_src} -> {source}; the broker returned nothing and the "
+                f"delayed fallback is shorter. Kept the existing model.")
+    old_sessions = prev.get("sessions") or 0
+    if old_sessions and sessions < 0.9 * old_sessions:
+        return (f"training feed shrank {old_sessions} -> {sessions} sessions on the same source. "
+                f"Kept the existing model.")
+    return None
+
+
+def _kept(prev: dict | None, why: str) -> dict:
+    """A refused refit must never destroy a working model. Report, do not save."""
+    log.warning("refit refused: %s", why)
+    card = dict(prev or {})
+    card["ok"] = False
+    card["refit_refused"] = why
+    card["refit_attempted_at"] = pd.Timestamp.now(tz=IST).isoformat()
+    return card
 
 
 def load() -> dict | None:
