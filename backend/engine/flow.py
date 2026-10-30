@@ -14,7 +14,8 @@ The read never blocks a trade. It explains one.
 
 How the chain bias is built (kept deliberately small and transparent):
 
-    volume skew   more calls traded than puts during a rise = buyers leaning long
+    volume skew   more calls traded than puts during a rise = buyers leaning long. Once two
+                  snapshots exist, the volume traded BETWEEN them is used, not the cumulative day.
     OI change     OI only counts when it CONFIRMS the price move:
                     price up   + call OI up   -> longs adding        (bullish)
                     price down + put OI up    -> longs adding        (bearish)
@@ -207,7 +208,8 @@ def market(key: str, chain: list[dict] | None, ladder: dict | None, spot: float,
            now: datetime, expiry: date, persist: bool = True) -> dict:
     """The direction-agnostic flow read. Safe with no chain: says so instead of guessing."""
     base = {"available": False, "bias": 0.0, "verdict": "no data", "confidence": 0.0,
-            "components": {"mtf": 0.0, "chain": 0.0}, "chain": None,
+            "components": {"mtf": round(float((ladder or {}).get("bias") or 0.0), 3), "chain": 0.0},
+            "chain": None,
             "text": "No live option chain, so there is no flow to read.",
             "caveats": [
                 "Index spot volume is zero on both feeds - flow is inferred from the option chain.",
