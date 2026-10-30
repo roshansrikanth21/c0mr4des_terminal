@@ -109,10 +109,13 @@ def text(rep: dict) -> str:
         for c in cases:
             ret = c.get("return_pct")
             ret_txt = f"{ret:+.1f}%" if ret is not None else "n/a"
-            lines.append(f"  {c['id']} {str(c['label']):18s} {c['trades']:>2} tr {_rs(c['pnl']):>11} "
+            lines.append(f"  {c['id']} {str(c['label']):20s} {c['trades']:>2} tr {_rs(c['pnl']):>11} "
                          f"| week {ret_txt}")
         if sp:
-            lines.append(f"  Spreads (v{sp.get('rules_version', '?')})  {sp['trades']:>2} tr {_rs(sp['pnl']):>11} "
+            # A spread is held for days, so its P&L lands on the day it CLOSES - unlike the
+            # main book and the cases, which group by the day the trade was opened.
+            name = f"Spreads (v{sp.get('rules_version', '?')})"
+            lines.append(f"  {name:22s} {sp['trades']:>2} closed {_rs(sp['pnl']):>11} "
                          f"| all-time {_rs(sp['net'])} on {sp['closed']} closed"
                          + (f" | {sp['open']} open" if sp.get("open") else ""))
 
