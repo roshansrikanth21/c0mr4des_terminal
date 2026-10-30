@@ -1130,3 +1130,95 @@ def test_daily_summary_covers_the_other_books():
     assert "Spreads (v2)" in body and "Rs -1,805" in body and "all-time Rs -3,823" in body
     assert all(ord(ch) < 128 for ch in body)
 
+
+
+# ---------------- flow: chain, book, shadow trade read ----------------
+def _flow_chain(ce_oi=1000, pe_oi=1200, ce_vol=5000, pe_vol=4000, ce=None, pe=None):
+    call = {"oi": ce_oi, "volume": ce_vol, **(ce or {})}
+    put = {"oi": pe_oi, "volume": pe_vol, **(pe or {})}
+    return [{"strike": 23000.0, "CE": call, "PE": put}]
+
+
+def test_flow_chain_bias_follows_the_side_being_bought():
+    from backend.engine import flow
+
+    bullish = {"ce_oi": 1000, "pe_oi": 1000, "ce_vol": 8000, "pe_vol": 2000}
+    bearish = {"ce_oi": 1000, "pe_oi": 1000, "ce_vol": 2000, "pe_vol": 8000}
+    up, _ = flow._chain_bias(bullish, {"ce_doi": 0, "pe_doi": 0}, 23000, None)
+    down, _ = flow._chain_bias(bearish, {"ce_doi": 0, "pe_doi": 0}, 23000, None)
+    assert up > 0.15 and down < -0.15
+    assert abs(up) <= flow.MAX_BIAS and abs(down) <= flow.MAX_BIAS
+
+
+def test_flow_oi_only_counts_when_it_confirms_price():
+    from backend.engine import flow
+
+    flat = {"ce_oi": 1000, "pe_oi": 1000, "ce_vol": 5000, "pe_vol": 5000}
+    up_prev = {"spot": 22900.0}
+    down_prev = {"spot": 23000.0}
+    with_calls, _ = flow._chain_bias(flat, {"ce_doi": 500, "pe_doi": 0}, 23000, up_prev)
+    against, _ = flow._chain_bias(flat, {"ce_doi": 0, "pe_doi": 500}, 23000, up_prev)
+    down, _ = flow._chain_bias(flat, {"ce_doi": 0, "pe_doi": 500}, 22900, down_prev)
+    assert with_calls > 0.30, "price up + call OI up is longs adding"
+    assert against == 0.0, "price up + put OI up is ambiguous, not bearish"
+    assert down < -0.30, "price down + put OI up is longs adding puts"
+
+
+def test_flow_book_bias_ce_positive_pe_negative_and_missing_is_none():
+    from backend.engine import flow
+
+    bid_heavy = {"bid_qty": 900, "ask_qty": 100, "bid": 100.0, "ask": 100.5}
+    assert flow.book_bias(bid_heavy, "CE")["bias"] > 0
+    assert flow.book_bias(bid_heavy, "PE")["bias"] < 0
+    assert flow.book_bias({"bid_qty": 0, "ask_qty": 0}, "CE") is None
+    assert flow.book_bias({}, "CE") is None, "no depth means unknown, never a fake neutral"
+
+
+def test_flow_no_chain_is_unavailable_not_a_guess():
+    from backend.engine import flow
+
+    now = datetime(2026, 10, 30, 10, 0, tzinfo=IST)
+    read = flow.market("NIFTY", None, {"bias": 0.4}, 23000.0, now, date(2026, 11, 3), persist=False)
+    assert read["available"] is False and read["verdict"] == "no data"
+    assert read["bias"] == 0.0
+    assert flow.trade(read, 1, {"strike": 23000.0, "option_type": "CE"}, None) is None
+
+
+def test_flow_snapshots_throttle_and_delta_common_strikes(tmp_path, monkeypatch):
+    from backend.engine import flow
+
+    monkeypatch.setattr(flow, "FLOW_FILE", tmp_path / "flow.json")
+    monkeypatch.setattr(flow, "_STATE", None)
+    t0 = datetime(2026, 10, 30, 10, 0, tzinfo=IST)
+    chain = _flow_chain()
+    first = flow.snapshot("NIFTY", date(2026, 11, 3), chain, 23000.0, t0)
+    assert first is None, "first snapshot has nothing to compare against"
+    flow.snapshot("NIFTY", date(2026, 11, 3), chain, 23000.0, t0.replace(minute=1))
+    rows = flow._load()["NIFTY|2026-11-03"]
+    assert len(rows) == 1, "a snapshot 60s later is throttled, not appended"
+
+    grown = _flow_chain(ce_oi=1300, pe_oi=1100, ce_vol=6500, pe_vol=4500)
+    prev = flow.snapshot("NIFTY", date(2026, 11, 3), grown, 23010.0, t0.replace(minute=5))
+    assert prev is not None and prev["spot"] == 23000.0
+    d = flow._deltas(flow._leg_map(grown), prev)
+    assert d["n"] == 2 and d["ce_doi"] == 300 and d["pe_doi"] == -100
+    assert d["ce_dvol"] == 1500 and d["pe_dvol"] == 500
+    assert len(flow._load()["NIFTY|2026-11-03"]) == 2
+
+
+def test_flow_trade_reads_the_side_being_bought():
+    from backend.engine import flow
+
+    read = {"available": True, "components": {"mtf": 0.5, "chain": 0.4}}
+    chain = _flow_chain(ce={"bid_qty": 900, "ask_qty": 100, "bid": 100.0, "ask": 100.5},
+                        pe={"bid_qty": 900, "ask_qty": 100, "bid": 90.0, "ask": 90.5})
+    call = flow.trade(read, 1, {"strike": 23000.0, "option_type": "CE"}, chain)
+    put = flow.trade(read, -1, {"strike": 23000.0, "option_type": "PE"}, chain)
+    assert call["verdict"] == "supports" and call["support"] > 0.30
+    assert put["verdict"] == "against" and put["support"] < -0.30
+    assert call["book"]["bias"] > 0 and put["book"]["bias"] < 0, "the book is read for the leg you buy"
+
+    flat = {"available": True, "components": {"mtf": 0.0, "chain": 0.0}}
+    mixed = flow.trade(flat, 1, {"strike": 23000.0, "option_type": "CE"},
+                       _flow_chain(ce={"bid_qty": 500, "ask_qty": 500}))
+    assert mixed["verdict"] == "mixed"

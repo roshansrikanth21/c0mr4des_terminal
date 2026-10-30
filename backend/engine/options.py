@@ -156,7 +156,8 @@ def _scrip_master() -> list:
 
 
 def live_chain(key: str, expiry: date, spot: float, width: int = 6) -> list[dict] | None:
-    """Real LTP/OI for strikes around ATM, or None when Angel One is not configured."""
+    """Real LTP/OI/volume and the five-level book for strikes around ATM, or None when Angel
+    One is not configured. The book fields are what `flow.py` reads to see queue pressure."""
     if not angel.configured():
         return None
     inst = INSTRUMENTS[key]
@@ -175,9 +176,30 @@ def live_chain(key: str, expiry: date, spot: float, width: int = 6) -> list[dict
         q = quotes.get(str(r["token"]), {})
         chain.setdefault(k, {"strike": k})[kind] = {
             "symbol": r["symbol"], "token": r["token"], "ltp": q.get("ltp"), "oi": q.get("opnInterest"),
-            "volume": q.get("tradeVolume"),
+            "volume": q.get("tradeVolume"), "avg_price": q.get("avgPrice"),
+            "last_qty": q.get("lastTradeQty"), **_depth(q),
         }
     return [chain[k] for k in sorted(chain)]
+
+
+def _depth(q: dict) -> dict:
+    """Five-level bid/ask quantity and the best prices, from an Angel FULL quote.
+
+    Defensive on purpose: a missing depth block means "unknown", not zero - a zero would read
+    as a perfectly balanced book and feed a fake neutral signal into the flow score.
+    """
+    depth = q.get("depth") or {}
+    buys = [x for x in (depth.get("buy") or []) if isinstance(x, dict)]
+    sells = [x for x in (depth.get("sell") or []) if isinstance(x, dict)]
+    bid_qty = sum(float(x.get("quantity") or 0) for x in buys)
+    ask_qty = sum(float(x.get("quantity") or 0) for x in sells)
+    if bid_qty == 0 and ask_qty == 0:
+        return {}
+    best_bid = buys[0].get("price") if buys else None
+    best_ask = sells[0].get("price") if sells else None
+    return {"bid_qty": int(bid_qty), "ask_qty": int(ask_qty),
+            "bid": float(best_bid) if best_bid else None,
+            "ask": float(best_ask) if best_ask else None}
 
 
 def pcr(chain: list[dict] | None) -> float | None:

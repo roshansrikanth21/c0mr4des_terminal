@@ -1,8 +1,8 @@
 import {
-  ArrowDownRight, ArrowUpRight, Clock, Layers, ShieldAlert, Target, Wallet,
+  ArrowDownRight, ArrowUpRight, Clock, Layers, ShieldAlert, Target, Wallet, Waves,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { inr, num, type Analysis, type OptionSide } from '@/lib/api';
+import { inr, num, type Analysis, type FlowTrade, type OptionSide } from '@/lib/api';
 
 /**
  * The decision strip: one glance answer to "what do I do right now".
@@ -103,6 +103,8 @@ export function DecisionPanel({ a }: { a: Analysis | null }) {
           </div>
         </div>
       </div>
+
+      <FlowStrip a={a} />
 
       <div className="grid gap-0 lg:grid-cols-[1.1fr_1fr_1.1fr] divide-y lg:divide-y-0 lg:divide-x divide-border">
         {/* ---- the ladder ---- */}
@@ -210,6 +212,68 @@ export function DecisionPanel({ a }: { a: Analysis | null }) {
           </div>
         </div>
       </details>
+    </div>
+  );
+}
+
+function FlowStrip({ a }: { a: Analysis }) {
+  const f = a.flow;
+  if (!f) return null;
+  const c = f.chain;
+  const tone = f.verdict === 'bullish' ? 'green' : f.verdict === 'bearish' ? 'red' : 'muted';
+  const reads: ({ name: string } & FlowTrade)[] = [];
+  if (a.orb?.flow) reads.push({ name: a.orb.name, ...a.orb.flow });
+  if (a.first30?.flow) reads.push({ name: a.first30.name, ...a.first30.flow });
+  const tr = reads.sort((x, y) => Math.abs(y.support) - Math.abs(x.support))[0] ?? null;
+  const trTone = tr?.verdict === 'supports' ? 'green' : tr?.verdict === 'against' ? 'red' : 'amber';
+  const volTotal = c ? c.ce_vol + c.pe_vol : 0;
+  const callShare = c && volTotal > 0 ? (c.ce_vol / volTotal) * 100 : null;
+  const signed = (v: number, d = 2) => `${v >= 0 ? '+' : ''}${v.toFixed(d)}`;
+  const compact = (v: number) =>
+    `${v >= 0 ? '+' : ''}${new Intl.NumberFormat('en-IN', { notation: 'compact', maximumFractionDigits: 1 }).format(v)}`;
+  const comp = (v: number) => (
+    <b className={cn('font-mono', v > 0.05 ? 'text-green-500' : v < -0.05 ? 'text-red-500' : 'text-muted-foreground')}>
+      {signed(v)}
+    </b>
+  );
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2 border-b border-border bg-black/40">
+      <div className="flex items-center gap-2">
+        <Waves className="w-3.5 h-3.5 text-primary" />
+        <span className="text-[9px] font-mono font-black tracking-[0.25em] uppercase">Flow</span>
+        <Chip tone={tone}>{f.verdict}</Chip>
+        <span className="text-[10px] font-mono text-muted-foreground">
+          net {signed(f.bias)} · conf {Math.round(f.confidence * 100)}%
+        </span>
+      </div>
+      <div className="flex items-center gap-3 text-[10px] font-mono text-muted-foreground">
+        <span>MTF {comp(f.components.mtf)}</span>
+        <span>Chain {comp(f.components.chain)}</span>
+        {tr?.book && (
+          <span>
+            Book {comp(tr.book.imbalance)} · spread {tr.book.spread_pct !== null ? `${tr.book.spread_pct}%` : '--'}
+          </span>
+        )}
+      </div>
+      {c && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] font-mono text-muted-foreground">
+          <span>CE vol {callShare !== null ? `${callShare.toFixed(0)}%` : '--'}</span>
+          <span>PCR {c.pcr_oi ?? '--'} · vol {c.pcr_vol ?? '--'}</span>
+          <span>
+            {c.n
+              ? `ΔOI CE ${compact(c.ce_doi)} / PE ${compact(c.pe_doi)} · spot ${signed(c.dprice, 0)}`
+              : 'ΔOI: no earlier snapshot yet'}
+          </span>
+        </div>
+      )}
+      {tr && <Chip tone={trTone}>{tr.name} {tr.verdict} {signed(tr.support)}</Chip>}
+      <span
+        className="ml-auto text-[8px] font-mono uppercase tracking-widest text-muted-foreground/60 cursor-help"
+        title={f.caveats.join(' ')}
+      >
+        shadow · never blocks · not backtestable
+      </span>
     </div>
   );
 }

@@ -7,7 +7,7 @@ import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import macro, mtf, options, orb, replay, structure, timeline
+from . import flow, macro, mtf, options, orb, replay, structure, timeline
 from .config import IST, INSTRUMENTS, RISK_DEFAULTS
 from .data import angel, closed_bars, get_candles
 from .news import radar
@@ -153,6 +153,13 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     f30["option"] = options.plan_trade(key, f30["direction"], result["price"], expiry, vix["value"] if vix else None,
                                        f30.get("risk_points") or 0, f30.get("target_points") or 0,
                                        settings, chain, now) if f30["direction"] else None
+    # Flow is a shadow read: recorded on every card and every paper entry, but it never changes a
+    # verdict. There is no historical chain/OI/order-book feed, so it can only be judged forward.
+    flow_read = flow.market(key, chain, ladder, result["price"], now, expiry, persist=not in_replay)
+    for sig, sig_chain in ((orb_sig, chain), (f30, chain),
+                           (exp_sig, (exp_sig or {}).get("_chain") or chain)):
+        if sig and sig.get("direction"):
+            sig["flow"] = flow.trade(flow_read, sig["direction"], sig.get("option"), sig_chain)
     minutes_left = max(sess["minutes_to_close"], 30)
     em = options.expected_move(result["price"], vix["value"] if vix else None, minutes_left)
 
@@ -179,7 +186,7 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         "news": news, "global": cues, "candles": chart_payload(raw5), "broker_connected": angel.api is not None,
         "spot_live": (None if in_replay else _spot_ltp(inst)) or float(raw5["close"].iloc[-1]),
         "replay": replay.status(), "orb": orb_sig, "first30": f30, "expiry_play": exp_sig,
-        "mtf": ladder, "yesterday": yesterday, "sides": sides,
+        "mtf": ladder, "yesterday": yesterday, "sides": sides, "flow": flow_read,
         "chains": {expiry.isoformat(): chain, **({exp_sig["option"]["expiry"]: exp_sig.pop("_chain")}
                                                  if exp_sig and exp_sig.get("_chain") else {})},
         "shock": None if in_replay else shock_check(raw5, daily, vix, news),

@@ -19,6 +19,7 @@ import threading
 from datetime import date, datetime, time
 from pathlib import Path
 
+from . import flow
 from .config import ENTRY_RULES, INSTRUMENTS, IST
 from .data import angel
 from .lessons import lessons
@@ -247,6 +248,13 @@ class PaperTrader:
                         pos["decision"] = decision.decide(feats, strategy)
                     except Exception:  # noqa: BLE001
                         pos["decision"] = None
+                    # Flow shadow: what the timeframes, chain and order book said at the fill. It is
+                    # recorded so the read can be scored forward; it never blocks or allows a trade.
+                    try:
+                        chain_for = (a.get("chains") or {}).get(o["expiry"]) or a.get("chain")
+                        pos["flow"] = flow.trade(a.get("flow"), p["direction"], o, chain_for)
+                    except Exception:  # noqa: BLE001
+                        pos["flow"] = None
                     self.state["open"][slot] = pos
                     self._save()
                     events.append({"type": "paper_entry", "trade": pos})

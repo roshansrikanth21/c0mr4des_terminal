@@ -50,7 +50,7 @@ export interface Analysis {
   global: { bias: number; text: string; cues: Cue[] };
   candles: Candle[]; broker_connected: boolean; spot_live?: number;
   orb?: OrbSignal; first30?: OrbSignal;
-  mtf?: Mtf; yesterday?: Yesterday | null; sides?: Sides;
+  mtf?: Mtf; yesterday?: Yesterday | null; sides?: Sides; flow?: FlowRead;
   shock?: { active: boolean; reasons: string[]; playbook: string[] } | null;
   paper?: { events: { type: string; reason?: string; trade?: PaperTrade }[]; open: PaperTrade[] };
 }
@@ -65,6 +65,30 @@ export interface Mtf {
   phase: 'aligned' | 'pullback' | 'conflict' | 'unclear';
   story: string; warning: string | null; counted: number; weights: Record<string, number>;
   primary: { direction: number; text: string; hold_above?: number; flip_below?: number } | null;
+  twap?: number | null; above_twap?: boolean | null;
+}
+
+export interface FlowBook {
+  bid_qty: number; ask_qty: number; imbalance: number;
+  bid: number | null; ask: number | null; spread_pct: number | null; bias: number;
+}
+
+export interface FlowChain {
+  ce_oi: number; pe_oi: number; ce_vol: number; pe_vol: number;
+  pcr_oi: number | null; pcr_vol: number | null;
+  vol_skew: number; vol_bias: number; doi_bias: number; dprice: number;
+  ce_doi: number; pe_doi: number; ce_dvol: number; pe_dvol: number; n: number; spot: number;
+}
+
+export interface FlowRead {
+  available: boolean; bias: number; verdict: 'bullish' | 'bearish' | 'flat' | 'no data';
+  confidence: number; components: { mtf: number; chain: number };
+  chain: FlowChain | null; text: string; caveats: string[];
+}
+
+export interface FlowTrade {
+  support: number; verdict: 'supports' | 'against' | 'mixed'; book: FlowBook | null;
+  text: string; direction: number; strike: number; option_type: 'CE' | 'PE';
 }
 
 export interface Yesterday {
@@ -89,6 +113,7 @@ export interface OrbSignal {
   name: string; verdict: Verdict; direction: number; status: string; text: string;
   range_high?: number; range_low?: number; range_points?: number; prev_close?: number | null;
   trigger_time?: string; entry?: number; stop?: number; target?: number; option?: OptionPlan | null;
+  flow?: FlowTrade | null;
 }
 
 export interface PaperTrade {
@@ -97,6 +122,7 @@ export interface PaperTrade {
   quantity: number; lots: number; entry_premium: number; premium_source: string; premium_stop: number; premium_target: number;
   entry_spot: number; index_stop: number; index_target: number | null; opened_at: string; score: number; mark?: number;
   unrealized?: number; closed_at?: string; exit_spot?: number; exit_premium?: number; reason?: string; charges?: number; pnl?: number;
+  flow?: FlowTrade | null;
 }
 
 export interface PaperLessons {

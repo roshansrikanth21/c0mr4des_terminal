@@ -219,6 +219,25 @@ def _seed() -> list[dict]:
                      "the stop once v2 has ~15 live trades. Caveats: NIFTY only, Yahoo 5m history, "
                      "Black-Scholes premiums rather than a live chain, 18 trades, and h2 negative at 2x.",
          "status": "testing", "owner": "owner request"},
+        {"id": 23, "date": "2026-10-30", "area": "decision", "name": "A trade read must show who is paying, not only what the candles say",
+         "change": "New engine/flow.py: every analysis carries a shadow flow read built from (1) the "
+                   "MTF ladder, (2) option-chain volume skew and open-interest change, and (3) the "
+                   "five-level order book of the exact leg being bought. Weights 0.50 MTF / 0.35 chain "
+                   "/ 0.15 book; a missing component is dropped and the rest renormalised. Each signal "
+                   "gets a trade-specific support score and every paper entry stores it. Index spot "
+                   "volume is zero on both feeds, so the session TWAP replaces VWAP and chain volume "
+                   "replaces index volume; once two snapshots exist the volume skew uses the volume "
+                   "traded between them, not the cumulative day.",
+         "evidence": "NOT BACKTESTABLE: there is no historical option-chain, OI or order-book feed in "
+                     "this project, so the read cannot be replayed. It is recorded on every paper entry "
+                     "and judged forward, exactly like the decision model. The limits are deliberate: "
+                     "order-book pressure is resting liquidity, not executed buying, so it gets the "
+                     "smallest weight; OI only counts when it confirms the price move (price up + call "
+                     "OI up, price down + put OI up) because the opposite combinations mix writing and "
+                     "hedging; the chain component is capped at 0.8 so it can never claim certainty. "
+                     "First judgement after ~20 entries: compare support >= 0.30 trades against the rest "
+                     "on win rate and P&L. It never blocks a trade.",
+         "status": "testing", "owner": "owner request"},
     ]
 
 

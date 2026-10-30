@@ -126,10 +126,16 @@ def ladder(df5: pd.DataFrame, daily: pd.DataFrame, df1m: pd.DataFrame | None = N
         rows.append(_read(_series_for(tf, ctx), tf, label, weight, min_bars))
 
     counted = [r for r in rows if r["available"] and r["weight"] > 0]
+    twap = None
+    if df5 is not None and len(df5):
+        # A true VWAP needs volume, and index spot volume is always zero on both feeds. The
+        # session's average typical price is the honest substitute: same question, no fake volume.
+        typical = (df5["high"] + df5["low"] + df5["close"]) / 3
+        twap = round(float(typical.mean()), 2)
     if not counted:
         return {"rows": rows, "bias": 0.0, "agreement": 0.0, "phase": "unclear",
                 "story": "Not enough price history on any timeframe to form a read yet.",
-                "primary": None, "warning": None, "counted": 0}
+                "primary": None, "warning": None, "counted": 0, "twap": twap, "above_twap": None}
 
     wsum = sum(r["weight"] for r in counted)
     bias = sum(r["score"] * r["weight"] for r in counted) / wsum
@@ -197,4 +203,6 @@ def ladder(df5: pd.DataFrame, daily: pd.DataFrame, df1m: pd.DataFrame | None = N
         "warning": warning,
         "counted": len(counted),
         "weights": {r["tf"]: r["weight"] for r in rows},
+        "twap": twap,
+        "above_twap": None if (twap is None or price is None) else bool(price > twap),
     }
