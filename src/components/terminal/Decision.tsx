@@ -113,7 +113,7 @@ export function DecisionPanel({ a }: { a: Analysis | null }) {
             Timeframe ladder · slow to fast
           </div>
           {m.rows.map((r) => (
-            <div key={r.tf} className="flex items-center gap-2">
+            <div key={r.tf} className="flex items-center gap-2" title={r.text}>
               <span className="w-[68px] shrink-0 text-[10px] font-mono uppercase text-muted-foreground">{r.label}</span>
               <Bar value={r.score} tone={r.direction > 0 ? 'green' : r.direction < 0 ? 'red' : 'muted'} />
               <span className={cn('w-9 shrink-0 text-right text-[10px] font-mono font-bold',
@@ -125,7 +125,10 @@ export function DecisionPanel({ a }: { a: Analysis | null }) {
                   : <span className="w-3 shrink-0" />}
             </div>
           ))}
-          <p className="text-[11px] leading-relaxed text-muted-foreground pt-1">{m.story}</p>
+          <p className="text-[9px] font-mono uppercase tracking-wider text-muted-foreground/60 pt-1">
+            Each row: EMA 20/50 · Supertrend · ADX · RSI · regression slope
+          </p>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">{m.story}</p>
         </div>
 
         {/* ---- yesterday ---- */}
