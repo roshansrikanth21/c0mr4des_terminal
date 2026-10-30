@@ -1106,3 +1106,27 @@ def test_registry_moves_a_status_but_never_rewrites_evidence(tmp_path, monkeypat
     rows = experiments.all()
     assert next(r for r in rows if r["id"] == 15)["evidence"] == old_evidence, "stable across reads"
 
+
+
+def test_daily_summary_covers_the_other_books():
+    from backend.engine import daily
+
+    rep = daily.report(
+        {"closed": [], "today": {"trades": 0, "pnl": 0, "wins": 0},
+         "all_time": {"trades": 0, "pnl": 0, "win_rate": None}},
+        day="2026-10-30",
+        cases={"cases": [
+            {"id": "A", "label": "Rs 10,000", "net": 7694.0, "return_pct": 76.9,
+             "today": {"trades": 0, "pnl": 0.0}, "open": []},
+            {"id": "B", "label": "Rs 30,000", "net": 13112.0, "return_pct": 43.7,
+             "today": {"trades": 1, "pnl": -1135.62}, "open": []},
+        ]},
+        spreads={"closed": [{"closed_at": "2026-10-30T12:57:00+05:30", "pnl": -1805.39}],
+                 "net": -3823.0, "trades": 3, "open": None, "rules_version": 2},
+    )
+    body = daily.text(rep)
+    assert "Other books" in body
+    assert "A Rs 10,000" in body and "week +76.9%" in body
+    assert "Spreads (v2)" in body and "Rs -1,805" in body and "all-time Rs -3,823" in body
+    assert all(ord(ch) < 128 for ch in body)
+

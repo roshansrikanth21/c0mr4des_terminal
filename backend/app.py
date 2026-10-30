@@ -365,10 +365,10 @@ def decision_refit(force: bool = False):
 
 @app.get("/api/daily")
 def daily_report(day: str | None = None):
-    """Today's trades and P&L, the last two weeks, and the all-time total. Read-only."""
+    """Today's trades and P&L across every book, the last two weeks, and the all-time total."""
     from .engine import daily
 
-    rep = daily.report(paper.summary(), day=day)
+    rep = daily.report(paper.summary(), day=day, cases=capital_test.report(), spreads=spreads.report())
     return {"report": rep, "text": daily.text(rep)}
 
 
@@ -377,7 +377,7 @@ def daily_send(day: str | None = None):
     """Push the daily summary to the phone. Used by the evening cron; safe to call any time."""
     from .engine import daily, notify
 
-    rep = daily.report(paper.summary(), day=day)
+    rep = daily.report(paper.summary(), day=day, cases=capital_test.report(), spreads=spreads.report())
     body = daily.text(rep)
     sent = notify.send_now(body)
     log.info("daily summary %s: sent=%s", rep["date"], sent)
