@@ -51,6 +51,7 @@ export interface Analysis {
   candles: Candle[]; broker_connected: boolean; spot_live?: number;
   orb?: OrbSignal; first30?: OrbSignal;
   mtf?: Mtf; yesterday?: Yesterday | null; sides?: Sides; flow?: FlowRead;
+  flow_trade?: FlowTrade | null;
   shock?: { active: boolean; reasons: string[]; playbook: string[] } | null;
   paper?: { events: { type: string; reason?: string; trade?: PaperTrade }[]; open: PaperTrade[] };
 }

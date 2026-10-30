@@ -187,6 +187,7 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         "spot_live": (None if in_replay else _spot_ltp(inst)) or float(raw5["close"].iloc[-1]),
         "replay": replay.status(), "orb": orb_sig, "first30": f30, "expiry_play": exp_sig,
         "mtf": ladder, "yesterday": yesterday, "sides": sides, "flow": flow_read,
+        "flow_trade": flow.trade(flow_read, plan.get("direction") or 0, option, chain),
         "chains": {expiry.isoformat(): chain, **({exp_sig["option"]["expiry"]: exp_sig.pop("_chain")}
                                                  if exp_sig and exp_sig.get("_chain") else {})},
         "shock": None if in_replay else shock_check(raw5, daily, vix, news),

@@ -227,6 +227,7 @@ function FlowStrip({ a }: { a: Analysis }) {
   const reads: ({ name: string } & FlowTrade)[] = [];
   if (a.orb?.flow) reads.push({ name: a.orb.name, ...a.orb.flow });
   if (a.first30?.flow) reads.push({ name: a.first30.name, ...a.first30.flow });
+  if (!reads.length && a.flow_trade) reads.push({ name: 'Engine', ...a.flow_trade });
   const tr = reads.sort((x, y) => Math.abs(y.support) - Math.abs(x.support))[0] ?? null;
   const trTone = tr?.verdict === 'supports' ? 'green' : tr?.verdict === 'against' ? 'red' : 'amber';
   const volTotal = c ? c.ce_vol + c.pe_vol : 0;
