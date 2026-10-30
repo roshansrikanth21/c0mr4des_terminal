@@ -1,5 +1,5 @@
 ﻿"""Engine tests: deterministic, offline (no network)."""
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -1204,6 +1204,9 @@ def test_flow_snapshots_throttle_and_delta_common_strikes(tmp_path, monkeypatch)
     assert d["n"] == 2 and d["ce_doi"] == 300 and d["pe_doi"] == -100
     assert d["ce_dvol"] == 1500 and d["pe_dvol"] == 500
     assert len(flow._load()["NIFTY|2026-11-03"]) == 2
+
+    stale = flow.snapshot("NIFTY", date(2026, 11, 3), grown, 23100.0, t0 + timedelta(days=1))
+    assert stale is None, "an overnight snapshot is not a flow window"
 
 
 def test_flow_trade_reads_the_side_being_bought():

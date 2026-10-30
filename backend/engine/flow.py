@@ -37,6 +37,7 @@ log = logging.getLogger("engine.flow")
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 FLOW_FILE = DATA_DIR / "flow_snapshots.json"
 SNAP_GAP = 240      # seconds between snapshots: dense enough for a 5m delta, cheap enough to write
+MAX_AGE = 1800      # a delta older than 30 minutes is a different market, not a flow window
 KEEP = 120          # ~8 hours of session at that spacing
 MAX_BIAS = 0.8      # the chain alone may never claim certainty
 
@@ -94,8 +95,8 @@ def snapshot(key: str, expiry: date, chain: list[dict] | None, spot: float,
              now: datetime, persist: bool = True) -> dict | None:
     """Store this chain's totals (throttled) and return the previous snapshot, if any.
 
-    The previous snapshot is the newest one at least SNAP_GAP seconds old, so the delta covers
-    a real interval rather than two ticks 15 seconds apart.
+    The previous snapshot is the newest one between SNAP_GAP and MAX_AGE seconds old, so the delta
+    covers a real interval rather than two ticks, and never compares across an overnight gap.
     """
     legs = _leg_map(chain)
     if not legs:
@@ -105,7 +106,8 @@ def snapshot(key: str, expiry: date, chain: list[dict] | None, spot: float,
     with _LOCK:
         state = _load()
         rows = state.setdefault(bucket, [])
-        prev = next((r for r in reversed(rows) if ts - float(r.get("t") or 0) >= SNAP_GAP), None)
+        prev = next((r for r in reversed(rows)
+                     if SNAP_GAP <= ts - float(r.get("t") or 0) <= MAX_AGE), None)
         newest = rows[-1] if rows else None
         if persist and (newest is None or ts - float(newest.get("t") or 0) >= SNAP_GAP):
             rows.append({"t": round(ts, 1), "spot": round(float(spot), 2), "legs": legs})

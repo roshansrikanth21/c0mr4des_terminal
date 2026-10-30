@@ -255,7 +255,7 @@ function FlowStrip({ a }: { a: Analysis }) {
         <span>Chain {comp(f.components.chain)}</span>
         {tr?.book && (
           <span>
-            Book {comp(tr.book.imbalance)} · spread {tr.book.spread_pct !== null ? `${tr.book.spread_pct}%` : '--'}
+            Book {comp(tr.book.bias)} · spread {tr.book.spread_pct !== null ? `${tr.book.spread_pct}%` : '--'}
           </span>
         )}
       </div>
