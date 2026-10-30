@@ -288,7 +288,8 @@ def preopen(d: Desk) -> tuple[list[dict], dict]:
     facts["spreads"] = sp
     pos = sp.get("open")
     detail = (f"stake {money(sp.get('stake'))} | equity {money(sp.get('equity'))} | "
-              f"{sp.get('trades', 0)} closed | net {money(sp.get('net'))}")
+              f"{sp.get('trades', 0)} closed | net {money(sp.get('net'))} | "
+              f"rules v{sp.get('rules_version', '?')}")
     if pos:
         detail += (f" | open {pos.get('symbol_hint')} "
                    f"credit {money(pos.get('credit_value'))} mark {pos.get('mark')}")
@@ -435,11 +436,16 @@ def review(d: Desk) -> tuple[list[dict], dict]:
     sp = d.get("/api/spreads")
     facts["spreads"] = sp
     pos = sp.get("open")
+    versions = sp.get("by_version") or {}
+    vtxt = " | ".join(f"v{v} {b.get('trades', 0)}tr {money(b.get('net', 0))}"
+                      for v, b in sorted(versions.items()))
     checks.append({
         "name": "Spreads",
         "status": "OK",
         "detail": (f"stake {money(sp.get('stake'))} | equity {money(sp.get('equity'))} | "
-                   f"net {money(sp.get('net'))} | {sp.get('trades', 0)} closed"
+                   f"net {money(sp.get('net'))} | {sp.get('trades', 0)} closed | "
+                   f"rules v{sp.get('rules_version', '?')}"
+                   + (f" ({vtxt})" if len(versions) > 1 else "")
                    + (f" | win rate {sp.get('win_rate')}%" if sp.get("win_rate") is not None else "")),
     })
     for t in [x for x in (sp.get("closed") or []) if str(x.get("closed_at", ""))[:10] == today_str]:

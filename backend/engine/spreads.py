@@ -21,7 +21,14 @@ Rules (kept deliberately simple so one week can test them):
   * short leg near 0.20 delta, long leg near 0.08 delta, width clamped to 2-10 steps
   * one spread per day, one open at a time
   * close at 50% of the credit, or at 2x the credit if it goes against us
-  * also close if the index trades through the short strike, or at the 14:30 time stop
+  * hold to the EXPIRY DAY (15:15), not to the same afternoon
+
+Why the last rule changed (28-30 Oct): the book opened three spreads, sold at ~6 DTE, and closed
+each one at the 14:30 time stop after about five hours. All three lost. A replay of the same 35
+signals on the same history showed the short strike was NEVER breached, and that the same-day
+exit lost -Rs 8,133 at 31.4% wins while holding to expiry with the same 2x stop made +Rs 2,290 at
+60.0% wins. A credit spread sells theta, and theta needs days, not hours - closing it the same
+afternoon pays the full directional risk and collects almost none of the decay it sold.
 """
 from __future__ import annotations
 
@@ -49,8 +56,9 @@ SPREAD = {
     "max_per_day": 1,
     "min_credit_pct": 8.0,      # a credit thinner than this is not worth four orders of charges
 }
-TIME_STOP = time(*ENTRY_RULES["time_stop"])
 NO_ENTRY_AFTER = time(*ENTRY_RULES["no_entry_after"])
+EXPIRY_CLOSE = time(15, 15)   # on expiry day only: settle before the 15:30 close
+RULES_VERSION = 2             # 1 = same-day time stop (the first three trades), 2 = hold to expiry
 
 
 # ---------------------------------------------------------------- pricing
@@ -222,7 +230,7 @@ class SpreadBook:
                 return {"events": events, "open": None}
 
             p.update({"opened_at": now.isoformat(), "entry_spot": float(spot), "strategy": "First-Hour",
-                      "slot": f"{key}|spread", "mark": p["credit"],
+                      "slot": f"{key}|spread", "mark": p["credit"], "rules_version": RULES_VERSION,
                       "unrealized": 0.0, "iv": p["iv"]})
             self.state["open"] = p
             self._save()
@@ -231,39 +239,40 @@ class SpreadBook:
 
     def _manage(self, pos: dict, now: datetime, spot, vix, a: dict) -> list[dict]:
         exp = date.fromisoformat(pos["expiry"])
-        chain = (a.get("chains") or {}).get(exp)
-        if spot is None:
-            return []
-        debit, src = mark(pos, float(spot), now, vix, chain)
         lot = pos["lot_size"]
-        pos["mark"] = debit
-        pos["unrealized"] = round((pos["credit"] - debit) * lot - pos["charges"], 2)
         d = pos["direction"]
-        breached = float(spot) <= pos["short_strike"] if d > 0 else float(spot) >= pos["short_strike"]
-        stale = datetime.fromisoformat(pos["opened_at"]).date() < now.date()
-        session_over = not (a.get("session") or {}).get("is_open", False)
-        hit_target = debit <= pos["target_debit"]
-        hit_stop = debit >= pos["stop_debit"]
         reason = None
-        if stale:
-            reason = "stale (closed on the next session)"
-        elif hit_target:
-            reason = "target (50% of credit)"
-        elif hit_stop:
-            reason = "stop (2x credit)"
-        elif breached:
-            reason = "short strike breached"
-        elif now.time() >= TIME_STOP or session_over:
-            reason = f"{TIME_STOP:%H:%M} time stop" if not session_over else "session closed"
+        if now.date() > exp:
+            # The contract is gone. `years_to_expiry` clamps to 60 seconds, so marking it would
+            # price a dead option against today's spot and invent a P&L. Settle at the last mark.
+            debit = float(pos.get("mark") or pos["credit"])
+            src = "last mark (contract expired)"
+            reason = "expired (last mark)"
+        else:
+            if spot is None:
+                return []
+            chain = (a.get("chains") or {}).get(pos["expiry"])
+            debit, src = mark(pos, float(spot), now, vix, chain)
+            pos["mark"] = debit
+            pos["unrealized"] = round((pos["credit"] - debit) * lot - pos["charges"], 2)
+            breached = float(spot) <= pos["short_strike"] if d > 0 else float(spot) >= pos["short_strike"]
+            if debit <= pos["target_debit"]:
+                reason = f"target ({self.rules['target_pct']:g}% of credit)"
+            elif debit >= pos["stop_debit"]:
+                reason = f"stop ({self.rules['stop_mult']:g}x credit)"
+            elif breached:
+                reason = "short strike breached"
+            elif now.date() == exp and now.time() >= EXPIRY_CLOSE:
+                reason = "expiry day close"
         if not reason:
             self._save()
             return []
 
         exit_cost = round_trip_cost(pos["short_premium"], lot) + round_trip_cost(pos["long_premium"], lot)
         pnl = round((pos["credit"] - debit) * lot - pos["charges"] - exit_cost, 2)
-        closed = {**pos, "closed_at": now.isoformat(), "exit_spot": float(spot), "exit_debit": debit,
-                  "exit_source": src, "reason": reason, "exit_charges": round(exit_cost, 2),
-                  "pnl": pnl, "stale": stale}
+        closed = {**pos, "closed_at": now.isoformat(), "exit_spot": float(spot) if spot is not None else None,
+                  "exit_debit": debit, "exit_source": src, "reason": reason,
+                  "exit_charges": round(exit_cost, 2), "pnl": pnl}
         self.state["closed"].append(closed)
         self.state["open"] = None
         self._save()
@@ -275,6 +284,13 @@ class SpreadBook:
             closed = self.state["closed"]
             wins = [t for t in closed if t["pnl"] > 0]
             pos = self.state["open"]
+            by_version: dict[str, dict] = {}
+            for t in closed:
+                v = str(t.get("rules_version") or 1)
+                b = by_version.setdefault(v, {"trades": 0, "wins": 0, "net": 0.0})
+                b["trades"] += 1
+                b["wins"] += 1 if t["pnl"] > 0 else 0
+                b["net"] = round(b["net"] + t.get("pnl", 0), 2)
             return {
                 "stake": self.rules["stake"],
                 "equity": self.equity,
@@ -283,12 +299,16 @@ class SpreadBook:
                 "trades": len(closed),
                 "wins": len(wins),
                 "win_rate": round(len(wins) / len(closed) * 100, 1) if closed else None,
+                "rules_version": RULES_VERSION,
+                "by_version": by_version,
                 "open": pos,
                 "closed": list(reversed(closed[-50:])),
                 "rules": {k: self.rules[k] for k in
                           ("stake", "short_delta", "long_delta", "target_pct", "stop_mult", "max_per_day")},
                 "note": ("One spread a day on the First-Hour signal, defined risk, theta collected "
-                         "instead of paid. A handful of trades is a sample, not a verdict."),
+                         "instead of paid, held to the expiry day. Version 1 closed the same afternoon "
+                         "at 14:30 and lost money; those trades stay in the record, labelled v1. "
+                         "A handful of trades is a sample, not a verdict."),
             }
 
 

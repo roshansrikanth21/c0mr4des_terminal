@@ -197,6 +197,28 @@ def _seed() -> list[dict]:
                      "under MIN_TRAIN overwrote the good model with w=null, which blanks every shadow "
                      "decision until someone notices. Both are now refused instead of applied.",
          "status": "promoted", "owner": "owner request"},
+        {"id": 22, "date": "2026-10-30", "area": "strategy", "name": "A credit spread must be held to expiry, not closed the same afternoon",
+         "change": "spreads.py rules v2: the 14:30 same-day time stop is gone. A spread is held to the "
+                   "expiry day and closed at 15:15, or earlier on the 50%-of-credit target, the 2x-credit "
+                   "stop, or a short-strike breach. Expired contracts settle at their last mark instead of "
+                   "being repriced. Positions and the report carry rules_version, so the three v1 trades "
+                   "stay distinguishable.",
+         "evidence": "Three live v1 trades (28-30 Oct): 1 win, 2 losses, -Rs 3,823. Both losers stopped "
+                     "when the closing debit doubled while the index was still 185-300 points from the "
+                     "short strike. Replaying the SAME First-Hour signals on 57 sessions of NIFTY 5m "
+                     "history, the short strike was NEVER breached in 35 same-day trades - yet every "
+                     "same-day variant lost (1.5x/2x/3x/5x/no stop, 50/75/95% targets: -Rs 5,800 to "
+                     "-Rs 8,133, 31.4% wins, PF 0.36-0.47). The exit, not the strikes, was the problem: "
+                     "the book sold ~6-DTE theta and closed after five hours, paying the full directional "
+                     "risk for almost none of the decay. Hold-to-expiry with the live 50% target and the "
+                     "2x stop: 18 trades, 72.2% wins, +Rs 3,367, PF 1.33 (halves +5,015 / -1,648). Without "
+                     "the target: 15 trades, 60.0%, +Rs 2,290, PF 1.22. 3x stop -Rs 2,579 and no stop "
+                     "-Rs 5,052, so the stop stays. 1.5x with the target is the best variant (19 trades, "
+                     "68.4%, +Rs 4,126, PF 1.46, the only one positive in BOTH halves) but it is not "
+                     "adopted: changing the exit and the stop at once on 18 trades is not a test. Revisit "
+                     "the stop once v2 has ~15 live trades. Caveats: NIFTY only, Yahoo 5m history, "
+                     "Black-Scholes premiums rather than a live chain, 18 trades, and h2 negative at 2x.",
+         "status": "testing", "owner": "owner request"},
     ]
 
 

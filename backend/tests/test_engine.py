@@ -746,6 +746,8 @@ def test_spread_book_takes_half_the_credit(tmp_path):
     assert ev[0]["type"] == "spread_exit"
     assert ev[0]["trade"]["reason"] == "target (50% of credit)" and ev[0]["trade"]["pnl"] > 0
     assert b.report()["trades"] == 1 and b.equity > 50000.0
+    again = b.on_analysis(_spread_analysis("2026-10-28T11:45:00+05:30"))
+    assert again["events"] == [] and again["open"] is None, "one spread a day"
 
 
 def test_spread_book_stops_at_twice_the_credit(tmp_path):
@@ -770,14 +772,45 @@ def test_spread_book_never_borrows_and_never_stacks(tmp_path):
     assert second["events"] == [] and second["open"]["kind"] == "bull_put", "one spread at a time"
 
 
-def test_spread_book_time_stop_and_one_trade_a_day(tmp_path):
+def test_spread_book_holds_to_expiry_instead_of_closing_the_same_afternoon(tmp_path):
     from backend.engine import spreads
     b = spreads.SpreadBook(tmp_path / "s.json")
-    b.on_analysis(_spread_analysis())
-    ev = b.on_analysis(_spread_analysis("2026-10-28T14:35:00+05:30"))["events"]
-    assert ev[0]["trade"]["reason"] == "14:30 time stop"
-    again = b.on_analysis(_spread_analysis("2026-10-28T14:45:00+05:30"))
-    assert again["events"] == [] and again["open"] is None, "one spread a day"
+    b.on_analysis(_spread_analysis())                                  # 28 Oct, 6 DTE
+    same_day = b.on_analysis(_spread_analysis("2026-10-28T14:35:00+05:30"))
+    assert same_day["events"] == [] and same_day["open"] is not None, "no 14:30 time stop any more"
+    next_day = b.on_analysis(_spread_analysis("2026-10-29T11:00:00+05:30"))
+    assert next_day["events"] == [] and next_day["open"] is not None, "held overnight"
+    assert b.report()["trades"] == 0
+
+    ev = b.on_analysis(_spread_analysis("2026-11-03T15:20:00+05:30"))["events"]   # expiry day
+    assert ev[0]["type"] == "spread_exit"
+    assert ev[0]["trade"]["reason"] in ("expiry day close", "target (50% of credit)")
+    assert ev[0]["trade"]["pnl"] > 0, "an OTM spread that expires is kept"
+    assert b.report()["trades"] == 1
+
+
+def test_spread_book_never_reprices_an_expired_contract(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    opened = b.on_analysis(_spread_analysis())["open"]
+    # The service was down over expiry. `years_to_expiry` clamps to 60 seconds, so marking this
+    # against today's spot would invent a P&L for a contract that no longer exists.
+    ev = b.on_analysis(_spread_analysis("2026-11-05T10:00:00+05:30"))["events"]
+    trade = ev[0]["trade"]
+    assert trade["reason"] == "expired (last mark)"
+    assert trade["exit_debit"] == pytest.approx(opened["mark"]), "settled flat at the last mark"
+    assert -500 < trade["pnl"] < 0, "flat minus charges - not a made-up gain or loss"
+
+
+def test_spread_book_labels_the_rules_version(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    pos = b.on_analysis(_spread_analysis())["open"]
+    assert pos["rules_version"] == spreads.RULES_VERSION == 2
+    b.on_analysis(_spread_analysis("2026-11-03T15:20:00+05:30"))
+    rep = b.report()
+    assert rep["rules_version"] == 2
+    assert rep["by_version"]["2"]["trades"] == 1
 
 
 # ---------------- the target must scale with the range, not be a fixed number ----------------
