@@ -1225,3 +1225,25 @@ def test_flow_trade_reads_the_side_being_bought():
     mixed = flow.trade(flat, 1, {"strike": 23000.0, "option_type": "CE"},
                        _flow_chain(ce={"bid_qty": 500, "ask_qty": 500}))
     assert mixed["verdict"] == "mixed"
+
+
+def test_expiry_slot_passes_the_theta_gate_but_not_the_clock(tmp_path):
+    from backend.engine.trader import PaperTrader
+    option = {"lots": 1, "premium": 7.0, "premium_stop": 0.05, "premium_target": 30.0, "expiry": "2026-11-03", "side": "BUY CE",
+              "symbol_hint": "NIFTY 03 NOV 22800 CE", "strike": 22800, "option_type": "CE", "premium_source": "live (Angel One)",
+              "lot_size": 65, "greeks": {"theta_per_day": -20.0, "iv": 0.2}}
+    play = {"verdict": "BUY", "direction": 1, "stop": 22600, "target": 23000, "option": option}
+    settings = {"capital": 10000, "max_trades_per_day": 2, "max_daily_loss_pct": 25, "autopilot_strategies": ["Expiry", "First-Hour"]}
+
+    def analysis(at):
+        return {"instrument": {"key": "NIFTY"}, "generated_at": f"2026-11-03T{at}:00+05:30", "price": 22750, "spot_live": 22750,
+                "session": {"is_open": True}, "score": 0.5, "vix": {"value": 15}, "orb": {}, "first30": {}, "expiry_play": play}
+
+    res = PaperTrader(tmp_path / "morning.json").on_analysis(analysis("10:30"), settings)
+    assert [e["trade"]["strategy"] for e in res["events"] if e["type"] == "paper_entry"] == ["Expiry"]
+    late = PaperTrader(tmp_path / "late.json").on_analysis(analysis("13:30"), settings)
+    assert not [e for e in late["events"] if e["type"] == "paper_entry"]
+    # the same contract is still refused for a normal strategy
+    other = PaperTrader(tmp_path / "other.json").on_analysis(
+        {**analysis("10:30"), "expiry_play": None, "orb": {**play}}, settings | {"autopilot_strategies": ["First-Hour"]})
+    assert not [e for e in other["events"] if e["type"] == "paper_entry"]

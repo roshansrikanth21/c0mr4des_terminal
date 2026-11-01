@@ -198,6 +198,8 @@ class PaperTrader:
                 # re-reading settings. Written only when they change.
                 cooling = mine and (now - datetime.fromisoformat(mine[-1]["closed_at"])).total_seconds() < 900
                 blockers = entry_blockers(option, INSTRUMENTS[key].lot_size, now)
+                if strategy == "Expiry":  # short-dated by design: charges and theta are what this slot measures, and its loss is capped
+                    blockers = [b for b in blockers if b["name"] == "clock"]
                 if cap and held and len(self.state["open"]) >= cap and held.get("slot") != slot:
                     # One trade at a time: a second strategy must wait its turn instead of stacking risk.
                     why = (f"one position at a time - {held['strategy']} still holds {held['symbol']}" if cap == 1
