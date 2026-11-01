@@ -1247,3 +1247,10 @@ def test_expiry_slot_passes_the_theta_gate_but_not_the_clock(tmp_path):
     other = PaperTrader(tmp_path / "other.json").on_analysis(
         {**analysis("10:30"), "expiry_play": None, "orb": {**play}}, settings | {"autopilot_strategies": ["First-Hour"]})
     assert not [e for e in other["events"] if e["type"] == "paper_entry"]
+
+
+def test_settings_api_keeps_every_risk_setting():
+    # The request model silently dropped fields it did not list, so the Settings page could not save them.
+    from backend.app import Settings
+    from backend.engine.config import RISK_DEFAULTS
+    assert set(RISK_DEFAULTS) <= set(Settings.model_fields)

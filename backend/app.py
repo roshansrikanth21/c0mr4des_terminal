@@ -501,6 +501,8 @@ class Settings(BaseModel):
     risk_per_trade_pct: float | None = None
     max_trades_per_day: int | None = None
     max_daily_loss_pct: float | None = None
+    daily_profit_pct: float | None = None
+    max_open_positions: int | None = None
     autopilot_instruments: list[str] | None = None
     autopilot_strategies: list[str] | None = None
 
