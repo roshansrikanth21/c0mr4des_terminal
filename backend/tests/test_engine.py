@@ -224,6 +224,22 @@ def test_orb_breakout_rules():
     assert early["status"] == "forming"
 
 
+def test_orb_survives_off_window_rows():
+    # Real bug (8 Nov 2026): Yahoo returned one zero-volume bar at 15:30 on a Sunday.
+    # `day` is non-empty but the 09:15-10:15 slice is empty -> NaN in the payload -> /api/signal 500.
+    from backend.engine import orb
+    df = make_bars([24986.4], start="2026-11-08 15:30", spread=0)  # Sunday, outside the window
+    now = pd.Timestamp("2026-11-08 19:30", tz=IST).to_pydatetime()
+    r = orb.evaluate(df, prev_close=24900.0, now=now)
+    assert r["status"] == "waiting" and r["verdict"] == "NO TRADE"
+    assert "range_high" not in r
+    # Same shape on a trading morning with feed lag: bars exist, none in the window yet.
+    df2 = make_bars([23000, 23005, 23010], start="2026-10-21 11:00", spread=5)
+    now2 = df2.index[-1].to_pydatetime()
+    r2 = orb.evaluate(df2, prev_close=22950, now=now2)
+    assert r2["status"] == "waiting" and "range_high" not in r2
+
+
 def test_first_hour_uses_one_strike_otm():
     risk = {"capital": 10000, "risk_per_trade_pct": 25, "max_trades_per_day": 2, "max_daily_loss_pct": 25}
     now = datetime(2026, 10, 21, 11, 0, tzinfo=IST)

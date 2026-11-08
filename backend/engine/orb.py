@@ -60,6 +60,12 @@ def evaluate(df5: pd.DataFrame, prev_close: float | None, now: datetime) -> dict
     if day.empty:
         return {**base, "status": "waiting", "text": "Waiting for today's open. The first-hour range forms 09:15-10:15."}
     first = day[day.index.time < T1015]
+    if first.empty:
+        # Today has rows but none inside 09:15-10:15: pre-open feed lag, or the ghost bar
+        # Yahoo puts on non-trading days. An empty slice max/min is NaN, which used to
+        # reach /api/signal and kill it: JSON cannot carry NaN, so the whole dashboard 500s.
+        return {**base, "status": "waiting",
+                "text": "Waiting for today's open. The first-hour range forms 09:15-10:15."}
     hi, lo = float(first.high.max()), float(first.low.min())
     info = {"range_high": hi, "range_low": lo, "range_points": round(hi - lo, 2), "prev_close": prev_close}
     if now.time() < T1015 or len(first) < 12:
