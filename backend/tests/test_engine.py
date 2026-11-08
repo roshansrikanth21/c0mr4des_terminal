@@ -1270,3 +1270,70 @@ def test_settings_api_keeps_every_risk_setting():
     from backend.app import Settings
     from backend.engine.config import RISK_DEFAULTS
     assert set(RISK_DEFAULTS) <= set(Settings.model_fields)
+
+
+def test_predict_cone_and_bayes_are_sane(tmp_path):
+    from backend.engine import predict as pr
+    now = datetime(2026, 10, 21, 10, 30, tzinfo=IST)  # mid-morning: minutes left to the 15:15 square-off
+    df5 = session_bars(days=40, seed=2)
+    rng = np.random.default_rng(7)
+    idx = pd.date_range("2026-03-01", periods=200, freq="D", tz=IST)
+    walk = 21000.0 + np.cumsum(rng.normal(0, 120, size=200))
+    daily = pd.DataFrame({"open": walk, "high": walk * 1.002, "low": walk * 0.998, "close": walk}, index=idx)
+    out = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                     direction=1, seed=11)
+    t = out["today"]
+    assert t["q10"] <= t["q25"] <= t["median"] <= t["q75"] <= t["q90"]
+    assert 0.0 <= out["today_p_close_up"]["mc"] <= 1.0
+    b = out["barriers"]
+    assert 0.0 <= b["touch_stop"] <= 1.0 and b["touch_target"] >= b["target_before_stop"] >= 0.0
+    bs = out["bayes_up"]
+    assert bs["n"] >= 30 and 0.0 < bs["mean"] < 1.0 and bs["ci95"][0] <= bs["mean"] <= bs["ci95"][1]
+    ns = out["next_session"]
+    assert ns["q10"] <= ns["q25"] <= ns["median"] <= ns["q75"] <= ns["q90"]
+    again = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                       direction=1, seed=11)
+    assert again == out, "same seed must give the same cone"
+    # A sell plan mirrors the barriers: stop above, target below.
+    out_sell = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                          direction=-1, seed=11)
+    assert 0.0 <= out_sell["barriers"]["target_before_stop"] <= 1.0
+
+
+def test_predict_closed_day_has_no_intraday_cone():
+    from backend.engine import predict as pr
+    df5 = session_bars(days=40, seed=2)
+    idx = pd.date_range("2026-03-01", periods=60, freq="D", tz=IST)
+    walk = 21000.0 + np.arange(60) * 9.0
+    daily = pd.DataFrame({"open": walk, "high": walk, "low": walk, "close": walk}, index=idx)
+    sunday = datetime(2026, 10, 25, 19, 0, tzinfo=IST)  # a Sunday
+    out = pr.predict("NIFTY", df5, daily, sunday, spot=23000.0, seed=5)
+    assert out["today"] is None and out["minutes_left"] == 0
+    assert out["next_session"] and out["bayes_up"]
+    assert out["daily"]["days"] > 0
+
+
+def test_owner_bar_blocks_low_evidence_and_oversize_loss(tmp_path):
+    # Owner rules of 9 Nov (words recorded in MAILBOX): per-trade worst case capped, and no
+    # entry unless the evidence backs the direction (score) and the MTF (daily included) agrees.
+    from backend.engine import trader
+
+    def run(score: float, max_loss: float, phase: str = "aligned"):
+        pt = trader.PaperTrader(tmp_path / f"own-{score}-{max_loss}-{phase}.json")
+        settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                    "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"],
+                    "entry_score_min": 0.5, "max_loss_per_trade": 2000.0}
+        a = _entry_analysis("2026-10-21T10:00:00+05:30")
+        a["score"] = score
+        a["mtf"] = {"phase": phase, "primary": {"direction": 1}}
+        a["option"] = {**a["option"], "max_loss": max_loss}
+        return pt.on_analysis(a, settings)["events"]
+
+    ev = run(0.6, 2600.0)
+    assert ev[0]["type"] == "blocked" and "per-trade cap" in ev[0]["reason"]
+    ev = run(0.3, 1800.0)
+    assert ev[0]["type"] == "blocked" and "owner evidence bar" in ev[0]["reason"]
+    ev = run(0.6, 1800.0, phase="conflict")
+    assert ev[0]["type"] == "blocked" and "owner evidence bar" in ev[0]["reason"]
+    ev = run(0.6, 1800.0)
+    assert ev[0]["type"] == "paper_entry", "a backed-up, affordable trade must still go through"

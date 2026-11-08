@@ -238,6 +238,35 @@ def _seed() -> list[dict]:
                      "First judgement after ~20 entries: compare support >= 0.30 trades against the rest "
                      "on win rate and P&L. It never blocks a trade.",
          "status": "testing", "owner": "owner request"},
+        {"id": 24, "date": "2026-11-09", "area": "strategy", "name": "Owner bar: back the trade with evidence, cap the hurt at Rs 2,000",
+         "change": "Two entry gates in trader._process, settings-driven "
+                   "(entry_score_min = 0.50, max_loss_per_trade = 2000 in settings.json): (1) per-trade "
+                   "worst case (premium to stop + charges) must stay inside Rs 2,000; (2) the headline "
+                   "score must clear 0.50 IN the trade's direction AND the multi-timeframe read - the "
+                   "daily row included, which is the owner's 'daily market highs and lows' rule - must be "
+                   "aligned with it. Expiry keeps its own owner-blessed pilot (Rs 1,000 cap already "
+                   "tighter). Owner's words recorded in MAILBOX on 9 Nov.",
+         "evidence": "MINIMISING TRADES, BY OWNER DECISION, not a back-tested edge yet. Fragility work of "
+                     "9 Nov shows the paper book's +Rs 2.6k is two trend-day outliers (29 Oct, 6 Nov) - "
+                     "remove them and every book is negative - so fewer, harder-earned entries is the "
+                     "owner's response. Cost: fewer paper trades means the 20-trade go/no-go baseline "
+                     "arrives later. Watch: entries/day and whether the filtered survivors beat the "
+                     "unfiltered record.",
+         "status": "testing", "owner": "owner decision"},
+        {"id": 25, "date": "2026-11-09", "area": "infra", "name": "Predicted range panel: Monte Carlo cone + Bayesian up-day rate",
+         "change": "New engine/predict.py + GET /api/predict + a Predicted range tile. Monte Carlo: each "
+                   "path re-plays one past session's final bars forward from now, so the 10-90 percentile "
+                   "cone carries real intraday rhythm; barrier stats say how often the CURRENT plan's "
+                   "stop and target get touched. Bayesian: the daily up-rate's Beta(1,1) posterior with "
+                   "its 95% credible interval, plus a daily HH/HL high-low read. Explicitly not a "
+                   "decision maker.",
+         "evidence": "OWNER REQUEST (9 Nov), same message as the trade cap. Honest limits: it "
+                     "bootstrap-samples THIS index's own history, so it bounds the expectation, not "
+                     "the tail risk; barrier odds assume stops/targets hold through the afternoon; thin "
+                     "liquidity or news breaks the assumption. Compare its P(close-up) and target-first "
+                     "odds against real outcomes as the paper book grows - that is where it earns or "
+                     "loses trust.",
+         "status": "testing", "owner": "owner request"},
     ]
 
 

@@ -87,4 +87,11 @@ RISK_DEFAULTS = {
     # One position at a time. The owner wants to learn one trade before juggling three: the
     # strategies run in parallel slots, and without this cap two of them can be long at once.
     "max_open_positions": 1,
+    # Owner bar, 9 Nov (his words recorded in MAILBOX): enter only when "you have backed up
+    # evidence to support that you know the trade is gonna go your way", and no trade may risk
+    # more than "1 or 2k max per trade". Code ships the Settings-page defaults; they live ON
+    # for the desk because they end up in settings.json. trader.py reads these keys:
+    # score >= entry_score_min IN the trade's direction, worst case <= max_loss_per_trade.
+    "entry_score_min": 0.50,
+    "max_loss_per_trade": 2000.0,
 }

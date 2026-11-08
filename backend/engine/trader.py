@@ -197,6 +197,9 @@ class PaperTrader:
                 # Keep the day's circuit breakers in the book so the desk can show them without
                 # re-reading settings. Written only when they change.
                 cooling = mine and (now - datetime.fromisoformat(mine[-1]["closed_at"])).total_seconds() < 900
+                entry_loss_cap = float(settings.get("max_loss_per_trade", 0) or 0)
+                entry_score_min = float(settings.get("entry_score_min", 0) or 0)
+                score_a = float(a.get("score") or 0.0)
                 blockers = entry_blockers(option, INSTRUMENTS[key].lot_size, now)
                 if strategy == "Expiry":  # short-dated by design: charges and theta are what this slot measures, and its loss is capped
                     blockers = [b for b in blockers if b["name"] == "clock"]
@@ -221,6 +224,21 @@ class PaperTrader:
                     events.append({"type": "blocked", "reason": (
                         f"{strategy}: this trade risks Rs {risk_rs:,.0f} but only Rs {max(room, 0):,.0f} of "
                         "the day's loss limit is left - no entry that could breach the day")})
+                elif entry_loss_cap > 0 and float(option.get("max_loss", 0) or 0) > entry_loss_cap:
+                    # Owner, 9 Nov (his words in MAILBOX): "set a loss cap to 1 or 2k max per trade".
+                    events.append({"type": "blocked", "reason": (
+                        f"{strategy}: worst case Rs {option.get('max_loss'):,.0f} is above the "
+                        f"Rs {entry_loss_cap:,.0f} per-trade cap (owner, 9 Nov)")})
+                elif entry_score_min > 0 and strategy != "Expiry" and not entry_evidence(
+                        a, plan, entry_score_min):
+                    # Owner, 9 Nov: "when you have backed up evidence to support that you know the
+                    # trade is gonna go your way". Expiry keeps its own owner-blessed pilot terms.
+                    s_dir_ok = (score_a >= entry_score_min) if plan["direction"] > 0 else (score_a <= -entry_score_min)
+                    mtf_phase = (a.get("mtf") or {}).get("phase")
+                    events.append({"type": "blocked", "reason": (
+                        f"{strategy}: below the owner evidence bar (9 Nov) - score {score_a:+.2f} "
+                        f"(need {'<=' if plan['direction'] < 0 else '>='}{entry_score_min:.2f} in the trade's "
+                        f"direction) and MTF {mtf_phase} (need aligned with the trade)")})
                 elif blockers:
                     why = "; ".join(b["detail"] for b in blockers)
                     events.append({"type": "blocked", "reason": f"{strategy}: {why}", "gate": blockers})
@@ -368,6 +386,21 @@ def scorecard(trades: list[dict]) -> dict:
             # takes at least 1 lot so the record stays comparable with the lab, but a real account this
             # small cannot place them - so they must not quietly count towards a GO.
             "oversize": sum(1 for t in trades if t.get("oversize"))}
+
+
+def entry_evidence(a: dict, plan: dict, min_score: float) -> bool:
+    """Owner evidence bar (9 Nov, words recorded in MAILBOX): take a trade only when the stacks back it.
+    The score must clear the floor IN the trade's direction, and the multi-timeframe read (daily
+    included - the owner asked for "identifying trends based on the daily market highs and lows")
+    must be aligned the same way. min_score <= 0 disables the bar."""
+    if min_score <= 0:
+        return True
+    score = float(a.get("score") or 0.0)
+    dir_ok = (score >= min_score) if plan["direction"] > 0 else (score <= -min_score)
+    mtf = a.get("mtf") or {}
+    aligned = (mtf.get("phase") == "aligned"
+               and ((mtf.get("primary") or {}).get("direction") == plan["direction"]))
+    return bool(dir_ok and aligned)
 
 
 def go_no_go(sc: dict, need: int = 20) -> tuple[str, list[str]]:

@@ -21,6 +21,7 @@ load_dotenv(Path(__file__).with_name(".env"))
 from .engine import backtest, macro, service, timeline  # noqa: E402
 from .engine import capital_test  # noqa: E402
 from .engine import spreads  # noqa: E402
+from .engine import predict as predict_mod  # noqa: E402
 from .engine.trader import go_no_go, live_enabled, paper, place_live_order, replay_paper, scorecard  # noqa: E402
 from .engine import replay  # noqa: E402
 from datetime import date as _date  # noqa: E402
@@ -263,6 +264,29 @@ def _sym(symbol: str) -> str:
     return s
 
 
+@app.get("/api/predict")
+def predict(symbol: str = "NIFTY"):
+    """Bayesian + Monte Carlo range prediction (owner request, 9 Nov).
+
+    Feed prices explain themselves via data.py; the endpoint only adds the ACTIONABLE part:
+    when the last analysis is fresh, the live plan's stop/target distances and direction ride
+    along, so the panel can show "how a path usually behaves against YOUR stop".
+    """
+    key = _sym(symbol)
+    df5, _src5 = get_candles(key, "5m")
+    dfd, _srcd = get_candles(key, "1d")
+    latest = LATEST.get(key) or {}
+    spot = latest.get("price") or (float(df5["close"].iloc[-1]) if not df5.empty else None)
+    plan = latest.get("plan") or {}
+    direction = int(plan.get("direction") or 0)
+    stop_points = target_points = None
+    if spot and plan.get("stop") is not None and plan.get("target") is not None:
+        stop_points = round(abs(float(spot) - float(plan["stop"])), 2)
+        target_points = round(abs(float(plan["target"]) - float(spot)), 2)
+    return predict_mod.predict(key, df5, dfd, datetime.now(IST), spot=spot, direction=direction,
+                               stop_points=stop_points, target_points=target_points)
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "broker_configured": angel.configured(), "broker_connected": angel.api is not None,
@@ -503,6 +527,8 @@ class Settings(BaseModel):
     max_daily_loss_pct: float | None = None
     daily_profit_pct: float | None = None
     max_open_positions: int | None = None
+    entry_score_min: float | None = None      # owner evidence bar, 9 Nov
+    max_loss_per_trade: float | None = None   # owner per-trade worst-case cap, 9 Nov
     autopilot_instruments: list[str] | None = None
     autopilot_strategies: list[str] | None = None
 

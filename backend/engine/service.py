@@ -39,6 +39,9 @@ LIMITS = {
     "max_daily_loss_pct": (1.0, 100.0),
     "daily_profit_pct": (1.0, 100.0),
     "max_open_positions": (1, 4),
+    # Owner bar, 9 Nov: evidence floor for entries and a per-trade worst-case cap.
+    "entry_score_min": (0.0, 1.0),
+    "max_loss_per_trade": (200.0, 50_000.0),
 }
 
 
