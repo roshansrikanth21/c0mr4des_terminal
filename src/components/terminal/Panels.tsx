@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import {
   ArrowDownRight, Bot, ArrowUpRight, Ban, CalendarClock, CircleDot, Clock, ExternalLink, Globe2, Layers, Newspaper,
-  ShieldAlert, Target, TrendingDown, TrendingUp,
+  ShieldAlert, Target, TrendingDown, TrendingUp, Waypoints,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { ago, getJSON, inr, num, signalColor, type Analysis, type NewsItem, type PaperSummary } from '@/lib/api';
+import { ago, getJSON, inr, num, signalColor, type Analysis, type NewsItem, type PaperSummary, type Predict, type PredictCone, type Symbol, usePredict } from '@/lib/api';
 
 export function PanelTitle({ icon: Icon, children, right }: { icon: any; children: React.ReactNode; right?: React.ReactNode }) {
   return (
@@ -449,6 +449,97 @@ export function OrbPanel({ a }: { a: Analysis | null }) {
         </div>
       )}
       <p className="text-[10px] text-muted-foreground mt-3">Evidence: 2 years of NIFTY (Nov 2023 - Oct 2026), 549 trades, 44% winners, profit factor 1.41, profitable in 11 of 13 quarters (modelled premiums). This rule now skips expiry days, so the number that applies is PF 1.15 (+Rs 65k) - close to break-even. The First-30 rule is weaker (PF 1.11) and is kept only for comparison.</p>
+    </div>
+  );
+}
+
+/* ---------------- PREDICT (owner request, 9 Nov: Bayesian + Monte Carlo range) ---------------- */
+
+function ConeBar({ cone, spot, tall = false }: { cone: PredictCone; spot: number; tall?: boolean }) {
+  const lo = Math.min(cone.q10, spot);
+  const hi = Math.max(cone.q90, spot);
+  const left = (v: number) => Math.max(0, Math.min(100, ((v - lo) / Math.max(hi - lo, 1e-9)) * 100));
+  const band = (a1: number, b1: number) => ({ left: `${left(a1)}%`, width: `${Math.max(1.5, left(b1) - left(a1))}%` });
+  const fmt0 = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+  return (
+    <div>
+      <div className={cn('relative rounded-md border border-border/60 bg-secondary/40 w-full', tall ? 'h-9' : 'h-7')}>
+        <div className="absolute inset-y-1 bg-primary/15 rounded" style={band(cone.q10, cone.q90)} />
+        <div className="absolute inset-y-2 bg-primary/40 rounded" style={band(cone.q25, cone.q75)} />
+        <div className="absolute inset-y-0 w-px bg-primary" style={{ left: `${left(cone.median)}%` }} />
+        <div className="absolute -top-1 -bottom-1 w-[3px] bg-foreground rounded-sm shadow-sm" style={{ left: `calc(${left(spot)}% - 1px)` }} />
+      </div>
+      <div className="flex justify-between mt-1 text-[9px] font-mono text-muted-foreground">
+        <span>{fmt0(cone.q10)}</span>
+        <span>median {fmt0(cone.median)}</span>
+        <span>{fmt0(cone.q90)}</span>
+      </div>
+    </div>
+  );
+}
+
+const pct = (v: number | null | undefined) => (v == null ? '--' : `${(v * 100).toFixed(0)}%`);
+
+export function PredictPanel({ symbol }: { symbol: Symbol }) {
+  const { data: p, error } = usePredict(symbol);
+  if (error && !p) return <Empty text={`Prediction unavailable: ${error}`} />;
+  if (!p) return <Empty text="Simulating 2,400 paths..." />;
+  if (p.error) return <Empty text={p.error} />;
+  const dirWord = p.direction > 0 ? 'BUY call' : p.direction < 0 ? 'BUY put' : null;
+  const tone = p.daily?.score != null ? signalColor(p.daily.score) : 'text-muted-foreground';
+  return (
+    <div className="h-full p-4 flex flex-col gap-3 overflow-y-auto custom-scrollbar">
+      <PanelTitle icon={Waypoints} right={
+        <span className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">
+          {p.size.intraday_sessions} sessions · {new Date(p.asof).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+        </span>}>
+        Predicted range
+      </PanelTitle>
+
+      {p.today ? (
+        <section>
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1.5">
+            Today till 15:15 · {p.minutes_left} min left
+          </div>
+          <ConeBar cone={p.today} spot={p.price} tall />
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            <Stat label="Close above open" value={pct(p.today_p_close_up?.mc)} />
+            <Stat label="90% width (pts)" value={num(p.today.exp_move, 0)} />
+          </div>
+        </section>
+      ) : (
+        <p className="text-xs text-muted-foreground">{p.trading_day ? 'Simulation window is empty right now.' : 'Holiday or weekend: no intraday cone.'}</p>
+      )}
+
+      {dirWord && (
+        <section>
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1.5">Your live plan detected: {dirWord}</div>
+          <div className="grid grid-cols-3 gap-2">
+            <Stat label="Target first" value={pct(p.barriers.target_before_stop)} className="text-green-500" />
+            <Stat label="Touches target" value={pct(p.barriers.touch_target)} />
+            <Stat label="Touches stop" value={pct(p.barriers.touch_stop)} className="text-red-500" />
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1">How past afternoon behaviour usually comes out against your current stop and target.</p>
+        </section>
+      )}
+
+      {p.next_session && (
+        <section>
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1.5">Next session cone (daily-return Monte Carlo)</div>
+          <ConeBar cone={p.next_session} spot={p.price} />
+          <Stat label="90% width (pts)" value={num(p.next_session.exp_move, 0)} />
+        </section>
+      )}
+
+      {p.bayes_up && (
+        <p className="text-[11px] leading-relaxed">
+          Bayesian up-day rate: <span className="font-black">{pct(p.bayes_up.mean)}</span>
+          {' '}({p.bayes_up.k}/{p.bayes_up.n} up days · 95% CI {pct(p.bayes_up.ci95[0])}–{pct(p.bayes_up.ci95[1])})
+        </p>
+      )}
+
+      <p className={cn('text-[11px] font-mono', tone)}>{p.daily?.text}</p>
+      <p className="text-[9px] text-muted-foreground">{p.method}</p>
     </div>
   );
 }

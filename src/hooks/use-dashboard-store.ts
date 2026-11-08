@@ -16,6 +16,7 @@ const defaultLayouts: Record<DashboardTab, Layout> = {
     { i: 'timeline', x: 6, y: 9, w: 6, h: 4 },
     { i: 'structure', x: 0, y: 13, w: 6, h: 4 },
     { i: 'news', x: 6, y: 13, w: 6, h: 4 },
+    { i: 'predict', x: 0, y: 17, w: 12, h: 4 },
   ],
   context: [
     { i: 'global', x: 0, y: 0, w: 4, h: 5 },
@@ -53,7 +54,7 @@ export const useDashboardStore = create<DashboardState>()(
       resetLayout: (tab) => set((s) => ({ layouts: tab ? { ...s.layouts, [tab]: defaultLayouts[tab] } : defaultLayouts })),
     }),
     {
-      name: 'dashboard-layout-v6',
+      name: 'dashboard-layout-v7',
       partialize: (s) => ({ layouts: s.layouts, panelScales: s.panelScales }),
     },
   ),

@@ -15,11 +15,11 @@ import { SimpleView } from '@/components/SimpleView';
 import { CandleChart } from '@/components/CandleChart';
 import { DecisionPanel } from '@/components/terminal/Decision';
 import {
-  GlobalPanel, NewsPanel, OptionPanel, OrbPanel, PaperPanel, ReasonsPanel, StructurePanel, TimelinePanel, VerdictPanel,
+  GlobalPanel, NewsPanel, OptionPanel, OrbPanel, PaperPanel, PredictPanel, ReasonsPanel, StructurePanel, TimelinePanel, VerdictPanel,
 } from '@/components/terminal/Panels';
 
 const ResponsiveGrid: any = Responsive;
-const MOBILE_ORDER = ['verdict', 'orb', 'chart', 'option', 'paper', 'reasons', 'timeline', 'structure', 'global', 'news'];
+const MOBILE_ORDER = ['verdict', 'orb', 'chart', 'option', 'paper', 'reasons', 'timeline', 'structure', 'global', 'news', 'predict'];
 
 /** Narrow screens: one column, conclusion first. */
 function stacked(layout: readonly { i: string; h: number }[], cols: number) {
@@ -259,6 +259,7 @@ function DashboardGrid({ tab, symbol, data }: { tab: DashboardTab; symbol: Symbo
     news: <NewsPanel />,
     paper: <PaperPanel a={data} />,
     orb: <OrbPanel a={data} />,
+    predict: <PredictPanel symbol={symbol} />,
   };
 
   const gridItemClass = cn(

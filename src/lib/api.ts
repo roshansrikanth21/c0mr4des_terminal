@@ -221,6 +221,41 @@ export function useAnalysis(symbol: Symbol) {
   return { data, error, live, updatedAt };
 }
 
+export interface PredictCone {
+  q10: number; q25: number; median: number; q75: number; q90: number; exp_move: number;
+}
+export interface Predict {
+  key: Symbol; asof: string; price: number; trading_day: boolean; minutes_left: number;
+  today: PredictCone | null;
+  today_p_close_up: { mc: number | null; day_open: number | null } | null;
+  barriers: { touch_stop: number | null; touch_target: number | null; target_before_stop: number | null };
+  direction: number;
+  next_session: PredictCone | null;
+  bayes_up: { k: number; n: number; mean: number; ci95: [number, number] } | null;
+  daily: { score: number; days: number; text: string };
+  size: { paths: number; intraday_sessions: number; daily_days: number };
+  method: string; caveats: string[]; error?: string;
+}
+
+/** Monte Carlo + Bayesian range prediction (owner panel, 9 Nov). Polls gently; no websocket. */
+export function usePredict(symbol: Symbol) {
+  const [data, setData] = useState<Predict | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let closed = false;
+    const poll = async () => {
+      try {
+        const d = await getJSON<Predict>(`/api/predict?symbol=${symbol}`, 45000);
+        if (!closed) { setData(d); setError(null); }
+      } catch (e) { if (!closed) setError((e as Error).message); }
+    };
+    poll();
+    const iv = window.setInterval(poll, 120000);
+    return () => { closed = true; window.clearInterval(iv); };
+  }, [symbol]);
+  return { data, error };
+}
+
 export const inr = (v: number, digits = 0) =>
   new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: digits, minimumFractionDigits: digits }).format(v);
 
