@@ -11,6 +11,7 @@ from . import flow, macro, mtf, options, orb, replay, structure, timeline
 from .config import IST, INSTRUMENTS, RISK_DEFAULTS
 from .data import angel, closed_bars, get_candles
 from .news import radar
+from .plain import plain_read
 from .signal import evaluate
 
 log = logging.getLogger("engine.service")
@@ -194,6 +195,10 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
         "chains": {expiry.isoformat(): chain, **({exp_sig["option"]["expiry"]: exp_sig.pop("_chain")}
                                                  if exp_sig and exp_sig.get("_chain") else {})},
         "shock": None if in_replay else shock_check(raw5, daily, vix, news),
+        # Plain CALL/PUT card (owner, 9 Nov): the lean, the owner's own entry bar via the
+        # same entry_evidence the live trader uses, and the indicators in simple words.
+        "plain": plain_read(result, ladder, daily, result["price"], now,
+                            sess["can_enter"], float(settings.get("entry_score_min") or 0.5)),
     }
     _log_signal(key, out)
     return out

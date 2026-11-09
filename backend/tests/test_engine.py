@@ -1368,6 +1368,58 @@ def test_predict_levels_dedupe_and_pattern_read():
     assert pr.pattern_read(df5.head(10)) is None  # too few bars to judge
 
 
+def test_plain_call_put_verdict_simple_words():
+    # Owner (9 Nov): "i want it to be bale to tell me in more simper terms on wether to
+    # call or put and it should have indicators and anaylze maaarket trednds". The card
+    # must speak CALL/PUT, put the daily highs/lows read first, use POINTS not ATR,
+    # and its GO/WAIT must be the exact owner bar (score floor + MTF aligned).
+    from backend.engine import plain as P
+    idx = pd.date_range("2026-09-01", periods=60, freq="D", tz=IST)
+    walk = 21000.0 + np.arange(60) * 9.0
+    daily = pd.DataFrame({"open": walk, "high": walk * 1.002, "low": walk * 0.998, "close": walk}, index=idx)
+    now = datetime(2026, 11, 6, 11, 0, tzinfo=IST)
+    result = {"score": 0.62, "confidence": 0.9, "factors": {"trend": 0.5},
+              "indicators": {"adx": 27.0, "rsi": 61.0, "supertrend": 1},
+              "support": {"name": "Prev Day Low", "price": 24985.3},
+              "resistance": {"name": "Prev Day High", "price": 25080.0},
+              "patterns": [{"name": "Bullish Harami", "direction": 1, "meaning": "the move is losing steam."}]}
+    mtf = {"phase": "aligned", "primary": {"direction": 1}}
+    out = P.plain_read(result, mtf, daily, 25000.0, now, can_enter=True, entry_min=0.5)
+    assert out["choice"] == "CALL" and out["go"] is True and out["wait_reason"] is None
+    assert out["confidence"] == 90
+    assert out["line"].startswith("Leaning CALL")
+    joined = " ".join(out["bullets"]).lower()
+    assert "points" in joined and "atr" not in joined, "level bullet must speak points, not ATR"
+    assert any("daily" in b.lower() for b in out["bullets"]), "daily highs/lows read must be there"
+    assert any("bullish harami" in b.lower() for b in out["bullets"])
+    tones = {c["k"]: c["tone"] for c in out["chips"]}
+    assert tones["Timeframes"] == "up" and tones["Supertrend"] == "up" and tones["RSI"] == "up"
+
+    # Weak evidence: the owner's floor (0.50) blocks the entry but the lean still shows.
+    weak = P.plain_read({"score": 0.31, "confidence": 0.44, "factors": {}, "indicators": {},
+                         "patterns": []}, mtf, daily, 25000.0, now, can_enter=True, entry_min=0.5)
+    assert weak["go"] is False and "0.31" in weak["wait_reason"] and weak["choice"] == "CALL"
+
+    # MTF conflict: score big, timeframes disagreeing - WAIT, in plain words.
+    bad = P.plain_read({"score": 0.62, "confidence": 0.9, "factors": {}, "indicators": {}, "patterns": []},
+                       {"phase": "conflict", "primary": {"direction": -1}}, daily, 25000.0, now,
+                       can_enter=True, entry_min=0.5)
+    assert bad["go"] is False and "Timeframes" in bad["wait_reason"]
+
+    # The mirror case must say PUT and pass.
+    put = P.plain_read({"score": -0.7, "confidence": 0.95, "factors": {"trend": -0.6},
+                        "indicators": {"adx": 30.0, "rsi": 35.0, "supertrend": -1}, "patterns": []},
+                       {"phase": "aligned", "primary": {"direction": -1}}, daily, 25000.0, now,
+                       can_enter=True, entry_min=0.5)
+    assert put["choice"] == "PUT" and put["go"] is True
+    assert any("daily" in b.lower() for b in put["bullets"])
+
+    # Market closed: never a GO.
+    closed = P.plain_read({"score": 0.9, "confidence": 1.0, "factors": {}, "indicators": {}, "patterns": []},
+                          mtf, daily, 25000.0, now, can_enter=False, entry_min=0.5)
+    assert closed["go"] is False and "closed" in closed["wait_reason"].lower()
+
+
 def test_owner_bar_blocks_low_evidence_and_oversize_loss(tmp_path):
     # Owner rules of 9 Nov (words recorded in MAILBOX): per-trade worst case capped, and no
     # entry unless the evidence backs the direction (score) and the MTF (daily included) agrees.
