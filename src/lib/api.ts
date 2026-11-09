@@ -224,12 +224,16 @@ export function useAnalysis(symbol: Symbol) {
 export interface PredictCone {
   q10: number; q25: number; median: number; q75: number; q90: number; exp_move: number;
 }
+export interface FanStep {
+  t: string; q10: number; q25: number; median: number; q75: number; q90: number; p_up: number;
+}
 export interface Predict {
   key: Symbol; asof: string; price: number; trading_day: boolean; minutes_left: number;
   today: PredictCone | null;
-  today_p_close_up: { mc: number | null; day_open: number | null } | null;
+  today_p_close_up: { mc: number | null; from_now: number | null; day_open: number | null } | null;
   barriers: { touch_stop: number | null; touch_target: number | null; target_before_stop: number | null };
   direction: number;
+  fan?: { today: FanStep[]; next: FanStep[] };
   next_session: PredictCone | null;
   bayes_up: { k: number; n: number; mean: number; ci95: [number, number] } | null;
   daily: { score: number; days: number; text: string };

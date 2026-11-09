@@ -5,7 +5,7 @@ import {
   ShieldAlert, Target, TrendingDown, TrendingUp, Waypoints,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { ago, getJSON, inr, num, signalColor, type Analysis, type NewsItem, type PaperSummary, type Predict, type PredictCone, type Symbol, usePredict } from '@/lib/api';
+import { ago, getJSON, inr, num, signalColor, type Analysis, type FanStep, type NewsItem, type PaperSummary, type Predict, type Symbol, usePredict } from '@/lib/api';
 
 export function PanelTitle({ icon: Icon, children, right }: { icon: any; children: React.ReactNode; right?: React.ReactNode }) {
   return (
@@ -455,24 +455,48 @@ export function OrbPanel({ a }: { a: Analysis | null }) {
 
 /* ---------------- PREDICT (owner request, 9 Nov: Bayesian + Monte Carlo range) ---------------- */
 
-function ConeBar({ cone, spot, tall = false }: { cone: PredictCone; spot: number; tall?: boolean }) {
-  const lo = Math.min(cone.q10, spot);
-  const hi = Math.max(cone.q90, spot);
-  const left = (v: number) => Math.max(0, Math.min(100, ((v - lo) / Math.max(hi - lo, 1e-9)) * 100));
-  const band = (a1: number, b1: number) => ({ left: `${left(a1)}%`, width: `${Math.max(1.5, left(b1) - left(a1))}%` });
+/* Fan forecast (owner, 9 Nov: "a probability showing it will move up or down with the chart"):
+   percentile bands around the median path, dashed line where price stands now, and a slim
+   per-step strip that goes green when most paths are above the current price, red below
+   (brightness = distance from a coin flip). */
+function FanChart({ fan, spot }: { fan: FanStep[]; spot: number }) {
+  const W = 306, H = 132, TOP = 8, STRIP = 9, GAP = 5;
+  const BOT = H - STRIP - GAP - 1;                     // price-zone bottom; the strip sits under it
+  const lo = Math.min(...fan.map(s => s.q10), spot);
+  const hi = Math.max(...fan.map(s => s.q90), spot);
+  const pad = (hi - lo) * 0.08 || 10;
+  const ylo = lo - pad, yhi = hi + pad;
+  const n = fan.length;
+  const px = (i: number) => 3 + (i / Math.max(n - 1, 1)) * (W - 6);
+  const py = (v: number) => TOP + (1 - (v - ylo) / (yhi - ylo)) * (BOT - TOP);
+  const path = (get: (s: FanStep) => number) =>
+    fan.map((s, i) => `${i ? 'L' : 'M'}${px(i).toFixed(1)} ${py(get(s)).toFixed(1)}`).join(' ');
+  const band = (up: (s: FanStep) => number, dn: (s: FanStep) => number) =>
+    `${path(up)}${[...fan].reverse().map((s, j) => `L${px(n - 1 - j).toFixed(1)} ${py(dn(s)).toFixed(1)}`).join(' ')} Z`;
+  const first = fan[0], last = fan[n - 1];
+  const hhmm = (t: string) => new Date(t).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
   const fmt0 = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+  const spotY = py(spot);
+  const slotW = (W - 6) / n;
   return (
     <div>
-      <div className={cn('relative rounded-md border border-border/60 bg-secondary/40 w-full', tall ? 'h-9' : 'h-7')}>
-        <div className="absolute inset-y-1 bg-primary/15 rounded" style={band(cone.q10, cone.q90)} />
-        <div className="absolute inset-y-2 bg-primary/40 rounded" style={band(cone.q25, cone.q75)} />
-        <div className="absolute inset-y-0 w-px bg-primary" style={{ left: `${left(cone.median)}%` }} />
-        <div className="absolute -top-1 -bottom-1 w-[3px] bg-foreground rounded-sm shadow-sm" style={{ left: `calc(${left(spot)}% - 1px)` }} />
-      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Monte Carlo probability fan">
+        <path d={band(s => s.q90, s => s.q10)} className="fill-primary" fillOpacity={0.1} />
+        <path d={band(s => s.q75, s => s.q25)} className="fill-primary" fillOpacity={0.24} />
+        {spot > ylo && spot < yhi &&
+          <line x1={3} x2={W - 3} y1={spotY} y2={spotY} strokeDasharray="3 3" className="stroke-muted-foreground" strokeWidth={1} />}
+        <path d={path(s => s.median)} fill="none" className="stroke-primary" strokeWidth={1.8} />
+        {fan.map((s, i) => (
+          <rect key={s.t} x={Math.max(0.5, px(i) - slotW * 0.4)} y={BOT + GAP}
+                width={Math.max(1.2, slotW * 0.8)} height={STRIP}
+                className={s.p_up >= 0.5 ? 'fill-green-500' : 'fill-red-500'}
+                opacity={0.25 + Math.min(0.6, Math.abs(s.p_up - 0.5) * 2)} />
+        ))}
+      </svg>
       <div className="flex justify-between mt-1 text-[9px] font-mono text-muted-foreground">
-        <span>{fmt0(cone.q10)}</span>
-        <span>median {fmt0(cone.median)}</span>
-        <span>{fmt0(cone.q90)}</span>
+        <span>{hhmm(first.t)}</span>
+        <span>{fmt0(last.q10)} … {fmt0(last.q90)}</span>
+        <span>{hhmm(last.t)}</span>
       </div>
     </div>
   );
@@ -485,30 +509,52 @@ export function PredictPanel({ symbol }: { symbol: Symbol }) {
   if (error && !p) return <Empty text={`Prediction unavailable: ${error}`} />;
   if (!p) return <Empty text="Simulating 2,400 paths..." />;
   if (p.error) return <Empty text={p.error} />;
+  const hasToday = !!p.fan?.today?.length;
+  const headline = hasToday ? (p.today_p_close_up?.from_now ?? null) : (p.bayes_up?.mean ?? null);
+  const up = (headline ?? 0.5) >= 0.5;
   const dirWord = p.direction > 0 ? 'BUY call' : p.direction < 0 ? 'BUY put' : null;
   const tone = p.daily?.score != null ? signalColor(p.daily.score) : 'text-muted-foreground';
   return (
     <div className="h-full p-4 flex flex-col gap-3 overflow-y-auto custom-scrollbar">
       <PanelTitle icon={Waypoints} right={
         <span className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">
-          {p.size.intraday_sessions} sessions · {new Date(p.asof).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+          {p.size.intraday_sessions} sessions · {p.size.paths.toLocaleString('en-IN')} paths
         </span>}>
-        Predicted range
+        Forecast
       </PanelTitle>
 
-      {p.today ? (
-        <section>
-          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1.5">
-            Today till 15:15 · {p.minutes_left} min left
+      <div className="flex items-end justify-between gap-2">
+        <div>
+          <div className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">
+            {hasToday ? 'Will it move up or down from here?' : 'Up-day rate (Bayesian)'}
           </div>
-          <ConeBar cone={p.today} spot={p.price} tall />
-          <div className="grid grid-cols-2 gap-2 mt-2">
+          <div className={cn('text-3xl font-black tracking-tighter leading-none mt-0.5',
+                             headline == null ? 'text-muted-foreground' : up ? 'text-green-500' : 'text-red-500')}>
+            {pct(headline)} <span className="text-xs font-bold text-muted-foreground">{headline == null ? '' : up ? 'UP' : 'DOWN'}</span>
+          </div>
+          <div className="text-[9px] text-muted-foreground mt-1">
+            {hasToday
+              ? `odds price sits above ₹${num(p.price, 0)} at 15:15 (Monte Carlo paths)`
+              : `share of up closes in the last ${p.bayes_up?.n ?? 0} days`}
+          </div>
+        </div>
+        {dirWord && <span className="shrink-0 text-[9px] font-mono px-2 py-0.5 rounded-full border border-border bg-secondary/60">{dirWord} plan live</span>}
+      </div>
+
+      {hasToday && p.fan?.today && (
+        <section>
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
+            Today · {p.minutes_left} min left · bands 10-90% &amp; 25-75% · strip = P(up) each step
+          </div>
+          <FanChart fan={p.fan.today} spot={p.price} />
+          <div className="grid grid-cols-2 gap-2 mt-1.5">
             <Stat label="Close above open" value={pct(p.today_p_close_up?.mc)} />
-            <Stat label="90% width (pts)" value={num(p.today.exp_move, 0)} />
+            <Stat label="90% width (pts)" value={num(p.today?.exp_move, 0)} />
           </div>
         </section>
-      ) : (
-        <p className="text-xs text-muted-foreground">{p.trading_day ? 'Simulation window is empty right now.' : 'Holiday or weekend: no intraday cone.'}</p>
+      )}
+      {!hasToday && (
+        <p className="text-xs text-muted-foreground">{p.trading_day ? 'Simulation window is empty right now.' : 'Holiday or weekend: no intraday fan.'}</p>
       )}
 
       {dirWord && (
@@ -523,11 +569,16 @@ export function PredictPanel({ symbol }: { symbol: Symbol }) {
         </section>
       )}
 
-      {p.next_session && (
+      {p.fan && p.fan.next.length > 0 && (
         <section>
-          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1.5">Next session cone (daily-return Monte Carlo)</div>
-          <ConeBar cone={p.next_session} spot={p.price} />
-          <Stat label="90% width (pts)" value={num(p.next_session.exp_move, 0)} />
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
+            Next session · {new Date(p.fan.next[0].t).toLocaleDateString('en-IN', { weekday: 'short' })} 09:15 → 15:15
+          </div>
+          <FanChart fan={p.fan.next} spot={p.price} />
+          <div className="grid grid-cols-2 gap-2 mt-1.5">
+            <Stat label="Median close" value={num(p.next_session?.median, 0)} />
+            <Stat label="90% width (pts)" value={num(p.next_session?.exp_move, 0)} />
+          </div>
         </section>
       )}
 
