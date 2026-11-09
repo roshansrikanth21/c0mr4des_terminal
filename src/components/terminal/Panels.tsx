@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import {
   ArrowDownRight, Bot, ArrowUpRight, Ban, CalendarClock, CircleDot, Clock, ExternalLink, Globe2, Layers, Newspaper,
-  ShieldAlert, Target, TrendingDown, TrendingUp, Waypoints,
+  ShieldAlert, Target, TrendingDown, TrendingUp, Waypoints, CheckCircle2, Hourglass,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ago, getJSON, inr, num, signalColor, type Analysis, type FanStep, type NewsItem, type PaperSummary, type Predict, type PredictLevel, type Symbol, usePredict } from '@/lib/api';
@@ -24,14 +24,19 @@ export function Empty({ text = 'Waiting for data...' }: { text?: string }) {
 }
 
 /* ---------------- VERDICT ---------------- */
+/* CALL or PUT card (owner, 9 Nov: "tell me in more simpler terms on whether to call or
+   put and it should have indicators and analyze market trends"). The lean big and plain,
+   then the owner's own GO/WAIT bar, then evidence bullets (daily highs/lows first) and
+   indicator chips - all translated by the backend from numbers the engine already scored. */
 export function VerdictPanel({ a }: { a: Analysis | null }) {
   if (!a) return <Empty text="Reading the market..." />;
-  const tone = a.verdict === 'BUY' ? 'green' : a.verdict === 'SELL' ? 'red' : 'zinc';
-  const leanColor = a.lean === 'BUY' ? 'text-green-500' : a.lean === 'SELL' ? 'text-red-500' : 'text-muted-foreground';
+  const pl = a.plain;
+  const big = pl?.choice ?? (a.verdict === 'BUY' ? 'CALL' : a.verdict === 'SELL' ? 'PUT' : 'TOO MIXED');
+  const tone = big === 'CALL' ? 'green' : big === 'PUT' ? 'red' : 'zinc';
   return (
     <div className="h-full p-4 flex flex-col gap-3 overflow-y-auto custom-scrollbar">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] font-mono font-black tracking-[0.25em] uppercase">Conclusion</span>
+        <span className="text-[10px] font-mono font-black tracking-[0.25em] uppercase">Call or Put?</span>
         <span className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">
           {a.instrument.key} · {new Date(a.generated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
         </span>
@@ -40,26 +45,54 @@ export function VerdictPanel({ a }: { a: Analysis | null }) {
         tone === 'green' && 'border-green-500/40 bg-green-500/10',
         tone === 'red' && 'border-red-500/40 bg-red-500/10',
         tone === 'zinc' && 'border-border bg-muted/30')}>
-        {a.verdict === 'BUY' ? <TrendingUp className="w-10 h-10 text-green-500 shrink-0" />
-          : a.verdict === 'SELL' ? <TrendingDown className="w-10 h-10 text-red-500 shrink-0" />
+        {big === 'CALL' ? <TrendingUp className="w-10 h-10 text-green-500 shrink-0" />
+          : big === 'PUT' ? <TrendingDown className="w-10 h-10 text-red-500 shrink-0" />
             : <Ban className="w-10 h-10 text-muted-foreground shrink-0" />}
         <div className="min-w-0">
           <div className={cn('text-4xl font-black tracking-tighter leading-none',
-            tone === 'green' ? 'text-green-500' : tone === 'red' ? 'text-red-500' : 'text-foreground')}>{a.verdict}</div>
-          <div className="text-xs mt-1.5 text-muted-foreground">{a.headline}</div>
+            tone === 'green' ? 'text-green-500' : tone === 'red' ? 'text-red-500' : 'text-foreground')}>{big}</div>
+          <div className="text-xs mt-1.5 text-muted-foreground">{pl?.line ?? a.headline}</div>
         </div>
       </div>
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(96px,1fr))] gap-2">
-        <Stat label="Lean" value={a.lean} className={leanColor} />
-        <Stat label="Score" value={(a.score > 0 ? '+' : '') + a.score.toFixed(2)} className={signalColor(a.score)} />
-        <Stat label="Strength" value={`${Math.round(a.confidence * 100)}%`} />
-      </div>
-      <div className="h-1.5 w-full rounded-full bg-secondary relative overflow-hidden">
+      {pl && (
+        <div className={cn('flex items-start gap-2 px-3 py-2 rounded-md border text-xs font-mono font-bold leading-snug',
+          pl.go ? 'border-green-500/40 bg-green-500/10 text-green-500' : 'border-amber-500/40 bg-amber-500/10 text-amber-500')}>
+          {pl.go ? <CheckCircle2 className="w-4 h-4 shrink-0 mt-px" /> : <Hourglass className="w-4 h-4 shrink-0 mt-px" />}
+          <div>
+            <span className="uppercase tracking-widest">{pl.go ? 'Your rules say: GO' : 'Your rules say: WAIT'}</span>
+            {pl.wait_reason && <span className="block font-normal opacity-90 mt-0.5">{pl.wait_reason}</span>}
+          </div>
+        </div>
+      )}
+      {pl?.chips && pl.chips.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {pl.chips.map((c) => (
+            <span key={c.k} className="px-2 py-0.5 rounded-sm border border-border bg-muted/30 text-[10px] font-mono">
+              <span className="text-muted-foreground">{c.k} </span>
+              <span className={cn('font-bold uppercase', c.tone === 'up' && 'text-green-500',
+                c.tone === 'down' && 'text-red-500', c.tone === 'flat' && 'text-foreground/70')}>{c.v}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {pl?.bullets && pl.bullets.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">
+            Evidence · daily highs/lows, trend, momentum, levels, candles
+          </div>
+          {pl.bullets.map((b, i) => (
+            <div key={i} className="flex gap-2 text-xs leading-snug">
+              <span className="mt-1.5 h-1.5 w-1.5 rounded-full shrink-0 bg-primary/70" />
+              <span>{b}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="h-1.5 w-full rounded-full bg-secondary relative overflow-hidden shrink-0">
         <div className="absolute top-0 bottom-0 left-1/2 w-px bg-foreground/40" />
         <div className={cn('absolute top-0 bottom-0', a.score >= 0 ? 'left-1/2 bg-green-500' : 'right-1/2 bg-red-500')}
           style={{ width: `${Math.min(50, Math.abs(a.score) * 50)}%` }} />
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">{a.summary}</p>
       {a.shock?.active && (
         <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 space-y-1.5">
           <div className="text-[10px] font-mono font-black uppercase tracking-widest text-amber-500">Shock mode · {a.shock.reasons.join(' · ')}</div>

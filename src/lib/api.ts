@@ -29,6 +29,12 @@ export interface NewsItem {
   published: string; age_minutes: number; direction: number; impact: number; scope: string; keywords: string[];
   why: string; score: number;
 }
+export interface PlainVerdict {
+  choice: 'CALL' | 'PUT' | 'TOO MIXED' | 'NEUTRAL';
+  go: boolean; wait_reason: string | null; confidence: number;
+  line: string; bullets: string[];
+  chips: { k: string; v: string; tone: 'up' | 'down' | 'flat' }[];
+}
 export interface Analysis {
   instrument: { key: Symbol; name: string; lot_size: number; strike_step: number };
   generated_at: string; data_source: string; data_delayed: boolean; session: Session;
@@ -54,6 +60,7 @@ export interface Analysis {
   flow_trade?: FlowTrade | null;
   shock?: { active: boolean; reasons: string[]; playbook: string[] } | null;
   paper?: { events: { type: string; reason?: string; trade?: PaperTrade }[]; open: PaperTrade[] };
+  plain?: PlainVerdict | null;
 }
 
 export interface MtfRow {

@@ -127,7 +127,7 @@ export function Dashboard() {
               <div className="text-[9px] font-mono text-muted-foreground uppercase leading-none mb-1">Verdict</div>
               <span className={cn('text-sm font-black font-mono',
                 data?.verdict === 'BUY' ? 'text-green-500' : data?.verdict === 'SELL' ? 'text-red-500' : 'text-primary')}>
-                {data?.verdict ?? '...'}
+                {data?.verdict === 'BUY' ? 'CALL' : data?.verdict === 'SELL' ? 'PUT' : data?.verdict ?? '...'}
               </span>
             </div>
           </div>
