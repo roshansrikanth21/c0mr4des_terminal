@@ -5,7 +5,7 @@ import {
   ShieldAlert, Target, TrendingDown, TrendingUp, Waypoints,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { ago, getJSON, inr, num, signalColor, type Analysis, type FanStep, type NewsItem, type PaperSummary, type Predict, type Symbol, usePredict } from '@/lib/api';
+import { ago, getJSON, inr, num, signalColor, type Analysis, type FanStep, type NewsItem, type PaperSummary, type Predict, type PredictLevel, type Symbol, usePredict } from '@/lib/api';
 
 export function PanelTitle({ icon: Icon, children, right }: { icon: any; children: React.ReactNode; right?: React.ReactNode }) {
   return (
@@ -456,10 +456,10 @@ export function OrbPanel({ a }: { a: Analysis | null }) {
 /* ---------------- PREDICT (owner request, 9 Nov: Bayesian + Monte Carlo range) ---------------- */
 
 /* Fan forecast (owner, 9 Nov: "a probability showing it will move up or down with the chart"):
-   percentile bands around the median path, dashed line where price stands now, and a slim
-   per-step strip that goes green when most paths are above the current price, red below
-   (brightness = distance from a coin flip). */
-function FanChart({ fan, spot }: { fan: FanStep[]; spot: number }) {
+   percentile bands around the median path, dashed line where price stands now, the chart's
+   own key levels drawn through the fan, and a slim per-step strip that goes green when most
+   paths are above the current price, red below (brightness = distance from a coin flip). */
+function FanChart({ fan, spot, levels = [] }: { fan: FanStep[]; spot: number; levels?: PredictLevel[] }) {
   const W = 306, H = 132, TOP = 8, STRIP = 9, GAP = 5;
   const BOT = H - STRIP - GAP - 1;                     // price-zone bottom; the strip sits under it
   const lo = Math.min(...fan.map(s => s.q10), spot);
@@ -478,11 +478,20 @@ function FanChart({ fan, spot }: { fan: FanStep[]; spot: number }) {
   const fmt0 = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 0 });
   const spotY = py(spot);
   const slotW = (W - 6) / n;
+  const shownLevels = levels.filter(lv => lv.price > ylo && lv.price < yhi).slice(0, 5);
   return (
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Monte Carlo probability fan">
         <path d={band(s => s.q90, s => s.q10)} className="fill-primary" fillOpacity={0.1} />
         <path d={band(s => s.q75, s => s.q25)} className="fill-primary" fillOpacity={0.24} />
+        {shownLevels.map(lv => (
+          <g key={`${lv.name}-${lv.price}`}>
+            <line x1={3} x2={W - 3} y1={py(lv.price)} y2={py(lv.price)} strokeDasharray="2 3"
+                  className="stroke-muted-foreground" strokeWidth={0.7} opacity={0.5} />
+            <text x={W - 4} y={py(lv.price) - 1.5} textAnchor="end" fontSize={6.5} opacity={0.75}
+                  className="fill-muted-foreground">{lv.name}</text>
+          </g>
+        ))}
         {spot > ylo && spot < yhi &&
           <line x1={3} x2={W - 3} y1={spotY} y2={spotY} strokeDasharray="3 3" className="stroke-muted-foreground" strokeWidth={1} />}
         <path d={path(s => s.median)} fill="none" className="stroke-primary" strokeWidth={1.8} />
@@ -512,6 +521,7 @@ export function PredictPanel({ symbol }: { symbol: Symbol }) {
   const hasToday = !!p.fan?.today?.length;
   const headline = hasToday ? (p.today_p_close_up?.from_now ?? null) : (p.bayes_up?.mean ?? null);
   const up = (headline ?? 0.5) >= 0.5;
+  const lvls = (p.levels ?? []).slice(0, 6);
   const dirWord = p.direction > 0 ? 'BUY call' : p.direction < 0 ? 'BUY put' : null;
   const tone = p.daily?.score != null ? signalColor(p.daily.score) : 'text-muted-foreground';
   return (
@@ -544,13 +554,19 @@ export function PredictPanel({ symbol }: { symbol: Symbol }) {
       {hasToday && p.fan?.today && (
         <section>
           <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
-            Today · {p.minutes_left} min left · bands 10-90% &amp; 25-75% · strip = P(up) each step
+            Today · {p.minutes_left} min left · bands 10-90% &amp; 25-75% · strip = P(up)
           </div>
-          <FanChart fan={p.fan.today} spot={p.price} />
+          <FanChart fan={p.fan.today} spot={p.price} levels={lvls} />
           <div className="grid grid-cols-2 gap-2 mt-1.5">
             <Stat label="Close above open" value={pct(p.today_p_close_up?.mc)} />
             <Stat label="90% width (pts)" value={num(p.today?.exp_move, 0)} />
           </div>
+          {p.pattern && (
+            <p className={cn('text-[11px] font-mono mt-1.5 leading-snug',
+                             p.pattern.dir > 0 ? 'text-green-500' : p.pattern.dir < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+              {p.pattern.name}: <span className="opacity-80">{p.pattern.meaning}</span>
+            </p>
+          )}
         </section>
       )}
       {!hasToday && (
@@ -574,7 +590,7 @@ export function PredictPanel({ symbol }: { symbol: Symbol }) {
           <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
             Next session · {new Date(p.fan.next[0].t).toLocaleDateString('en-IN', { weekday: 'short' })} 09:15 → 15:15
           </div>
-          <FanChart fan={p.fan.next} spot={p.price} />
+          <FanChart fan={p.fan.next} spot={p.price} levels={lvls} />
           <div className="grid grid-cols-2 gap-2 mt-1.5">
             <Stat label="Median close" value={num(p.next_session?.median, 0)} />
             <Stat label="90% width (pts)" value={num(p.next_session?.exp_move, 0)} />

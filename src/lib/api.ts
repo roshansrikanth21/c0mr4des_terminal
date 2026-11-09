@@ -227,6 +227,7 @@ export interface PredictCone {
 export interface FanStep {
   t: string; q10: number; q25: number; median: number; q75: number; q90: number; p_up: number;
 }
+export interface PredictLevel { name: string; price: number; weight: number }
 export interface Predict {
   key: Symbol; asof: string; price: number; trading_day: boolean; minutes_left: number;
   today: PredictCone | null;
@@ -234,6 +235,8 @@ export interface Predict {
   barriers: { touch_stop: number | null; touch_target: number | null; target_before_stop: number | null };
   direction: number;
   fan?: { today: FanStep[]; next: FanStep[] };
+  levels?: PredictLevel[];
+  pattern?: { name: string; dir: number; kind: string; meaning: string; time: string; strength: number } | null;
   next_session: PredictCone | null;
   bayes_up: { k: number; n: number; mean: number; ci95: [number, number] } | null;
   daily: { score: number; days: number; text: string };
