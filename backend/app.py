@@ -283,8 +283,12 @@ def predict(symbol: str = "NIFTY"):
     if spot and plan.get("stop") is not None and plan.get("target") is not None:
         stop_points = round(abs(float(spot) - float(plan["stop"])), 2)
         target_points = round(abs(float(plan["target"]) - float(spot)), 2)
+    # The Key Levels panel's list (prev-day H/L/C, CPR, ORB, round numbers, swing zones)
+    # rides along so the forecast can be read against the chart's own levels.
+    levels = latest.get("levels") or []
     return predict_mod.predict(key, df5, dfd, datetime.now(IST), spot=spot, direction=direction,
-                               stop_points=stop_points, target_points=target_points)
+                               stop_points=stop_points, target_points=target_points,
+                               levels=levels)
 
 
 @app.get("/api/health")

@@ -1,14 +1,24 @@
 """Monte Carlo range + Bayesian daily-rate read (owner request, 9 Nov; upgraded to
 percentile fan paths with per-step up/down odds after the owner asked for a true
-forecast: "a forecast like a probability showing it will move up or down with the chart").
+forecast: "a forecast like a probability showing it will move up or down with the
+chart"; then made structure-aware after the owner said the blind fan was not good
+and asked for it to "use the actual chart pattern").
 
 What it answers:
 - TODAY: each path re-plays one past session's final bars forward from the current
   price (5-minute steps to the 15:15 square-off). The path cloud gives, at every
   step: the 10/25/50/75/90 percentile prices (the fan chart) and the share of paths
-  ABOVE the current price (*"the probability it moves up rather than down"*).
+  ABOVE the current price ("the probability it moves up rather than down").
+  CONDITIONING: every sampled session is tagged with its own day direction
+  (close vs open), and the sampling weight tilts by the Bayesian daily P(up) -
+  an up-structure chart replays up-day afternoons, a down one replays down days.
 - NEXT SESSION: same walk over whole-day tails, anchored 09:15 -> 15:15 of the next
   trading day.
+- KEY LEVELS: the exact list the Key Levels panel shows (prev-day H/L/C, CPR, ORB,
+  round numbers, swing zones) is deduped by price and returned, so the fan can be
+  read against the chart's own line in the sand.
+- PATTERN: the newest candlestick pattern the signal engine's detector sees on the
+  5m bars (engulfing, pins, indecision and friends), carried into the panel.
 - Barrier stats: how often the CURRENT plan's stop and target get touched, and which
   one first.
 - Bayesian: P(an up close) from the daily record with a Beta(1,1) posterior and a 95%
@@ -21,6 +31,7 @@ from datetime import date, datetime, time, timedelta
 
 import numpy as np
 
+from . import candles as C
 from .config import IST, MARKET_OPEN, SQUARE_OFF_BY
 from .timeline import is_trading_day
 
@@ -64,13 +75,14 @@ def minutes_left_in_session(now: datetime, square_off_by: time | None = None) ->
     return int((datetime.combine(now.date(), end) - datetime.combine(now.date(), t)).total_seconds() // 60)
 
 
-def _session_returns(df5, upto_bars: int, today: date) -> list[np.ndarray]:
-    """Per-session log-scale step returns for the LAST `upto_bars` bars, one entry per session."""
+def _session_walks(df5, upto_bars: int, today: date) -> list[dict]:
+    """Per-session step-return tails, each tagged with the day's own direction
+    (close vs open) - the day-type the bootstrap can be conditioned on."""
     hist = df5[df5.index.date < today]
     if hist.empty:
         return []
     idx = hist.index.date
-    out = []
+    out: list[dict] = []
     for d in np.unique(idx):  # ascending order
         closes = hist[idx == d]["close"].to_numpy(dtype=float)
         if len(closes) < MIN_SESSION_BARS:
@@ -79,8 +91,18 @@ def _session_returns(df5, upto_bars: int, today: date) -> list[np.ndarray]:
         tail = r[-upto_bars:]
         if len(tail) < upto_bars:
             tail = np.concatenate([np.zeros(upto_bars - len(tail)), tail])  # shorter session
-        out.append(tail)
+        direction = 1 if closes[-1] > closes[0] else -1 if closes[-1] < closes[0] else 0
+        out.append({"date": d, "dir": direction, "tail": tail})
     return out
+
+
+def _sample_probs(walks: list[dict], p_up: float) -> np.ndarray:
+    """Per-session sampling weights. tilt = p_up - 0.5: an up-session gets 0.5+tilt,
+    a down-session 0.5-tilt, a flat one stays 0.5. 0.5 back to the pooled bootstrap."""
+    tilt = float(p_up) - 0.5
+    w = np.array([0.5 + (tilt if x["dir"] > 0 else (-tilt if x["dir"] < 0 else 0.0))
+                  for x in walks], dtype=float)
+    return w / w.sum()
 
 
 def _qtl(v: np.ndarray) -> dict[str, float]:
@@ -90,14 +112,17 @@ def _qtl(v: np.ndarray) -> dict[str, float]:
             "exp_move": round(float(q[4] - q[0]), 2)}
 
 
-def _walk(spot: float, tails: list[np.ndarray], rng: np.random.Generator, n_bars: int,
-          start: datetime) -> tuple[list[dict], dict[str, float], np.ndarray]:
-    """One Monte Carlo walk to n_bars steps from `start`.
+def _walk(spot: float, walks: list[dict], rng: np.random.Generator, n_bars: int,
+          start: datetime, p_up: float = 0.5) -> tuple[list[dict], dict[str, float], np.ndarray]:
+    """One Monte Carlo walk to n_bars steps from `start`, sampling whole past
+    day-tails with the structure tilt.
 
     Returns the per-step percentile rows + p_up (paths above spot), the end-of-walk
     cone, and the per-path (min, max, end) prices for barrier maths.
     """
-    pick = rng.integers(0, len(tails), size=N_PATHS)
+    probs = _sample_probs(walks, p_up)
+    pick = rng.choice(len(walks), size=N_PATHS, p=probs)
+    tails = [w["tail"] for w in walks]
     logs = np.cumsum(np.stack([tails[i] for i in pick]), axis=1)  # (paths, n_bars)
     steps = []
     for k in range(n_bars):
@@ -128,14 +153,48 @@ def _barriers(direction: int, spot: float, path_min: np.ndarray, path_max: np.nd
         both = float(np.mean((path_max >= stop_edge) & (path_min <= tgt_edge)))
         return {"touch_stop": round(touch_stop, 4), "touch_target": round(touch_tgt, 4),
                 "target_before_stop": round(max(0.0, touch_tgt - both), 4)}
-    if stop_points > 0:
-        out["touch_stop"] = round(float(np.mean(path_min <= spot - stop_points)), 4)
-    if target_points > 0:
-        out["touch_target"] = round(float(np.mean(path_max >= spot + target_points)), 4)
-    if out["touch_stop"] is not None and out["touch_target"] is not None:
-        out["target_before_stop"] = round(float(np.mean((path_max >= spot + target_points)
-                                                        & (path_min > spot - stop_points))), 4)
+    out["touch_stop"] = round(float(np.mean(path_min <= spot - stop_points)), 4)
+    out["touch_target"] = round(float(np.mean(path_max >= spot + target_points)), 4)
+    out["target_before_stop"] = round(float(np.mean((path_max >= spot + target_points)
+                                                    & (path_min > spot - stop_points))), 4)
     return out
+
+
+def _dedupe_levels(levels, spot: float) -> list[dict]:
+    """The Key Levels list can name the same price twice (prev close on a round
+    number); collapse to the strongest tag, keep the 8 nearest spot."""
+    best: dict[int, dict] = {}
+    for lv in levels or []:
+        try:
+            price = float(lv.get("price"))
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(price) or price <= 0:
+            continue
+        tag = {"name": str(lv.get("name") or "Level"), "price": round(price, 2),
+               "weight": int(lv.get("weight") or 1)}
+        slot = int(round(price * 2.0))  # 0.5-point grid
+        cur = best.get(slot)
+        if cur is None or tag["weight"] > cur["weight"]:
+            best[slot] = tag
+    return sorted(best.values(), key=lambda x: abs(x["price"] - spot))[:8]
+
+
+def pattern_read(df5) -> dict | None:
+    """The newest candlestick pattern the signal engine sees on the 5m bars -
+    the same detector that feeds the score, so the panel and the engine agree."""
+    if df5 is None or len(df5) < 20:
+        return None
+    pats = C.detect(df5, lookback=3)
+    if not pats:
+        return None
+    for p in reversed(pats):  # newest direction-bearing pattern first
+        if p.direction != 0:
+            return {"name": p.name, "dir": p.direction, "kind": p.kind,
+                    "meaning": p.meaning, "time": p.time, "strength": round(float(p.strength), 2)}
+    p = pats[-1]
+    return {"name": p.name, "dir": 0, "kind": p.kind,
+            "meaning": p.meaning, "time": p.time, "strength": round(float(p.strength), 2)}
 
 
 def daily_read(dfd, spot: float | None, today: date) -> dict:
@@ -169,7 +228,8 @@ def next_trading_day(now: datetime) -> date:
 
 def predict(key: str, df5, dfd, now: datetime, spot: float | None = None,
             stop_points: float | None = None, target_points: float | None = None,
-            direction: int = 0, minutes_left: int | None = None, seed: int | None = None) -> dict:
+            direction: int = 0, minutes_left: int | None = None, seed: int | None = None,
+            levels: list | None = None) -> dict:
     now = now if now.tzinfo else now.replace(tzinfo=IST)
     trading_day = is_trading_day(now.date())
     if minutes_left is None:
@@ -181,9 +241,25 @@ def predict(key: str, df5, dfd, now: datetime, spot: float | None = None,
 
     rng = np.random.default_rng(seed if seed is not None else int(now.timestamp()) // 300)
 
+    # ---- Bayesian P(up) FIRST: it is the tilt the whole bootstrap is conditioned on ----
+    rets_d: np.ndarray = np.array([])
+    n = 0
+    bayes = None
+    if not dfd.empty and len(dfd) >= 30:
+        closes = dfd["close"].to_numpy(dtype=float)
+        r = closes[1:] / closes[:-1] - 1.0
+        rets_d = r[-DAILY_LOOKBACK:]
+        n = int(len(rets_d))
+    if n > 0:
+        k = int(np.sum(rets_d > 0))
+        lo, hi = _beta_ci(k, n)
+        bayes = {"k": k, "n": n, "mean": round((k + 1.0) / (n + 2.0), 4), "ci95": [round(lo, 4), round(hi, 4)]}
+    tilt_p = float(bayes["mean"]) if bayes else 0.5
+
     # ---- TODAY: intraday bootstrap, per-step percentile fan from now to square-off ----
     m5 = max(0, int(round(minutes_left / M5)))
     intraday_sessions = 0
+    day_types = {"up": 0, "down": 0}
     fan_today: list[dict] = []
     today_cone = None
     day_open = None
@@ -191,41 +267,28 @@ def predict(key: str, df5, dfd, now: datetime, spot: float | None = None,
     p_end_above_spot = None
     exit_stats = None
     if m5 > 0 and trading_day:
-        tails = _session_returns(df5, m5, now.date())
-        intraday_sessions = len(tails)
-        if tails:
-            fan_today, today_cone, path_min, path_max, ends = _walk(spot, tails, rng, m5, now)
+        walks = _session_walks(df5, m5, now.date())
+        intraday_sessions = len(walks)
+        day_types = {"up": sum(1 for w in walks if w["dir"] > 0), "down": sum(1 for w in walks if w["dir"] < 0)}
+        if walks:
+            fan_today, today_cone, path_min, path_max, ends = _walk(spot, walks, rng, m5, now, p_up=tilt_p)
             session = df5[df5.index.date == now.date()]
             day_open = float(session["open"].iloc[0]) if not session.empty else spot
             p_close_up_mc = round(float(np.mean(ends > day_open)), 4)
             p_end_above_spot = round(float(np.mean(ends > spot)), 4)
-            if direction:
-                exit_stats = _barriers(direction, spot, path_min, path_max, stop_points, target_points)
-            else:
-                exit_stats = {"touch_stop": None, "touch_target": None, "target_before_stop": None}
+            exit_stats = (_barriers(direction, spot, path_min, path_max, stop_points, target_points)
+                          if direction else
+                          {"touch_stop": None, "touch_target": None, "target_before_stop": None})
 
     # ---- NEXT SESSION: same walk, whole-day tails, anchored at the next trading day's 09:15 ----
     fan_next: list[dict] = []
     next_cone = None
-    rets_d: np.ndarray = np.array([])
-    n = 0
-    if not dfd.empty and len(dfd) >= 30:
-        closes = dfd["close"].to_numpy(dtype=float)
-        r = closes[1:] / closes[:-1] - 1.0
-        rets_d = r[-DAILY_LOOKBACK:]
-        n = int(len(rets_d))
-        next_cone = _qtl(spot * (1.0 + rets_d[rng.integers(0, n, size=N_PATHS)]))
-    day_tails = _session_returns(df5, SESSION_STEPS, now.date())
-    if day_tails:
+    day_walks = _session_walks(df5, SESSION_STEPS, now.date())
+    if day_walks:
         start = datetime.combine(next_trading_day(now), MARKET_OPEN, tzinfo=IST)
-        fan_next, next_cone, *_rest = _walk(spot, day_tails, rng, SESSION_STEPS, start)
-
-    # ---- Bayesian: P(up close) posterior from the same daily record ----
-    bayes = None
-    if n > 0:
-        k = int(np.sum(rets_d > 0))
-        lo, hi = _beta_ci(k, n)
-        bayes = {"k": k, "n": n, "mean": round((k + 1.0) / (n + 2.0), 4), "ci95": [round(lo, 4), round(hi, 4)]}
+        fan_next, next_cone, *_rest = _walk(spot, day_walks, rng, SESSION_STEPS, start, p_up=tilt_p)
+    elif n > 0:  # no usable 5m history: fall back to whole daily returns
+        next_cone = _qtl(spot * (1.0 + rets_d[rng.integers(0, n, size=N_PATHS)]))
 
     return {
         "key": key, "asof": now.isoformat(), "price": round(spot, 2), "trading_day": trading_day,
@@ -239,14 +302,18 @@ def predict(key: str, df5, dfd, now: datetime, spot: float | None = None,
         "fan": {"today": fan_today, "next": fan_next},
         "next_session": next_cone,
         "bayes_up": bayes,
+        "levels": _dedupe_levels(levels, spot),
+        "pattern": pattern_read(df5),
         "daily": daily_read(dfd, spot, now.date()),
-        "size": {"paths": N_PATHS, "intraday_sessions": intraday_sessions, "daily_days": n},
-        "method": ("Monte Carlo (bootstrap of the index's own intraday bars) for the fan; "
-                   "Bayesian Beta posterior (Laplace) for the daily up-rate. Both read the past: "
-                   "they narrow what to expect, they do not promise it."),
+        "size": {"paths": N_PATHS, "intraday_sessions": intraday_sessions,
+                 "day_types": day_types, "daily_days": n},
+        "method": ("Monte Carlo that re-plays the index's own past afternoon bars, tilted by "
+                   "the Bayesian daily P(up): up-structure samples up-day afternoons, down-structure "
+                   "down ones. Key levels and the newest 5m candle pattern ride along. It describes "
+                   "what usually follows this chart shape; it is not a promise."),
         "caveats": [
             "The fan says where price USUALLY drifts step by step, not what WILL happen.",
             "Barrier odds assume the plan's stop and target hold all afternoon - news breaks them.",
-            "Weekend and holiday reads have no today fan; the next-session fan uses the last sessions.",
+            "Levels are magnets, not walls: a strong candle goes straight through them.",
         ],
     }

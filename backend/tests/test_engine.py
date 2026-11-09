@@ -1323,6 +1323,51 @@ def test_predict_closed_day_has_no_intraday_cone():
     assert out["daily"]["days"] > 0
 
 
+def test_predict_fan_follows_the_chart_direction():
+    # Owner (9 Nov): "it should use the actual chart pattern". With everything else fixed,
+    # an all-up daily record must tilt the next-session fan harder to up-day tails than an
+    # all-down record does - the fan inherits the chart's direction, not a coin flip.
+    from backend.engine import predict as pr
+    df5 = session_bars(days=40, seed=2)
+    now = datetime(2026, 10, 21, 10, 30, tzinfo=IST)
+    spot = 23000.0
+    idx = pd.date_range("2026-03-01", periods=200, freq="D", tz=IST)
+    up_walk = np.linspace(20000.0, 24500.0, 200)      # 200 straight up closes
+    dn_walk = np.linspace(24500.0, 20000.0, 200)      # 200 straight down closes
+    up_daily = pd.DataFrame({"open": up_walk, "high": up_walk * 1.002, "low": up_walk * 0.998,
+                             "close": up_walk}, index=idx)
+    dn_daily = pd.DataFrame({"open": dn_walk, "high": dn_walk * 1.002, "low": dn_walk * 0.998,
+                             "close": dn_walk}, index=idx)
+    out_up = pr.predict("NIFTY", df5, up_daily, now, spot=spot, seed=5)
+    out_dn = pr.predict("NIFTY", df5, dn_daily, now, spot=spot, seed=5)
+    assert out_up["bayes_up"]["mean"] > 0.9 and out_dn["bayes_up"]["mean"] < 0.1
+    med_up = out_up["fan"]["next"][-1]["median"]
+    med_dn = out_dn["fan"]["next"][-1]["median"]
+    assert med_up > med_dn, "up-structure must sample up-day tails harder than down-structure"
+    assert out_up["fan"]["next"][-1]["p_up"] > out_dn["fan"]["next"][-1]["p_up"]
+    # day-type tagging is visible in the payload for honesty
+    dt = out_up["size"]["day_types"]
+    assert dt["up"] + dt["down"] == out_up["size"]["intraday_sessions"]
+
+
+def test_predict_levels_dedupe_and_pattern_read():
+    from backend.engine import predict as pr
+    # Key Levels can name the same price twice; the strongest tag wins, nearest sorts first.
+    levels = [{"name": "Round Number", "price": 22980.0, "weight": 1},
+              {"name": "Prev Close", "price": 22980.0, "weight": 2},
+              {"name": "Swing zone (3 touches)", "price": 23120.0, "weight": 3}]
+    ded = pr._dedupe_levels(levels, 23000.0)
+    assert len(ded) == 2
+    assert ded[0]["price"] == 22980.0 and ded[0]["name"] == "Prev Close"
+    assert ded[1]["name"].startswith("Swing zone")
+    assert pr._dedupe_levels([], 23000.0) == []
+    # Pattern read: the same detector the signal engine uses, newest pattern first.
+    df5 = session_bars(days=40, seed=2)
+    pat = pr.pattern_read(df5)
+    assert pat is None or ({"name", "dir", "meaning", "kind"} <= set(pat) and pat["dir"] in (-1, 0, 1))
+    assert pr.pattern_read(df5.head(10)) is None  # too few bars to judge
+
+
 def test_owner_bar_blocks_low_evidence_and_oversize_loss(tmp_path):
     # Owner rules of 9 Nov (words recorded in MAILBOX): per-trade worst case capped, and no
     # entry unless the evidence backs the direction (score) and the MTF (daily included) agrees.
