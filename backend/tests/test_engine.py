@@ -1285,15 +1285,25 @@ def test_predict_cone_and_bayes_are_sane(tmp_path):
     t = out["today"]
     assert t["q10"] <= t["q25"] <= t["median"] <= t["q75"] <= t["q90"]
     assert 0.0 <= out["today_p_close_up"]["mc"] <= 1.0
+    assert 0.0 <= out["today_p_close_up"]["from_now"] <= 1.0
     b = out["barriers"]
     assert 0.0 <= b["touch_stop"] <= 1.0 and b["touch_target"] >= b["target_before_stop"] >= 0.0
+    # The fan: one row per remaining 5-minute step, ordered, each with its own odds.
+    fan = out["fan"]["today"]
+    assert len(fan) == (285 + 4) // 5  # 10:30 -> 15:15 is 285 min = 57 five-minute steps
+    for row in fan:
+        assert row["q10"] <= row["q25"] <= row["median"] <= row["q75"] <= row["q90"]
+        assert 0.0 <= row["p_up"] <= 1.0
+    assert fan[0]["t"] < fan[-1]["t"]
     bs = out["bayes_up"]
     assert bs["n"] >= 30 and 0.0 < bs["mean"] < 1.0 and bs["ci95"][0] <= bs["mean"] <= bs["ci95"][1]
     ns = out["next_session"]
     assert ns["q10"] <= ns["q25"] <= ns["median"] <= ns["q75"] <= ns["q90"]
+    fan_next = out["fan"]["next"]
+    assert len(fan_next) == pr.SESSION_STEPS and all(r["q10"] <= r["median"] <= r["q90"] for r in fan_next)
     again = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
                        direction=1, seed=11)
-    assert again == out, "same seed must give the same cone"
+    assert again == out, "same seed must give the same fan"
     # A sell plan mirrors the barriers: stop above, target below.
     out_sell = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
                           direction=-1, seed=11)
