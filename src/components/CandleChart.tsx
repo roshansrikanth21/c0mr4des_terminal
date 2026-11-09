@@ -1,16 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  CandlestickSeries, ColorType, createChart, createSeriesMarkers, CrosshairMode, LineStyle,
+  CandlestickSeries, ColorType, createChart, createSeriesMarkers, CrosshairMode, LineStyle, LineSeries,
   type IChartApi, type ISeriesApi, type SeriesMarker, type Time, type IPriceLine, type ISeriesMarkersPluginApi,
 } from 'lightweight-charts';
 import { Activity } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { getJSON, type Analysis, type Candle, type Symbol } from '@/lib/api';
+import { getJSON, usePredict, type Analysis, type Candle, type FanStep, type Symbol } from '@/lib/api';
 import { cssColor, useAppearance } from '@/lib/appearance';
 
 const IST_OFFSET = 19800; // chart renders UTC; shift so the axis reads Indian time
 const INTERVALS = ['1m', '5m', '15m', '1d'] as const;
 type Interval = (typeof INTERVALS)[number];
+
+type ForecastSeries = { median: ISeriesApi<'Line'>; hi: ISeriesApi<'Line'>; lo: ISeriesApi<'Line'> };
 
 const LEVEL_COLORS: Record<string, string> = {
   'Prev Day High': '#f59e0b', 'Prev Day Low': '#f59e0b', 'Prev Close': '#a1a1aa',
@@ -29,6 +31,8 @@ export function CandleChart({ symbol, analysis }: { symbol: Symbol; analysis: An
   const hostRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const forecastRef = useRef<ForecastSeries | null>(null);
+  const fittedFanRef = useRef(0);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const linesRef = useRef<IPriceLine[]>([]);
   const [interval, setInterval] = useState<Interval>('5m');
@@ -55,8 +59,21 @@ export function CandleChart({ symbol, analysis }: { symbol: Symbol; analysis: An
     });
     chartRef.current = chart;
     seriesRef.current = series;
+    // Forecast overlay (owner, 9 Nov: the predicted range ON the chart, dotted): the
+    // Monte Carlo median path in amber and the 10-90% band edges in dotted violet.
+    forecastRef.current = {
+      median: chart.addSeries(LineSeries, { color: '#f59e0b', lineWidth: 2, lineStyle: LineStyle.Dotted,
+                                            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      hi: chart.addSeries(LineSeries, { color: 'rgba(139, 92, 246, 0.8)', lineWidth: 1, lineStyle: LineStyle.Dotted,
+                                        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+      lo: chart.addSeries(LineSeries, { color: 'rgba(139, 92, 246, 0.8)', lineWidth: 1, lineStyle: LineStyle.Dotted,
+                                        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }),
+    };
     markersRef.current = createSeriesMarkers(series, []);
-    return () => { chart.remove(); chartRef.current = null; seriesRef.current = null; };
+    return () => {
+      chart.remove();
+      chartRef.current = null; seriesRef.current = null; forecastRef.current = null;
+    };
   }, []);
 
   // 5m candles come with every live analysis; other intervals are fetched on demand
@@ -87,6 +104,28 @@ export function CandleChart({ symbol, analysis }: { symbol: Symbol; analysis: An
   }, [candles, interval]);
 
   useEffect(() => { chartRef.current?.timeScale().fitContent(); }, [symbol, interval]);
+
+  // forecast overlay (owner, 9 Nov): fan.today continues the candles from where they end
+  const { data: pred } = usePredict(symbol);
+  useEffect(() => {
+    const f = forecastRef.current;
+    if (!f) return;
+    const fan = interval === '5m' ? pred?.fan?.today : undefined;
+    if (!fan?.length) {
+      f.median.setData([]); f.hi.setData([]); f.lo.setData([]);
+      return;
+    }
+    const rows = (get: (s: FanStep) => number) =>
+      fan.map((s) => ({ time: (Math.floor(new Date(s.t).getTime() / 1000) + IST_OFFSET) as Time, value: get(s) }));
+    f.median.setData(rows(s => s.median));
+    f.hi.setData(rows(s => s.q90));
+    f.lo.setData(rows(s => s.q10));
+    // refit only as the fan actually changes length, so polls don't jiggle the viewport
+    if (fittedFanRef.current !== fan.length) {
+      fittedFanRef.current = fan.length;
+      chartRef.current?.timeScale().fitContent();
+    }
+  }, [pred?.fan?.today, interval]);
 
   useEffect(() => {
     const c = themeColors();
@@ -161,6 +200,11 @@ export function CandleChart({ symbol, analysis }: { symbol: Symbol; analysis: An
               {delayed ? 'Yahoo · delayed' : 'Angel One · live'}
             </span>
           )}
+          {pred?.fan?.today?.length ? (
+            <span className="text-[9px] font-mono uppercase tracking-widest px-2 py-0.5 rounded-sm border border-violet-500/40 text-violet-400">
+              MC+Bayes forecast · dotted
+            </span>
+          ) : null}
         </div>
         <div className="flex items-center gap-1">
           <button onClick={() => setShowLevels((v) => !v)}

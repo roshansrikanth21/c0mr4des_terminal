@@ -456,11 +456,17 @@ export function OrbPanel({ a }: { a: Analysis | null }) {
 /* ---------------- PREDICT (owner request, 9 Nov: Bayesian + Monte Carlo range) ---------------- */
 
 /* Fan forecast (owner, 9 Nov: "a probability showing it will move up or down with the chart"):
-   percentile bands around the median path, dashed line where price stands now, the chart's
-   own key levels drawn through the fan, and a slim per-step strip that goes green when most
-   paths are above the current price, red below (brightness = distance from a coin flip). */
+   violet percentile bands around the amber median path, dashed line where price stands now,
+   the chart's own key levels drawn through the fan (short tags, de-overlapped), and a per-step
+   strip that goes green when most paths are above the current price, red below
+   (brightness = distance from a coin flip). Colors match the CandleChart overlay. */
+const lvTag = (n: string) => n
+  .replace('Prev Day High', 'PDH').replace('Prev Day Low', 'PDL').replace('Prev Close', 'PCL')
+  .replace('Opening Range ', 'OR').replace('Swing zone (', 'Zone ').replace(' touches)', 'x')
+  .replace('Round Number', 'Round').replace('Today Open', 'Open').replace('CPR', 'CPR');
+
 function FanChart({ fan, spot, levels = [] }: { fan: FanStep[]; spot: number; levels?: PredictLevel[] }) {
-  const W = 306, H = 132, TOP = 8, STRIP = 9, GAP = 5;
+  const W = 306, H = 148, TOP = 8, STRIP = 9, GAP = 5;
   const BOT = H - STRIP - GAP - 1;                     // price-zone bottom; the strip sits under it
   const lo = Math.min(...fan.map(s => s.q10), spot);
   const hi = Math.max(...fan.map(s => s.q90), spot);
@@ -478,23 +484,33 @@ function FanChart({ fan, spot, levels = [] }: { fan: FanStep[]; spot: number; le
   const fmt0 = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 0 });
   const spotY = py(spot);
   const slotW = (W - 6) / n;
-  const shownLevels = levels.filter(lv => lv.price > ylo && lv.price < yhi).slice(0, 5);
+  // nearest levels first (backend sorts them), de-overlapped before drawing
+  const shownLevels: PredictLevel[] = [];
+  let lastY = -Infinity;
+  for (const lv of levels.slice(0, 8)) {
+    if (lv.price <= ylo || lv.price >= yhi) continue;
+    const y = py(lv.price);
+    if (Math.abs(y - lastY) < (BOT - TOP) * 0.09) continue;
+    shownLevels.push(lv);
+    lastY = y;
+    if (shownLevels.length >= 3) break;
+  }
   return (
     <div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Monte Carlo probability fan">
-        <path d={band(s => s.q90, s => s.q10)} className="fill-primary" fillOpacity={0.1} />
-        <path d={band(s => s.q75, s => s.q25)} className="fill-primary" fillOpacity={0.24} />
+        <path d={band(s => s.q90, s => s.q10)} fill="#8b5cf6" fillOpacity={0.14} />
+        <path d={band(s => s.q75, s => s.q25)} fill="#8b5cf6" fillOpacity={0.3} />
         {shownLevels.map(lv => (
           <g key={`${lv.name}-${lv.price}`}>
             <line x1={3} x2={W - 3} y1={py(lv.price)} y2={py(lv.price)} strokeDasharray="2 3"
-                  className="stroke-muted-foreground" strokeWidth={0.7} opacity={0.5} />
-            <text x={W - 4} y={py(lv.price) - 1.5} textAnchor="end" fontSize={6.5} opacity={0.75}
-                  className="fill-muted-foreground">{lv.name}</text>
+                  stroke="#a1a1aa" strokeWidth={0.7} opacity={0.55} />
+            <text x={W - 4} y={py(lv.price) - 1.5} textAnchor="end" fontSize={6.5} opacity={0.8}
+                  fill="#a1a1aa">{lvTag(lv.name)}</text>
           </g>
         ))}
         {spot > ylo && spot < yhi &&
-          <line x1={3} x2={W - 3} y1={spotY} y2={spotY} strokeDasharray="3 3" className="stroke-muted-foreground" strokeWidth={1} />}
-        <path d={path(s => s.median)} fill="none" className="stroke-primary" strokeWidth={1.8} />
+          <line x1={3} x2={W - 3} y1={spotY} y2={spotY} strokeDasharray="3 3" stroke="#e4e4e7" strokeWidth={1} />}
+        <path d={path(s => s.median)} fill="none" stroke="#f59e0b" strokeWidth={2} />
         {fan.map((s, i) => (
           <rect key={s.t} x={Math.max(0.5, px(i) - slotW * 0.4)} y={BOT + GAP}
                 width={Math.max(1.2, slotW * 0.8)} height={STRIP}
