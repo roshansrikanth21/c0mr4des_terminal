@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 load_dotenv(Path(__file__).with_name(".env"))
@@ -252,6 +253,51 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="C0MR4DE Terminal", version="2.0", lifespan=lifespan)
+
+import base64  # noqa: E402
+import hmac  # noqa: E402
+import os  # noqa: E402
+
+
+class DashboardGate:
+    """Optional password gate for the whole app (owner, 10 Nov: 'gate it').
+
+    Set DASHBOARD_PASSWORD in backend/.env on a machine that is exposed to the
+    internet (the cloudflared quick tunnel). The browser then asks once for a
+    username + password (any username; the password is what matters) and keeps
+    it for the session - same for the live websocket. Local machines leave the
+    variable unset and nothing changes. Secrets live in .env only, never in git.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        pwd = (os.getenv("DASHBOARD_PASSWORD") or "").strip()
+        if scope["type"] in ("http", "websocket") and pwd:
+            headers = {k.lower(): v for k, v in (scope.get("headers") or [])}
+            auth = headers.get(b"authorization", b"")
+            ok = False
+            if auth.startswith(b"Basic "):
+                try:
+                    import base64 as _b
+                    _user, _, secret = _b.b64decode(auth[6:]).decode("utf-8", "ignore").partition(":")
+                    ok = bool(secret) and hmac.compare_digest(secret, pwd)
+                except Exception:  # noqa: BLE001 - malformed header = not authorised
+                    ok = False
+            if not ok:
+                if scope["type"] == "http":
+                    resp = JSONResponse(
+                        {"error": "password required - use the dashboard login"},
+                        status_code=401, headers={"WWW-Authenticate": 'Basic realm="c0mr4des terminal"'})
+                    await resp(scope, receive, send)
+                else:
+                    await send({"type": "websocket.close", "code": 4401})
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(DashboardGate)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
                    allow_methods=["*"], allow_headers=["*"])
