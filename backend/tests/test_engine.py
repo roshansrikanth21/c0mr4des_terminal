@@ -388,6 +388,9 @@ def test_expiry_play_is_one_lot_with_capped_loss():
     o = sig["option"]
     assert sig["verdict"] == "BUY" and o["lots"] == 1 and o["expiry"] == "2026-10-27"
     assert (o["premium"] - o["premium_stop"]) * 65 <= service.EXPIRY_MAX_LOSS + 1
+    # the figures the per-trade loss cap reads must describe the one lot actually taken
+    assert o["quantity"] == 65 and o["capital_needed"] == round(o["premium"] * 65, 2)
+    assert o["max_loss"] <= service.EXPIRY_MAX_LOSS + o["charges_round_trip"] + 1
     assert service._expiry_signal("NIFTY", orb_sig, {**sess, "is_expiry_day": False}, 23000, None, {}, None,
                                   date(2026, 10, 27), now, True) is None
 

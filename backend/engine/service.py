@@ -220,6 +220,11 @@ def _expiry_signal(key, orb_sig, sess, price, vix, settings, chain, expiry, now,
     lot = INSTRUMENTS[key].lot_size
     o["lots"], o["quantity"] = 1, lot
     o["premium_stop"] = round(max(o["premium_stop"], o["premium"] - EXPIRY_MAX_LOSS / lot, 0.05), 2)
+    # plan_trade sized these for its own lot count; restate them for the one lot this slot really takes,
+    # or the per-trade loss cap judges a position that will never be opened.
+    o["charges_round_trip"] = options.round_trip_cost(o["premium"], lot)
+    o["capital_needed"] = round(o["premium"] * lot, 2)
+    o["max_loss"] = round((o["premium"] - o["premium_stop"]) * lot + o["charges_round_trip"], 2)
     sig["option"], sig["_chain"] = o, chain
     sig["text"] = (f"Expiry-day play ({'NOW' if sig['verdict'] != 'NO TRADE' else 'info'}): {orb_sig.get('text', '')} "
                    f"Trades today's {o['strike']:.0f} {o['option_type']} at about Rs {o['premium']:.1f}, 1 lot, "
