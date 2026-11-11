@@ -129,7 +129,7 @@ def build_payload(key: str = "NIFTY") -> dict:
     log(f"bars {len(closes)} from {src5}, spot {spot:.2f}")
 
     # NEXT SESSION: whole-day fan anchored at the next trading day's 09:15.
-    qn = _model().forecast(horizon=SESSION_STEPS, inputs=[ctx])
+    _, qn = _model().forecast(horizon=SESSION_STEPS, inputs=[ctx])
     start = datetime.combine(next_trading_day(now), MARKET_OPEN, tzinfo=IST)
     next_rows = [_row(qn, j, start + timedelta(minutes=5 * (j + 1)), spot) for j in range(SESSION_STEPS)]
     payload = {"key": key, "engine": "TimesFM 2.5-200M (PC worker)",
@@ -141,7 +141,7 @@ def build_payload(key: str = "NIFTY") -> dict:
         left = minutes_left_in_session(now)
         if left > 0:
             n = max(1, min(72, (left + 4) // 5))
-            qt = _model().forecast(horizon=n, inputs=[ctx])
+            _, qt = _model().forecast(horizon=n, inputs=[ctx])
             rows = [_row(qt, j, now + timedelta(minutes=5 * (j + 1)), spot) for j in range(n)]
             session = df5[df5.index.date == now.date()]
             day_open = float(session["open"].iloc[0]) if not session.empty else spot
