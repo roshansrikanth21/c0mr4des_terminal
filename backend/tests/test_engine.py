@@ -1447,3 +1447,60 @@ def test_owner_bar_blocks_low_evidence_and_oversize_loss(tmp_path):
     assert ev[0]["type"] == "blocked" and "owner evidence bar" in ev[0]["reason"]
     ev = run(0.6, 1800.0)
     assert ev[0]["type"] == "paper_entry", "a backed-up, affordable trade must still go through"
+
+
+# ---------------- TimesFM push overlay (owner PC worker, option A, 11 Nov) ----------------
+def _write_push(path, now, *, age_s=0.0, key="NIFTY", today=True):
+    import json
+    fan = [{"t": (now + timedelta(minutes=5 * (i + 1))).isoformat(), "q10": 100.0, "q25": 101.0,
+            "median": 102.0, "q75": 103.0, "q90": 104.0, "p_up": 0.5} for i in range(4)]
+    cone = {"q10": 100.0, "q25": 101.0, "median": 102.0, "q75": 103.0, "q90": 104.0, "exp_move": 4.0}
+    raw = {"key": key, "engine": "TimesFM test push", "pushed_at": now.isoformat(),
+           "next": {"asof": (now - timedelta(seconds=age_s)).isoformat(), "cone": cone, "fan": fan}}
+    if today:
+        raw["today"] = {"asof": (now - timedelta(seconds=age_s)).isoformat(), "cone": cone, "fan": fan,
+                        "p_close_up": {"mc": 0.7, "from_now": 0.6123, "day_open": 99.0}}
+    path.write_text(json.dumps(raw))
+
+
+def test_predict_uses_fresh_timesfm_push(tmp_path, monkeypatch):
+    from backend.engine import predict as pr
+    now = datetime(2026, 10, 21, 10, 30, tzinfo=IST)  # mid-morning on a trading day
+    df5 = session_bars(days=40, seed=2)
+    idx = pd.date_range("2026-03-01", periods=60, freq="D", tz=IST)
+    walk = 21000.0 + np.arange(60) * 9.0
+    daily = pd.DataFrame({"open": walk, "high": walk * 1.002, "low": walk * 0.998, "close": walk}, index=idx)
+    p = tmp_path / "push.json"
+    _write_push(p, now)
+    monkeypatch.setenv("TIMESFM_PUSH_PATH", str(p))
+    out = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                     direction=1, seed=11)
+    assert out["forecast_engine"].startswith("TimesFM")
+    assert out["next_session"]["median"] == 102.0        # pushed cone wins
+    assert out["fan"]["next"][0]["q10"] == 100.0         # pushed next fan wins
+    assert out["today"]["median"] == 102.0               # pushed today fan wins
+    assert out["today_p_close_up"]["from_now"] == 0.6123  # pushed probability wins
+    assert out["barriers"]["touch_stop"] is not None     # barriers stay Monte Carlo
+
+
+def test_predict_ignores_stale_or_broken_push(tmp_path, monkeypatch):
+    from backend.engine import predict as pr
+    now = datetime(2026, 10, 21, 10, 30, tzinfo=IST)
+    df5 = session_bars(days=40, seed=2)
+    idx = pd.date_range("2026-03-01", periods=60, freq="D", tz=IST)
+    walk = 21000.0 + np.arange(60) * 9.0
+    daily = pd.DataFrame({"open": walk, "high": walk * 1.002, "low": walk * 0.998, "close": walk}, index=idx)
+    base = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                      direction=1, seed=11)
+    stale = tmp_path / "stale.json"
+    _write_push(stale, now, age_s=3600)
+    monkeypatch.setenv("TIMESFM_PUSH_PATH", str(stale))
+    out = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                     direction=1, seed=11)
+    assert out == base, "a stale push must change nothing"
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"key": "NIFTY", "next": {"asof": "not a date", "fan": []}}')
+    monkeypatch.setenv("TIMESFM_PUSH_PATH", str(bad))
+    out2 = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                      direction=1, seed=11)
+    assert out2["forecast_engine"] == "Monte Carlo (on this server)"

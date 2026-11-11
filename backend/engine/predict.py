@@ -27,7 +27,10 @@ Nothing here decides a trade: it is the envelope the desk stands in, not a promi
 """
 from __future__ import annotations
 
+import json
+import os
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 
 import numpy as np
 
@@ -180,6 +183,43 @@ def _dedupe_levels(levels, spot: float) -> list[dict]:
     return sorted(best.values(), key=lambda x: abs(x["price"] - spot))[:8]
 
 
+def _timesfm_push(now: datetime, key: str) -> dict | None:
+    """A TimesFM fan computed on the owner's PC and pushed here (owner's option A, 11 Nov).
+
+    The PC worker (tools/timesfm_worker.py) forecasts on the same 5-minute closes and
+    scp-pushes a JSON file to the VM. A section is used only when its own `asof` is
+    fresh (two 5m bars of tolerance, so a slow Yahoo refresh cannot slip in); anything
+    stale, malformed or for another key is ignored - never fatal, the Monte Carlo below
+    always stands behind it.
+    """
+    path = os.environ.get("TIMESFM_PUSH_PATH") or str(Path.home() / "timesfm_push.json")
+    try:
+        raw = json.loads(Path(path).read_text())
+    except Exception:
+        return None
+    if not isinstance(raw, dict) or raw.get("key") != key:
+        return None
+    out = {}
+    for section in ("today", "next"):
+        sec = raw.get(section)
+        if not isinstance(sec, dict) or not isinstance(sec.get("fan"), list) or not sec["fan"]:
+            continue
+        try:
+            asof = datetime.fromisoformat(str(sec["asof"]))
+            if asof.tzinfo is None:
+                asof = asof.replace(tzinfo=IST)
+            age = (now - asof).total_seconds()
+            if age > 660 or age < -300:
+                continue
+            first = sec["fan"][0]
+            if not all(k in first for k in ("q10", "q25", "median", "q75", "q90", "p_up", "t")):
+                continue
+            out[section] = sec
+        except Exception:
+            continue
+    return out or None
+
+
 def pattern_read(df5) -> dict | None:
     """The newest candlestick pattern the signal engine sees on the 5m bars -
     the same detector that feeds the score, so the panel and the engine agree."""
@@ -290,6 +330,44 @@ def predict(key: str, df5, dfd, now: datetime, spot: float | None = None,
     elif n > 0:  # no usable 5m history: fall back to whole daily returns
         next_cone = _qtl(spot * (1.0 + rets_d[rng.integers(0, n, size=N_PATHS)]))
 
+    # ---- TimesFM overlay (owner's PC worker, option A, 11 Nov): a fresh pushed fan wins
+    # for the fan/cone/probability fields; barrier odds and levels stay Monte Carlo, since
+    # quantile fans cannot count barrier touches. A stale/missing push = pure Monte Carlo.
+    push = _timesfm_push(now, key)
+    engine = None
+    if push:
+        t = push.get("today")
+        if t:
+            fan_today = t["fan"]
+            if isinstance(t.get("cone"), dict):
+                today_cone = t["cone"]
+            if isinstance(t.get("p_close_up"), dict):
+                pcu = t["p_close_up"]
+                p_close_up_mc = pcu.get("mc", p_close_up_mc)
+                p_end_above_spot = pcu.get("from_now", p_end_above_spot)
+                if pcu.get("day_open") is not None:
+                    day_open = pcu["day_open"]
+            engine = {"name": str(push.get("engine") or "TimesFM"),
+                      "asof": str(t["asof"]),
+                      "age_s": int((now - datetime.fromisoformat(str(t["asof"]))).total_seconds())}
+        nx = push.get("next")
+        if nx:
+            fan_next = nx["fan"]
+            if isinstance(nx.get("cone"), dict):
+                next_cone = nx["cone"]
+            if engine is None:
+                engine = {"name": str(push.get("engine") or "TimesFM"),
+                          "asof": str(nx["asof"]),
+                          "age_s": int((now - datetime.fromisoformat(str(nx["asof"]))).total_seconds())}
+
+    base_method = ("Monte Carlo that re-plays the index's own past afternoon bars, tilted by "
+                   "the Bayesian daily P(up): up-structure samples up-day afternoons, down-structure "
+                   "down ones. Key levels and the newest 5m candle pattern ride along. It describes "
+                   "what usually follows this chart shape; it is not a promise.")
+    method = (f"Forecast fan from {engine['name']} (computed on the owner's PC, pushed "
+              f"{max(engine['age_s'], 0) // 60} min ago); barrier odds and key levels: {base_method}"
+              if engine else base_method)
+
     return {
         "key": key, "asof": now.isoformat(), "price": round(spot, 2), "trading_day": trading_day,
         "minutes_left": minutes_left,
@@ -307,10 +385,8 @@ def predict(key: str, df5, dfd, now: datetime, spot: float | None = None,
         "daily": daily_read(dfd, spot, now.date()),
         "size": {"paths": N_PATHS, "intraday_sessions": intraday_sessions,
                  "day_types": day_types, "daily_days": n},
-        "method": ("Monte Carlo that re-plays the index's own past afternoon bars, tilted by "
-                   "the Bayesian daily P(up): up-structure samples up-day afternoons, down-structure "
-                   "down ones. Key levels and the newest 5m candle pattern ride along. It describes "
-                   "what usually follows this chart shape; it is not a promise."),
+        "method": method,
+        "forecast_engine": engine["name"] if engine else "Monte Carlo (on this server)",
         "caveats": [
             "The fan says where price USUALLY drifts step by step, not what WILL happen.",
             "Barrier odds assume the plan's stop and target hold all afternoon - news breaks them.",
