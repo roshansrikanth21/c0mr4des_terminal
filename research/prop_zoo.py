@@ -19,8 +19,13 @@ OUT = ROOT / "data" / "prop_trades.pkl"
 
 # round-trip cost in price units: typical prop-firm raw spread plus commission
 COST = {"EURUSD": 0.00010, "GBPUSD": 0.00014, "USDJPY": 0.014, "AUDUSD": 0.00012, "XAUUSD": 0.40, "US500": 0.7, "NAS100": 2.5}
+FRAC = set()          # symbols whose COST is a fraction of price (crypto), not price units
 MIN_RISK = 4          # skip a trade whose stop is closer than 4x the cost
 TRADES = []
+
+
+def cost(sym, price):
+    return COST[sym] * price if sym in FRAC else COST[sym]
 
 
 def atr(df, n=14):
@@ -36,7 +41,7 @@ def rsi(c, n):
 
 
 def record(strat, sym, df, i, j, side, entry, exit_, risk):
-    TRADES.append((strat, sym, df.index[i], df.index[j], side, (side * (exit_ - entry) - COST[sym]) / risk))
+    TRADES.append((strat, sym, df.index[i], df.index[j], side, (side * (exit_ - entry) - cost(sym, entry)) / risk))
 
 
 def walk(strat, sym, df, i, side, stop, target, last):
@@ -44,7 +49,7 @@ def walk(strat, sym, df, i, side, stop, target, last):
     O, H, L, C = (df[k].values for k in ("open", "high", "low", "close"))
     entry = C[i]
     risk = side * (entry - stop)
-    if risk < MIN_RISK * COST[sym] or last <= i:
+    if risk < MIN_RISK * cost(sym, entry) or last <= i:
         return
     for j in range(i + 1, last + 1):
         if side * (O[j] - stop) <= 0:
@@ -76,7 +81,7 @@ def machine(strat, sym, df, go, out_long, out_short, a, stop_k, tgt_k=None, max_
                 record(strat, sym, df, i0, i, pos, entry, px, risk)
                 pos = 0
             continue
-        if go[i] and a[i] == a[i] and stop_k * a[i] >= MIN_RISK * COST[sym]:
+        if go[i] and a[i] == a[i] and stop_k * a[i] >= MIN_RISK * cost(sym, C[i]):
             pos, i0, entry, risk = int(go[i]), i, C[i], stop_k * a[i]
             stop = entry - pos * risk
             tgt = entry + pos * tgt_k * risk if tgt_k else None
@@ -204,6 +209,10 @@ def hourly(sym, df):
 def daily(sym, df):
     d = df.resample("1D").agg({"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
     d = d[df["close"].resample("1D").count().reindex(d.index) >= 18]
+    daily_strats(sym, d)
+
+
+def daily_strats(sym, d):
     c = d["close"]
     a = atr(d).values
     hi20, lo20 = d["high"].rolling(20).max().shift(), d["low"].rolling(20).min().shift()
