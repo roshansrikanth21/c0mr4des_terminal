@@ -1701,3 +1701,17 @@ def test_learner_logs_decisions_with_reasons_then_outcomes_and_never_repeats(tmp
     assert rep["decisions_logged"] == r3["closed"] + r3["pending"] and rep["model"]["rows"] > 100
     assert all("R" in c and "features" in c for c in rep["recent"])
     assert L.report(tmp_path / "missing.json")["decisions_logged"] == 0
+
+
+def test_learner_gate_pauses_a_market_group_whose_own_picks_lost():
+    from datetime import datetime, timezone
+    from backend.engine.learner import allowed_groups
+    now = datetime(2026, 11, 13, tzinfo=timezone.utc)
+    seed = ([{"cls": 0, "t_out": "2026-06-01 10:00:00", "R": -0.5}] * 40 + [{"cls": 3, "t_out": "2026-06-01 10:00:00", "R": 0.4}] * 40
+            + [{"cls": 1, "t_out": "2026-06-01 10:00:00", "R": 1.0}] * 20 + [{"cls": 2, "t_out": "2024-01-01 10:00:00", "R": 1.0}] * 90)
+    assert allowed_groups(now, [], seed) == [3]                 # forex lost, gold too few, indices too old, crypto paying
+    live = [{"features": {"cls": 0}, "score": 0.3, "R": 2.0, "closed_at": "2026-11-01 09:00:00"}] * 30
+    assert allowed_groups(now, live, seed) == [0, 3]            # the engine's own recent winners reopen forex
+    skipped = [{"features": {"cls": 1}, "score": -0.2, "R": 2.0, "closed_at": "2026-11-01 09:00:00"}] * 30
+    assert allowed_groups(now, skipped, seed) == [3]            # ideas it did not like do not count
+    assert allowed_groups(now, [], []) == [0, 1, 2, 3]          # no history at all: nothing is paused

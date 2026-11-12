@@ -12,7 +12,10 @@ Once a week the model is retrained on the research log (about 120,000 past trade
 logged itself, so its own results feed its next decisions.
 
 Research verdict it starts from (research/LEARN_RESULTS.md): on unseen 2025-26 trades the model's picks had
-profit factor 1.06 against 0.89 for taking everything. Better, not yet proven. This engine is the forward test.
+profit factor 1.06 against 0.89 for taking everything. With the self-adjusting gate (trade a market group only
+while the engine's own picks there are making money; research/LEARN_ONLINE_RESULTS.md) the replay over 76,902
+decisions gave 905 trades, profit factor 1.26, t 2.2 on 2025-26. That passed, on the third take-rule tried.
+This engine is the forward test of exactly that.
 
 Run as a subprocess (`python -m backend.engine.learner`) so the heavy work never blocks the main loop;
 it prints one JSON line of events. `report()` only reads the state file and is safe to call from the app.
@@ -29,12 +32,13 @@ from pathlib import Path
 log = logging.getLogger("learner")
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data"
-STATE_FILE, LOG_FILE, MODEL_FILE, BASE_LOG = (DATA_DIR / n for n in
-                                              ("learner_state.json", "learner_log.jsonl", "learner_model.pkl", "learn_log.pkl"))
+STATE_FILE, LOG_FILE, MODEL_FILE, BASE_LOG, SEED_FILE = (DATA_DIR / n for n in (
+    "learner_state.json", "learner_log.jsonl", "learner_model.pkl", "learn_log.pkl", "learner_seed.json"))
+GROUPS = {0: "forex", 1: "gold", 2: "US indices", 3: "crypto"}
 MARKETS = {"EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "JPY=X", "AUDUSD": "AUDUSD=X", "XAUUSD": "GC=F", "US500": "ES=F",
            "NAS100": "NQ=F", "BTCUSD": "BTC-USD", "ETHUSD": "ETH-USD", "SOLUSD": "SOL-USD"}
 CRYPTO = ("BTCUSD", "ETHUSD", "SOLUSD")
-RULES = {"version": 1, "take_above_R": 0.05, "retrain_days": 7, "fresh_hours": 3, "need_taken": 200, "account": 100_000, "risk_pct": 0.5}
+RULES = {"version": 2, "take_above_R": 0.05, "gate_months": 12, "gate_min_picks": 30, "retrain_days": 7, "fresh_hours": 3, "need_taken": 200, "account": 100_000, "risk_pct": 0.5}
 LABELS = {"strat_id": "which rule it is", "sym_id": "which market it is", "cls": "the market group", "hour": "time of day",
           "dow": "day of week", "vol": "how volatile the market is", "vol_ratio": "volatility vs its last 20 days",
           "a_trend200": "trade direction vs the 200-hour trend", "a_trend50": "trade direction vs the 50-hour trend",
@@ -79,18 +83,45 @@ def _stats(rs: list[float]) -> dict:
             "win_rate": round(100 * sum(r > 0 for r in rs) / len(rs), 1), "profit_factor": round(g / l, 2) if l else None}
 
 
+def allowed_groups(now: datetime, closed: list[dict], seed: list[dict]) -> list[int]:
+    """The self-adjusting gate (research/LEARN_ONLINE_RESULTS.md, section 6): a market group is traded only while
+    the engine's own picks there (score above the take line), closed in the last 12 months, number 30+ and average
+    above zero. History = the research replay (seed) plus everything this engine has closed itself.
+    With almost no history at all (a fresh install without the seed) every group is allowed."""
+    lo = (now - timedelta(days=30.44 * RULES["gate_months"])).replace(tzinfo=None).isoformat(sep=" ")
+    rows = [(int(s["cls"]), s["R"]) for s in seed if str(s["t_out"]) >= lo]
+    rows += [(int(c["features"]["cls"]), c["R"]) for c in closed
+             if c.get("score", -9) > RULES["take_above_R"] and str(c["closed_at"]) >= lo]
+    if len(rows) < 100:
+        return sorted(GROUPS)
+    out = []
+    for g in GROUPS:
+        rs = [r for c, r in rows if c == g]
+        if len(rs) >= RULES["gate_min_picks"] and sum(rs) / len(rs) > 0:
+            out.append(g)
+    return out
+
+
+def _seed(path: Path = SEED_FILE) -> list[dict]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def report(path: Path = STATE_FILE) -> dict:
     st = load_state(path)
     closed = st["closed"]
     taken, skipped = [c["R"] for c in closed if c["take"]], [c["R"] for c in closed if not c["take"]]
     pend = list(st["pending"].values())
     return {"paper_only": True, "rules": RULES, "markets": list(MARKETS), "started": st["started"], "last_tick": st["last_tick"],
-            "ticks": st["ticks"], "model": st["model"],
+            "ticks": st["ticks"], "model": st["model"], "groups_allowed_now": st.get("groups_allowed"),
             "decisions_logged": len(closed) + len(pend),
             "open_taken": [p for p in pend if p["take"]], "open_skipped": sum(not p["take"] for p in pend),
             "taken": _stats(taken), "skipped": _stats(skipped), "need_taken": RULES["need_taken"],
             "recent": closed[-30:],
-            "research": {"judge_2025_26": {"model_picks_pf": 1.06, "all_trades_pf": 0.89, "t_stat": 0.8}, "passed": False},
+            "research": {"judge_2025_26": {"trades": 905, "pf": 1.26, "t_stat": 2.2, "all_trades_pf": 0.89}, "passed": True,
+                         "note": "self-adjusting gate, third take-rule tried; see research/LEARN_ONLINE_RESULTS.md"},
             "reading": "The model earns its keep only if 'taken' ends clearly better than 'skipped' and above zero."}
 
 
@@ -122,7 +153,7 @@ def explain(bundle: dict, row) -> list[str]:
 
 
 def tick(now: datetime | None = None, fetch=None, state_path: Path = STATE_FILE, log_path: Path = LOG_FILE,
-         model_path: Path = MODEL_FILE, base_path: Path = BASE_LOG) -> dict:
+         model_path: Path = MODEL_FILE, base_path: Path = BASE_LOG, seed_path: Path = SEED_FILE) -> dict:
     import numpy as np
     import pandas as pd
     sys.path.insert(0, str(ROOT))
@@ -211,14 +242,19 @@ def tick(now: datetime | None = None, fetch=None, state_path: Path = STATE_FILE,
         _journal({"event": "retrain", "at": now.isoformat(), **st["model"]}, log_path)
 
     # 2-4. new ideas: log the market, score, decide, say why
+    allowed = allowed_groups(now, st["closed"], _seed(seed_path))
+    st["groups_allowed"] = [GROUPS[g] for g in allowed]
     fresh = this_hour - pd.Timedelta(hours=RULES["fresh_hours"])
     new = work[(work["asof"] >= fresh) & ~work["key"].isin(st["seen"])].drop_duplicates("key")
     if len(new):
         new = new.assign(score=bundle["model"].predict(new[learn.FEATS]))
     for _, row in new.iterrows():
-        key, take = row["key"], bool(row["score"] > RULES["take_above_R"])
+        liked, open_ = bool(row["score"] > RULES["take_above_R"]), int(row["cls"]) in allowed
+        key, take = row["key"], liked and open_
         feats = {f: (None if row[f] != row[f] else round(float(row[f]), 5)) for f in learn.FEATS}
         why = explain(bundle, row.fillna(pd.Series(bundle["medians"])))
+        if liked and not open_:
+            why = [f"{GROUPS[int(row['cls'])]} is paused: the engine's own picks there lost over the last 12 months"] + why
         price = float(data[row["sym"]]["close"].asof(row["asof"]))
         d = {"key": key, "strat": row["strat"], "sym": row["sym"], "side": int(row["side"]), "entry_bar": str(row["asof"]),
              "price": price, "score": round(float(row["score"]), 4), "take": take, "why": why, "features": feats,
@@ -235,7 +271,8 @@ def tick(now: datetime | None = None, fetch=None, state_path: Path = STATE_FILE,
     st["started"] = st["started"] or now.isoformat()
     st["last_tick"], st["ticks"] = now.isoformat(), st["ticks"] + 1
     _save(st, state_path)
-    return {"events": events, "new": int(len(new)), "taken": int(new["score"].gt(RULES["take_above_R"]).sum()) if len(new) else 0,
+    return {"events": events, "new": int(len(new)), "groups_allowed": st["groups_allowed"],
+            "taken": sum(1 for k in new["key"] if st["pending"][k]["take"]) if len(new) else 0,
             "pending": len(st["pending"]), "closed": len(st["closed"])}
 
 
