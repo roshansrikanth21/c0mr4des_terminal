@@ -22,6 +22,8 @@ COST = {"EURUSD": 0.00010, "GBPUSD": 0.00014, "USDJPY": 0.014, "AUDUSD": 0.00012
 FRAC = set()          # symbols whose COST is a fraction of price (crypto), not price units
 MIN_RISK = 4          # skip a trade whose stop is closer than 4x the cost
 TRADES = []
+OPEN = []             # positions still open at the end of the data (used by the live engine)
+DAY_BARS = 18         # a day needs this many hourly bars to count (the live engine lowers it for today)
 
 
 def cost(sym, price):
@@ -85,6 +87,8 @@ def machine(strat, sym, df, go, out_long, out_short, a, stop_k, tgt_k=None, max_
             pos, i0, entry, risk = int(go[i]), i, C[i], stop_k * a[i]
             stop = entry - pos * risk
             tgt = entry + pos * tgt_k * risk if tgt_k else None
+    if pos:
+        OPEN.append((strat, sym, df.index[i0], pos))
 
 
 def days_of(df):
@@ -94,7 +98,7 @@ def days_of(df):
     prev = None
     for _, idx in pd.Series(pos).groupby(dates.values):
         idx = idx.values
-        if len(idx) < 18:
+        if len(idx) < DAY_BARS:
             continue
         yield prev, {int(h): int(k) for h, k in zip(df.index.hour[idx], idx)}, idx
         prev = idx

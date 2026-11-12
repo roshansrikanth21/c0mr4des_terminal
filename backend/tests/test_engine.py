@@ -1669,3 +1669,35 @@ def test_prop_challenge_phases_fail_restart_and_payout():
     st = challenge([tr(f"2026-02-{d:02d}", -2.6) for d in (2, 3, 4, 5)], 1.0)
     assert st["failed"] == 1 and st["worst_day_pct"] == -2.6              # 10% total loss
     assert challenge([tr("2026-01-05", 6)], 2.0)["phase"] == 2            # same trades, 2% risk: +12% passes phase 1
+
+
+def test_learner_logs_decisions_with_reasons_then_outcomes_and_never_repeats(tmp_path, monkeypatch):
+    import json
+    from datetime import timezone
+    import pandas as pd
+    import pytest
+    pytest.importorskip("sklearn")
+    from backend.engine import learner as L
+    full = _prop_hourly(days=420, seed=11)
+    monkeypatch.setattr(L, "MARKETS", {"EURUSD": "a", "BTCUSD": "b"})
+    paths = dict(state_path=tmp_path / "s.json", log_path=tmp_path / "l.jsonl", model_path=tmp_path / "m.pkl",
+                 base_path=tmp_path / "none.pkl")
+    at = lambda ts: ts.to_pydatetime().replace(tzinfo=timezone.utc)      # noqa: E731
+    t0 = full.index[-60]
+    fetch = lambda now: (lambda sym: full[full.index <= pd.Timestamp(now)])   # noqa: E731
+    r1 = L.tick(at(t0), fetch=fetch(t0), **paths)
+    assert r1["new"] >= 1 and r1["pending"] == r1["new"] and r1["closed"] == 0
+    rows = [json.loads(x) for x in open(paths["log_path"])]
+    assert rows[0]["event"] == "retrain" and rows[0]["live_rows"] == 0
+    d = [x for x in rows if x["event"] == "decision"]
+    assert len(d) == r1["new"] and all(x["why"] and x["features"]["vol"] is not None and "score" in x for x in d)
+    assert all(pd.Timestamp(x["entry_bar"]) >= t0 - pd.Timedelta(hours=4) for x in d)        # nothing back-filled
+    assert L.tick(at(t0), fetch=fetch(t0), **paths)["new"] == 0                                # same hour: nothing logged twice
+    t1 = full.index[-1]
+    r3 = L.tick(at(t1), fetch=fetch(t1), **paths)
+    assert r3["closed"] >= 1                                                                   # earlier ideas now have outcomes
+    rep = L.report(paths["state_path"])
+    assert rep["paper_only"] and rep["taken"]["n"] + rep["skipped"]["n"] == r3["closed"]
+    assert rep["decisions_logged"] == r3["closed"] + r3["pending"] and rep["model"]["rows"] > 100
+    assert all("R" in c and "features" in c for c in rep["recent"])
+    assert L.report(tmp_path / "missing.json")["decisions_logged"] == 0

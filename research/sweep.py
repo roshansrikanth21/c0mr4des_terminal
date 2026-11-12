@@ -87,19 +87,20 @@ def fvg(sym, df):
     """S16: a three-bar gap in the trend's direction; enter when price comes back into the gap and holds it."""
     H, L, C = (df[k].values for k in ("high", "low", "close"))
     e200 = df["close"].ewm(span=200, adjust=False).mean().values
-    for i in range(200, len(df) - 40):
+    n = len(df)
+    for i in range(200, n - 40 if n > 5000 else n):          # short (live) frames are scanned to the last bar
         for side in (1, -1):
             if side > 0 and not (L[i] > H[i - 2] and C[i] > e200[i]):
                 continue
             if side < 0 and not (H[i] < L[i - 2] and C[i] < e200[i]):
                 continue
             top, bot = (L[i], H[i - 2]) if side > 0 else (L[i - 2], H[i])
-            for j in range(i + 1, i + 13):
+            for j in range(i + 1, min(i + 13, n)):
                 if side > 0 and C[j] < bot or side < 0 and C[j] > top:
                     break
                 if (L[j] <= top) if side > 0 else (H[j] >= bot):
                     stop = L[i - 1] if side > 0 else H[i - 1]
-                    Z.walk("S16 fair-value-gap retest", sym, df, j, side, stop, C[j] + 2 * (C[j] - stop), j + 24)
+                    Z.walk("S16 fair-value-gap retest", sym, df, j, side, stop, C[j] + 2 * (C[j] - stop), min(j + 24, n - 1))
                     break
 
 

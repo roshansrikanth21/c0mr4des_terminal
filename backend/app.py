@@ -5,7 +5,9 @@ Run:  python -m uvicorn backend.app:app --port 8100
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,6 +26,7 @@ from .engine import capital_test  # noqa: E402
 from .engine import spreads  # noqa: E402
 from .engine import straddle  # noqa: E402
 from .engine import propbook  # noqa: E402
+from .engine import learner  # noqa: E402
 from .engine import predict as predict_mod  # noqa: E402
 from .engine.trader import go_no_go, live_enabled, paper, place_live_order, replay_paper, scorecard  # noqa: E402
 from .engine import replay  # noqa: E402
@@ -212,6 +215,11 @@ def _maybe_weekly_report() -> None:
     ch = pr["challenge"]["1%"]
     lines.append(f"[Prop challenge, paper] {pr['trades']}/{pr['need_trades']} trades, {pr['total_R']:+.1f}R, {len(pr['open'])} open; "
                  f"at 1% risk: attempt {ch['attempt']}, {propbook._phase_name(ch)}")
+    lr = learner.report()
+    tk, sk = lr["taken"], lr["skipped"]
+    lines.append(f"[Learning engine, paper] {lr['decisions_logged']} decisions logged; taken {tk['n']} ({tk['total_R']:+.1f}R"
+                 + (f", avg {tk['avg_R']:+.2f}R" if tk["n"] else "") + f"), skipped {sk['n']}"
+                 + (f" (avg {sk['avg_R']:+.2f}R)" if sk["n"] else ""))
     notify.send("\n".join(lines))
 
 
@@ -252,6 +260,40 @@ async def _maybe_prop() -> None:
         log.exception("prop book failed - main loop unaffected")
 
 
+_LEARNER_NEXT, _LEARNER_BUSY = 0.0, False
+
+
+async def _learner_run() -> None:
+    """Self-learning paper engine (backend/engine/learner.py) in its own process, so it never blocks this loop."""
+    global _LEARNER_BUSY
+    _LEARNER_BUSY = True
+    try:
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-m", "backend.engine.learner",
+                                                    cwd=str(Path(__file__).resolve().parents[1]),
+                                                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), 1500)
+        res = json.loads(out.decode().strip().splitlines()[-1])
+        if res.get("error"):
+            log.warning("learner: %s", res["error"])
+        for ev in res.get("events", []):
+            log.info("LEARNER %s", ev["type"])
+            notify.send(ev["text"])
+    except Exception:  # noqa: BLE001
+        log.exception("learner run failed - main loop unaffected")
+    finally:
+        _LEARNER_BUSY = False
+
+
+def _maybe_learner() -> None:
+    """Once an hour, a few minutes after the hour so the last hourly bar is complete."""
+    global _LEARNER_NEXT
+    if replay.active() or _LEARNER_BUSY or time.time() < _LEARNER_NEXT:
+        return
+    now = time.time()
+    _LEARNER_NEXT = now - now % 3600 + 3600 + 360
+    asyncio.create_task(_learner_run())
+
+
 async def _market_loop():
     """One engine loop for everyone: refresh both indices, run the paper autopilot, cache for clients."""
     while True:
@@ -267,6 +309,7 @@ async def _market_loop():
         _maybe_weekly_report()
         _maybe_daily_summary()
         await _maybe_prop()
+        _maybe_learner()
         if replay.active():
             if replay.finished():  # summary already sent above; hand control back to the live market
                 replay.stop()
@@ -426,6 +469,12 @@ def capital_test_report():
 def capital_test_restart():
     """Archive all four books and start a fresh week. Files are moved, never deleted."""
     return capital_test.restart()
+
+
+@app.get("/api/learner")
+def learner_report():
+    """Self-learning decision engine, paper only: every logged decision, why, and how taken vs skipped ended."""
+    return learner.report()
 
 
 @app.get("/api/prop")
