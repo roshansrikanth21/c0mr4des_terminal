@@ -23,6 +23,7 @@ from .engine import backtest, macro, service, timeline  # noqa: E402
 from .engine import capital_test  # noqa: E402
 from .engine import spreads  # noqa: E402
 from .engine import straddle  # noqa: E402
+from .engine import propbook  # noqa: E402
 from .engine import predict as predict_mod  # noqa: E402
 from .engine.trader import go_no_go, live_enabled, paper, place_live_order, replay_paper, scorecard  # noqa: E402
 from .engine import replay  # noqa: E402
@@ -207,6 +208,10 @@ def _maybe_weekly_report() -> None:
         lines.append(f"[{label}] {r['trades']}/{r['need_trades']} trades, "
                      f"Rs {r['net_after_slippage']:,.0f} after slippage"
                      + (f", {r['win_rate']}% won, worst day Rs {r['worst_day']:,.0f}" if r["trades"] else ""))
+    pr = propbook.report()
+    ch = pr["challenge"]["1%"]
+    lines.append(f"[Prop challenge, paper] {pr['trades']}/{pr['need_trades']} trades, {pr['total_R']:+.1f}R, {len(pr['open'])} open; "
+                 f"at 1% risk: attempt {ch['attempt']}, {propbook._phase_name(ch)}")
     notify.send("\n".join(lines))
 
 
@@ -229,6 +234,24 @@ def _maybe_daily_summary() -> None:
     notify.send("\n".join(lines))
 
 
+_PROP_NEXT = 0.0
+
+
+async def _maybe_prop() -> None:
+    """Paper prop-firm challenge (research/PROP_RESULTS.md, S12): looks once per UTC day, retries half-hourly."""
+    global _PROP_NEXT
+    if replay.active() or time.time() < _PROP_NEXT:
+        return
+    _PROP_NEXT = time.time() + 1800
+    try:
+        res = await asyncio.to_thread(propbook.tick)
+        for ev in res["events"]:
+            log.info("PROP %s", ev["type"])
+            notify.send(ev["text"])
+    except Exception:  # noqa: BLE001
+        log.exception("prop book failed - main loop unaffected")
+
+
 async def _market_loop():
     """One engine loop for everyone: refresh both indices, run the paper autopilot, cache for clients."""
     while True:
@@ -243,6 +266,7 @@ async def _market_loop():
         replay.hold(False)
         _maybe_weekly_report()
         _maybe_daily_summary()
+        await _maybe_prop()
         if replay.active():
             if replay.finished():  # summary already sent above; hand control back to the live market
                 replay.stop()
@@ -402,6 +426,12 @@ def capital_test_report():
 def capital_test_restart():
     """Archive all four books and start a fresh week. Files are moved, never deleted."""
     return capital_test.restart()
+
+
+@app.get("/api/prop")
+def prop_report():
+    """Paper prop-firm challenge: the forward test of research/PROP_RESULTS.md's S12. No account, no order."""
+    return propbook.report()
 
 
 @app.get("/api/straddle")

@@ -1608,3 +1608,64 @@ def test_straddle_module_runs_both_books_and_keeps_the_naked_report_shape(tmp_pa
     assert sorted(e["book"] for e in ev) == ["hedged", "naked"]
     r = straddle.report()
     assert r["book"] == "naked" and r["open"]["strike"] == 25000.0 and r["hedged"]["open"]["legs"]["CE"]["wing_in"] == 3
+
+
+def _prop_hourly(days=420, seed=3):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2025-01-01", periods=days * 24, freq="1h")
+    idx = idx[idx.dayofweek < 5]
+    c = 100 * np.exp(np.cumsum(rng.normal(0.00004, 0.004, len(idx))))
+    o = np.r_[c[0], c[:-1]]
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) * 1.0005, "low": np.minimum(o, c) * 0.9995, "close": c}, index=idx)
+
+
+def test_prop_book_steps_match_the_research_backtest_trade_for_trade(tmp_path, monkeypatch):
+    import pandas as pd
+    from backend.engine import propbook as P
+    from research import prop_zoo as Z
+    h = _prop_hourly(days=1100)
+    monkeypatch.setitem(Z.COST, "T", 0.01)
+    monkeypatch.setitem(P.COST, "T", 0.01)
+    monkeypatch.setattr(Z, "TRADES", [])
+    Z.daily("T", h)
+    want = [(str(t[2].date()), str(t[3].date()), t[4], round(t[5], 4)) for t in Z.TRADES if t[0].startswith("S12")]
+    assert len(want) >= 5
+    b = P.PropBook(tmp_path / "p.json", fetch=lambda s: None)
+    d = P.signals(P.daily_bars(h, "2030-01-01"))
+    for _, row in d.iterrows():
+        b.step("T", row)
+    got = [(t["entry_day"], t["exit_day"], t["side"], t["R"]) for t in b.state["closed"]]
+    assert got == want[:len(got)] and len(want) - len(got) <= 1          # at most the still-open last trade differs
+
+
+def test_prop_book_ticks_once_a_day_never_backfills_and_reports(tmp_path):
+    from datetime import datetime, timezone
+    from backend.engine import propbook as P
+    h = _prop_hourly()
+    calls = []
+    b = P.PropBook(tmp_path / "p.json", fetch=lambda s: calls.append(s) or h)
+    last = h.index[-1].normalize()
+    now = (last + __import__("pandas").Timedelta(days=1, hours=1)).to_pydatetime().replace(tzinfo=timezone.utc)
+    b.tick(now)
+    assert len(calls) == 7 and set(b.state["last_day"].values()) == {last.date().isoformat()}
+    assert b.state["closed"] == [] and len(b.state["open"]) in (0, 7)    # one day processed, nothing back-filled
+    b.tick(now)
+    assert len(calls) == 7                                                # same UTC day: no second fetch
+    r = P.PropBook(tmp_path / "p.json", fetch=lambda s: None).report()
+    assert r["paper_only"] and r["trades"] == 0 and r["challenge"]["1%"]["phase"] == 1
+    assert P.PropBook(tmp_path / "q.json", fetch=lambda s: None).tick(now)["events"] == []   # no data: no trade, no crash
+
+
+def test_prop_challenge_phases_fail_restart_and_payout():
+    from backend.engine.propbook import challenge
+    tr = lambda day, r: {"exit_day": day, "R": r}                         # noqa: E731
+    st = challenge([tr("2026-01-05", 6), tr("2026-01-06", 5), tr("2026-01-07", 5.5), tr("2026-01-20", 3)], 1.0, upto="2026-01-21")
+    assert st["phase"] == 3 and st["passed_on"] == "2026-01-07" and st["failed"] == 0
+    assert st["paid_pct"] == 2.4 and st["equity_pct"] == 0                # 80% of +3% paid 14 days after funding
+    st = challenge([tr("2026-01-05", 4), tr("2026-01-06", -5.5)], 1.0)
+    assert st["failed"] == 1 and st["attempt"] == 2 and st["phase"] == 1 and st["equity_pct"] == 0   # 5% daily loss
+    st = challenge([tr(f"2026-02-{d:02d}", -2.6) for d in (2, 3, 4, 5)], 1.0)
+    assert st["failed"] == 1 and st["worst_day_pct"] == -2.6              # 10% total loss
+    assert challenge([tr("2026-01-05", 6)], 2.0)["phase"] == 2            # same trades, 2% risk: +12% passes phase 1
