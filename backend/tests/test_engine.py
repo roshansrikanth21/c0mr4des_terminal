@@ -1504,3 +1504,64 @@ def test_predict_ignores_stale_or_broken_push(tmp_path, monkeypatch):
     out2 = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
                       direction=1, seed=11)
     assert out2["forecast_engine"] == "Monte Carlo (on this server)"
+
+
+def _straddle_analysis(at, expiry_day=True, spot=25010.0, chain=None, delayed=False, day="2026-11-17"):
+    return {"instrument": {"key": "NIFTY"}, "generated_at": f"{day}T{at}:00+05:30", "price": spot, "spot_live": spot,
+            "data_delayed": delayed, "session": {"is_expiry_day": expiry_day, "is_open": at < "15:30", "expiry": "2026-11-17"},
+            "chains": {"2026-11-17": chain} if chain is not None else {}}
+
+
+def _chain(ce, pe, strike=25000.0):
+    return [{"strike": strike, "CE": {"ltp": ce}, "PE": {"ltp": pe}}]
+
+
+def test_straddle_enters_only_in_the_expiry_window_with_live_quotes(tmp_path):
+    from backend.engine.straddle import StraddleBook
+    no_quotes = lambda *a: {}  # noqa: E731
+    b = StraddleBook(tmp_path / "s.json", quote_fn=no_quotes)
+    assert b.on_analysis(_straddle_analysis("09:21", expiry_day=False, chain=_chain(60, 55)))["events"] == []
+    assert b.on_analysis(_straddle_analysis("09:19", chain=_chain(60, 55)))["events"] == []
+    assert b.on_analysis(_straddle_analysis("09:21", chain=_chain(60, 55), delayed=True))["events"] == []
+    assert b.on_analysis(_straddle_analysis("09:22"))["events"] == []          # no live quote: keep waiting
+    ev = b.on_analysis(_straddle_analysis("09:23", chain=_chain(60, 55)))["events"]
+    assert [e["type"] for e in ev] == ["straddle_entry"] and b.state["open"]["strike"] == 25000.0
+    assert b.state["open"]["legs"]["CE"]["in"] == 60 and b.state["open"]["lot"] == 65
+    late = StraddleBook(tmp_path / "late.json", quote_fn=no_quotes)
+    ev = late.on_analysis(_straddle_analysis("09:26", chain=_chain(60, 55)))["events"]
+    assert [e["type"] for e in ev] == ["straddle_skip"] and late.state["open"] is None
+    assert late.on_analysis(_straddle_analysis("09:27", chain=_chain(60, 55)))["events"] == []   # said once, not again
+
+
+def test_straddle_leg_stop_square_off_and_pnl(tmp_path):
+    from backend.engine.options import round_trip_cost
+    from backend.engine.straddle import StraddleBook
+    b = StraddleBook(tmp_path / "s.json", quote_fn=lambda *a: {})
+    b.on_analysis(_straddle_analysis("09:21", chain=_chain(60, 55)))
+    assert b.on_analysis(_straddle_analysis("10:00", chain=_chain(77, 40)))["events"] == []      # +28%: not yet
+    ev = b.on_analysis(_straddle_analysis("10:05", chain=_chain(78, 38)))["events"]              # +30%: call stops
+    assert [e["type"] for e in ev] == ["straddle_stop"] and b.state["open"]["legs"]["CE"]["out"] == 78
+    # after 12:00 the engine's chain has rolled away; the book must fetch its own quote for the held strike
+    b.quote_fn = lambda key, expiry, strike: {strike: {"CE": 120.0, "PE": 5.0}}
+    ev = b.on_analysis(_straddle_analysis("15:15"))["events"]
+    assert [e["type"] for e in ev] == ["straddle_exit"] and b.state["open"] is None
+    t = b.state["closed"][0]
+    gross = (60 - 78) * 65 + (55 - 5) * 65
+    charges = round_trip_cost((60 + 78) / 2, 65) + round_trip_cost((55 + 5) / 2, 65)
+    assert t["pnl"] == round(gross - charges, 2) and t["pnl_after_slippage"] < t["pnl"]
+    assert t["legs"]["PE"]["why"] == "15:15 square-off"
+    assert b.on_analysis(_straddle_analysis("15:16", chain=_chain(60, 55)))["events"] == []      # one trade a day
+    r = b.report()
+    assert r["paper_only"] and r["trades"] == 1 and r["open"] is None
+    assert StraddleBook(tmp_path / "s.json").report()["trades"] == 1                            # survives a restart
+
+
+def test_straddle_closes_a_position_left_open_overnight(tmp_path):
+    from backend.engine.straddle import StraddleBook
+    b = StraddleBook(tmp_path / "s.json", quote_fn=lambda *a: {})
+    b.on_analysis(_straddle_analysis("09:21", chain=_chain(60, 55)))
+    b.on_analysis(_straddle_analysis("11:00", chain=_chain(50, 45)))
+    ev = b.on_analysis(_straddle_analysis("09:16", expiry_day=False, day="2026-11-18"))["events"]
+    assert [e["type"] for e in ev] == ["straddle_exit"]
+    legs = b.state["closed"][0]["legs"]
+    assert legs["CE"]["out"] == 50 and legs["CE"]["why"].startswith("stale")

@@ -22,6 +22,7 @@ load_dotenv(Path(__file__).with_name(".env"))
 from .engine import backtest, macro, service, timeline  # noqa: E402
 from .engine import capital_test  # noqa: E402
 from .engine import spreads  # noqa: E402
+from .engine import straddle  # noqa: E402
 from .engine import predict as predict_mod  # noqa: E402
 from .engine.trader import go_no_go, live_enabled, paper, place_live_order, replay_paper, scorecard  # noqa: E402
 from .engine import replay  # noqa: E402
@@ -121,6 +122,15 @@ async def _analyze_and_trade(key: str) -> dict:
             await asyncio.to_thread(spreads.on_analysis, a, service.load_settings())
         except Exception:  # noqa: BLE001
             log.exception("spread book failed - main loop unaffected")
+        # Expiry-day short straddle: paper only, its own file, the one options rule the 50-strategy study left standing.
+        if key == "NIFTY":
+            try:
+                res = await asyncio.to_thread(straddle.on_analysis, a)
+                for ev in res["events"]:
+                    log.info("STRADDLE %s", ev["type"])
+                    notify.send(ev["text"])
+            except Exception:  # noqa: BLE001
+                log.exception("straddle book failed - main loop unaffected")
     LATEST[key], LATEST_AT[key] = a, time.time()
     for ev in a["paper"]["events"]:
         log.info("PAPER %s %s", key, ev)
@@ -192,6 +202,10 @@ def _maybe_weekly_report() -> None:
                      f"{sc['win_rate']}% won, avg win Rs {sc['avg_win']:,.0f} / avg loss Rs {sc['avg_loss']:,.0f}")
         lines.append(f"  Go/no-go: {verdict}")
         lines += ["  " + c for c in checks]
+    sr = straddle.report()
+    lines.append(f"[Expiry straddle, paper] {sr['trades']}/{sr['need_trades']} trades, "
+                 f"Rs {sr['net_after_slippage']:,.0f} after slippage"
+                 + (f", {sr['win_rate']}% won, worst day Rs {sr['worst_day']:,.0f}" if sr["trades"] else ""))
     notify.send("\n".join(lines))
 
 
@@ -387,6 +401,12 @@ def capital_test_report():
 def capital_test_restart():
     """Archive all four books and start a fresh week. Files are moved, never deleted."""
     return capital_test.restart()
+
+
+@app.get("/api/straddle")
+def straddle_report():
+    """Expiry-day short straddle, paper only: the forward test of research/ZOO_RESULTS.md's B07."""
+    return straddle.report()
 
 
 @app.get("/api/spreads")
