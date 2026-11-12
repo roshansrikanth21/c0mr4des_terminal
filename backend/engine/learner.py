@@ -14,8 +14,10 @@ logged itself, so its own results feed its next decisions.
 Research verdict it starts from (research/LEARN_RESULTS.md): on unseen 2025-26 trades the model's picks had
 profit factor 1.06 against 0.89 for taking everything. With the self-adjusting gate (trade a market group only
 while the engine's own picks there are making money; research/LEARN_ONLINE_RESULTS.md) the replay over 76,902
-decisions gave 905 trades, profit factor 1.26, t 2.2 on 2025-26. That passed, on the third take-rule tried.
-This engine is the forward test of exactly that.
+decisions gave 905 trades, profit factor 1.26, t 2.2 on 2025-26 (1.22, t 1.8 once financing is charged).
+The independent check then FAILED: frozen and run on 13 markets it had never seen, its picks had profit factor
+0.95 (research/LEARN_TRANSFER_RESULTS.md). So the honest status is: it avoids bad trades, it is not shown to
+make money. This engine is the forward test; nothing here justifies real money.
 
 Run as a subprocess (`python -m backend.engine.learner`) so the heavy work never blocks the main loop;
 it prints one JSON line of events. `report()` only reads the state file and is safe to call from the app.
@@ -120,8 +122,12 @@ def report(path: Path = STATE_FILE) -> dict:
             "open_taken": [p for p in pend if p["take"]], "open_skipped": sum(not p["take"] for p in pend),
             "taken": _stats(taken), "skipped": _stats(skipped), "need_taken": RULES["need_taken"],
             "recent": closed[-30:],
-            "research": {"judge_2025_26": {"trades": 905, "pf": 1.26, "t_stat": 2.2, "all_trades_pf": 0.89}, "passed": True,
-                         "note": "self-adjusting gate, third take-rule tried; see research/LEARN_ONLINE_RESULTS.md"},
+            "research": {"original_markets_2025_26": {"trades": 905, "pf": 1.26, "t_stat": 2.2, "with_financing_pf": 1.22,
+                                                      "with_financing_t": 1.8},
+                         "unseen_markets_2024_26": {"trades": 1423, "pf": 0.95, "t_stat": -0.7},
+                         "all_ideas_no_engine_pf": 0.88, "passed": False,
+                         "note": "The gate passed on the markets it was built on and failed on 13 markets it had never seen "
+                                 "(research/LEARN_TRANSFER_RESULTS.md). It avoids bad trades; it is not shown to make money."},
             "reading": "The model earns its keep only if 'taken' ends clearly better than 'skipped' and above zero."}
 
 
