@@ -1565,3 +1565,46 @@ def test_straddle_closes_a_position_left_open_overnight(tmp_path):
     assert [e["type"] for e in ev] == ["straddle_exit"]
     legs = b.state["closed"][0]["legs"]
     assert legs["CE"]["out"] == 50 and legs["CE"]["why"].startswith("stale")
+
+
+def _fly_chain(ce, pe, wce, wpe, strike=25000.0):
+    return [{"strike": strike, "CE": {"ltp": ce}, "PE": {"ltp": pe}},
+            {"strike": strike + 350, "CE": {"ltp": wce}, "PE": {"ltp": 900.0}},
+            {"strike": strike - 350, "CE": {"ltp": 900.0}, "PE": {"ltp": wpe}}]
+
+
+def test_hedged_straddle_needs_wing_quotes_and_sells_the_wing_with_its_leg(tmp_path):
+    from backend.engine.options import round_trip_cost
+    from backend.engine.straddle import StraddleBook
+    b = StraddleBook(tmp_path / "h.json", quote_fn=lambda *a: {}, wing_steps=7)
+    assert b.name == "hedged"
+    assert b.on_analysis(_straddle_analysis("09:21", chain=_chain(60, 55)))["events"] == []      # no wing price: no trade
+    ev = b.on_analysis(_straddle_analysis("09:22", chain=_fly_chain(60, 55, 3, 2)))["events"]
+    assert [e["type"] for e in ev] == ["straddle_entry"] and "Protection bought" in ev[0]["text"]
+    legs = b.state["open"]["legs"]
+    assert legs["CE"]["wing_strike"] == 25350.0 and legs["PE"]["wing_strike"] == 24650.0 and legs["CE"]["wing_in"] == 3
+    ev = b.on_analysis(_straddle_analysis("10:05", chain=_fly_chain(78, 38, 6, 1)))["events"]    # call +30%: stops
+    assert [e["type"] for e in ev] == ["straddle_stop"]
+    assert b.state["open"]["legs"]["CE"]["out"] == 78 and b.state["open"]["legs"]["CE"]["wing_out"] == 6
+    assert b.state["open"]["legs"]["PE"]["out"] is None and b.state["open"]["legs"]["PE"]["wing_out"] is None
+    b.quote_fn = lambda key, expiry, strike: {25000.0: {"CE": 120.0, "PE": 5.0}, 24650.0: {"PE": 0.5}, 25350.0: {"CE": 9.0}}
+    ev = b.on_analysis(_straddle_analysis("15:15"))["events"]
+    assert [e["type"] for e in ev] == ["straddle_exit"]
+    t = b.state["closed"][0]
+    fills = [(-1, 60, 78), (1, 3, 6), (-1, 55, 5), (1, 2, 0.5)]
+    gross = sum(side * (out - inn) * 65 for side, inn, out in fills)
+    charges = sum(round_trip_cost((inn + out) / 2, 65) for _, inn, out in fills)
+    assert t["pnl"] == round(gross - charges, 2) and t["credit"] == round((60 + 55 - 3 - 2) * 65, 2)
+    r = b.report()
+    assert r["book"] == "hedged" and r["rules"]["wing_points"] == 350 and r["trades"] == 1
+
+
+def test_straddle_module_runs_both_books_and_keeps_the_naked_report_shape(tmp_path, monkeypatch):
+    from backend.engine import straddle
+    monkeypatch.setattr(straddle, "_books", {
+        "naked": straddle.StraddleBook(tmp_path / "n.json", quote_fn=lambda *a: {}),
+        "hedged": straddle.StraddleBook(tmp_path / "h.json", quote_fn=lambda *a: {}, wing_steps=7)})
+    ev = straddle.on_analysis(_straddle_analysis("09:22", chain=_fly_chain(60, 55, 3, 2)))["events"]
+    assert sorted(e["book"] for e in ev) == ["hedged", "naked"]
+    r = straddle.report()
+    assert r["book"] == "naked" and r["open"]["strike"] == 25000.0 and r["hedged"]["open"]["legs"]["CE"]["wing_in"] == 3

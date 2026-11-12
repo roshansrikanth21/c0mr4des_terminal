@@ -203,9 +203,10 @@ def _maybe_weekly_report() -> None:
         lines.append(f"  Go/no-go: {verdict}")
         lines += ["  " + c for c in checks]
     sr = straddle.report()
-    lines.append(f"[Expiry straddle, paper] {sr['trades']}/{sr['need_trades']} trades, "
-                 f"Rs {sr['net_after_slippage']:,.0f} after slippage"
-                 + (f", {sr['win_rate']}% won, worst day Rs {sr['worst_day']:,.0f}" if sr["trades"] else ""))
+    for label, r in (("Expiry straddle, paper", sr), ("Expiry iron fly (hedged), paper", sr["hedged"])):
+        lines.append(f"[{label}] {r['trades']}/{r['need_trades']} trades, "
+                     f"Rs {r['net_after_slippage']:,.0f} after slippage"
+                     + (f", {r['win_rate']}% won, worst day Rs {r['worst_day']:,.0f}" if r["trades"] else ""))
     notify.send("\n".join(lines))
 
 
