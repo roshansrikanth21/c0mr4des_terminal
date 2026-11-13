@@ -66,6 +66,6 @@ Pass mark (taken beats skipped in 70% of years): **PASSED** (13 of 17 years).
 
 Portfolio from 2010: model's picks +2.2% a year (drawdown -14.7%), every signal +1.7% a year (drawdown -26.4%).
 
-## 4. The same rule on ETFs listed in India (rupees, no foreign account)
+## 4. Not tested: ETFs listed in India
 
-NIFTY, NIFTY Next 50, Bank NIFTY, gold and Nasdaq-100 ETFs on NSE: 782 trades from 2009-10-29, -1.63% a trade, PF 0.34, t -3.6, years positive 8 of 18. Three slots of a third each: -26.5% a year, worst drawdown -99.6%. Yahoo's history for these ETFs is patchy (bad ticks removed), so treat this as indicative.
+Yahoo's price history for the NSE-listed ETFs has bad ticks and unadjusted splits that a 5-day strategy cannot be cleaned of, so no figure is reported. It would need exchange data.

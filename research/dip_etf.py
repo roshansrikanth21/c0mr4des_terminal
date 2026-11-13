@@ -211,8 +211,7 @@ def main():
     ya, dda, cagra, _ = portfolio(d, order="rsi2")
     w(f"Portfolio from {years[0]}: model's picks {cagrl:+.1f}% a year (drawdown {ddl:.1f}%), every signal {cagra:+.1f}% a year (drawdown {dda:.1f}%).\n")
 
-    w("## 4. Not tested: ETFs listed in India
-")
+    w("## 4. Not tested: ETFs listed in India\n")
     w("Yahoo's price history for the NSE-listed ETFs has bad ticks and unadjusted splits that a 5-day strategy cannot be cleaned of, "
       "so no figure is reported. It would need exchange data.")
     (ROOT / "research" / "DIP_ETF_RESULTS.md").write_text("\n".join(out) + "\n", encoding="utf-8")
