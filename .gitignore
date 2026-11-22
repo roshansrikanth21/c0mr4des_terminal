@@ -47,8 +47,13 @@ nifty_mst_visualization.html
 # Explicit backend rules
 backend/.env
 backend/broker/angel_tokens.json
+tools/timesfm_worker.local.json
 *.pkl
 
 # Runtime data (personal, never commit)
 data/
 .claude/
+HANDOFF.md
+TODO.md
+MAILBOX.md
+desk.local.json

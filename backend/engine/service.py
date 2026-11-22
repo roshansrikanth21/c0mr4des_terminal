@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from . import macro, options, timeline
+from . import flow, macro, mtf, options, orb, replay, structure, timeline
 from .config import IST, INSTRUMENTS, RISK_DEFAULTS
 from .data import angel, closed_bars, get_candles
 from .news import radar
+from .plain import plain_read
 from .signal import evaluate
 
 log = logging.getLogger("engine.service")
@@ -21,18 +22,56 @@ _last_verdict: dict[str, str] = {}
 _lock = threading.Lock()
 
 
+ALL_STRATEGIES = ("First-Hour", "First-30", "Engine", "Expiry")
+# Engine is off by default: weakest backtest (PF 1.27) and 0/2 in the first live week.
+# Expiry: the First-Hour signal on Tuesdays, traded with that day's expiring option, 1 lot, Rs 1,000 max loss,
+# scored on its own so lottery days can't flatter or sink the main record. Owner decision 26 Oct: OFF by
+# default — the backtest's 1.41 profit factor lives almost entirely on expiry days, the least trustworthy
+# prices in the record, and it is opt-in until it banks ~20 honest paper trades of its own.
+DEFAULT_STRATEGIES = ("First-Hour", "First-30")
+EXPIRY_MAX_LOSS = 1000.0
+
+# Anything the Settings page can write is clamped to a sane range (the owner types fast, and a 0 or a
+# negative here would silently disable the risk caps).
+LIMITS = {
+    "capital": (1000.0, 100_000_000.0),
+    "risk_per_trade_pct": (0.1, 100.0),
+    "max_trades_per_day": (1, 10),
+    "max_daily_loss_pct": (1.0, 100.0),
+    "daily_profit_pct": (1.0, 100.0),
+    "max_open_positions": (1, 4),
+    # Owner bar, 9 Nov: evidence floor for entries and a per-trade worst-case cap.
+    "entry_score_min": (0.0, 1.0),
+    "max_loss_per_trade": (200.0, 50_000.0),
+}
+
+
+def _clamp(key: str, value) -> float | int:
+    lo, hi = LIMITS[key]
+    v = min(max(float(value), lo), hi)
+    return int(round(v)) if key in ("max_trades_per_day", "max_open_positions") else round(v, 2)
+
+
 def load_settings() -> dict:
+    base = {**RISK_DEFAULTS, "autopilot_instruments": ["NIFTY"], "autopilot_strategies": list(DEFAULT_STRATEGIES)}
     try:
-        return {**RISK_DEFAULTS, **json.loads(SETTINGS_FILE.read_text())}
+        return {**base, **json.loads(SETTINGS_FILE.read_text())}
     except Exception:  # noqa: BLE001
-        return dict(RISK_DEFAULTS)
+        return base
 
 
 def save_settings(new: dict) -> dict:
     cur = load_settings()
     for k in RISK_DEFAULTS:
         if k in new and new[k] is not None:
-            cur[k] = float(new[k]) if k != "max_trades_per_day" else int(new[k])
+            try:
+                cur[k] = _clamp(k, new[k])
+            except (TypeError, ValueError):
+                pass  # keep the previous value rather than 500 the Settings page
+    if new.get("autopilot_strategies") is not None:
+        cur["autopilot_strategies"] = [x for x in new["autopilot_strategies"] if x in ALL_STRATEGIES] or list(DEFAULT_STRATEGIES)
+    if new.get("autopilot_instruments") is not None:
+        cur["autopilot_instruments"] = [x for x in new["autopilot_instruments"] if x in INSTRUMENTS] or ["NIFTY"]
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(cur, indent=2))
     return cur
@@ -49,33 +88,94 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     if key not in INSTRUMENTS:
         raise ValueError(f"Unknown instrument {key}; use one of {list(INSTRUMENTS)}")
     inst = INSTRUMENTS[key]
-    now = datetime.now(IST)
+    now = replay.now()
+    in_replay = replay.active()
     sess = timeline.session(now, key)
     raw5, source = get_candles(key, "5m")
-    df5 = closed_bars(raw5, "5m", now)
     daily, _ = get_candles(key, "1d")
+    if in_replay:
+        raw5, daily = replay.cut(raw5, "5m"), replay.cut(daily, "1d")
+        source = f"replay ({source})"
+        if raw5.empty:
+            raise RuntimeError("Replay: no candles yet for this day/time")
+    df5 = closed_bars(raw5, "5m", now)
+    # The 1-minute read is the entry-timing row of the ladder. It is a bonus, never a blocker:
+    # if the feed is slow or missing, the rest of the analysis still runs.
+    try:
+        raw1m, _ = get_candles(key, "1m")
+        if in_replay:
+            raw1m = replay.cut(raw1m, "1m")
+        df1m = closed_bars(raw1m, "1m", now)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("1m candles unavailable: %s", exc)
+        df1m = None
     vix = macro.india_vix()
     news = radar.sentiment()
     cues = macro.global_cues()
     # Global cues matter most before/at the open; fade their weight as the day's own price action builds.
     cue_w = 1.0 if (not sess["is_open"] or sess["phase"] in ("pre_open", "opening")) else 0.5
-    result = evaluate(df5, daily, inst.strike_step, now=now, news_bias=news["bias"],
-                      cue_bias=cues["bias"] * cue_w, session=sess)
+    # Replay has no news or cue history, so using today's would leak the future into a past day. Same
+    # treatment as the backtest: price alone.
+    news_bias = 0.0 if in_replay else news["bias"]
+    cue_bias = 0.0 if in_replay else cues["bias"] * cue_w
+    result = evaluate(df5, daily, inst.strike_step, now=now, news_bias=news_bias,
+                      cue_bias=cue_bias, session=sess)
+    ladder = mtf.ladder(df5, daily, df1m)
+    yesterday = structure.prev_session(daily, df5)
 
     expiry = date.fromisoformat(sess["expiry"])
-    chain = options.live_chain(key, expiry, result["price"]) if sess["is_open"] else None
+    if expiry == now.date() and now.hour >= 12:
+        # Expiry-afternoon OTM options cost a rupee or two: sizing then buys dozens of lots of a lottery ticket.
+        expiry = timeline.weekly_expiry(key, now.date() + timedelta(days=1))
+    chain = options.live_chain(key, expiry, result["price"]) if sess["is_open"] and not in_replay else None
     settings = load_settings()
     plan = result["plan"]
     option = options.plan_trade(key, plan["direction"], result["price"], expiry, vix["value"] if vix else None,
                                 plan["risk_points"], plan["target_points"], settings, chain, now)
+    # Both sides priced, because the owner can only buy what the account can actually fund.
+    sides = options.quote_both_sides(key, result["price"], expiry, vix["value"] if vix else None,
+                                     settings, chain, now)
+    prev = daily[daily.index.date < now.date()]
+    orb_sig = orb.evaluate(df5, float(prev["close"].iloc[-1]) if len(prev) else None, now)
+    if not sess["can_enter"] and orb_sig["verdict"] != "NO TRADE":
+        orb_sig["verdict"] = "NO TRADE"
+    exp_sig = _expiry_signal(key, orb_sig, sess, result["price"], vix, settings, chain, expiry, now, in_replay)
+    if sess["is_expiry_day"] and orb_sig["verdict"] != "NO TRADE":
+        # Expiry-day breakouts are gamma lottery tickets: they dominated the replay P&L and fell to PF 1.15 without them.
+        orb_sig["verdict"] = "NO TRADE"
+        orb_sig["text"] += " Expiry day: First-Hour sits out (no trade)."
+    orb_sig["option"] = options.plan_trade(key, orb_sig["direction"], result["price"], expiry, vix["value"] if vix else None,
+                                           orb_sig.get("risk_points") or 0, orb_sig.get("target_points") or 0,
+                                           settings, chain, now, otm_steps=1) if orb_sig["direction"] else None
+    f30 = orb.first30(df5, now)
+    if not sess["is_open"] and f30["verdict"] != "NO TRADE":
+        f30["verdict"] = "NO TRADE"
+    if sess["is_expiry_day"] and f30["verdict"] != "NO TRADE":
+        # Same reason as the First-Hour: expiry-day gamma is the least trustworthy part of the replay.
+        f30["verdict"] = "NO TRADE"
+        f30["text"] += " Expiry day: First-30 sits out (no trade)."
+    f30["option"] = options.plan_trade(key, f30["direction"], result["price"], expiry, vix["value"] if vix else None,
+                                       f30.get("risk_points") or 0, f30.get("target_points") or 0,
+                                       settings, chain, now) if f30["direction"] else None
+    # Flow is a shadow read: recorded on every card and every paper entry, but it never changes a
+    # verdict. There is no historical chain/OI/order-book feed, so it can only be judged forward.
+    flow_read = flow.market(key, chain, ladder, result["price"], now, expiry, persist=not in_replay)
+    for sig, sig_chain in ((orb_sig, chain), (f30, chain),
+                           (exp_sig, (exp_sig or {}).get("_chain") or chain)):
+        if sig and sig.get("direction"):
+            sig["flow"] = flow.trade(flow_read, sig["direction"], sig.get("option"), sig_chain)
     minutes_left = max(sess["minutes_to_close"], 30)
     em = options.expected_move(result["price"], vix["value"] if vix else None, minutes_left)
 
     reasons = result["reasons"] + [
-        {"factor": "News flow", "signal": "bullish" if news["bias"] > 0.15 else "bearish" if news["bias"] < -0.15 else "neutral",
-         "text": news["text"] + (" Top driver: " + news["drivers"][0]["title"] if news["drivers"] else "")},
-        {"factor": "Global cues", "signal": "bullish" if cues["bias"] > 0.2 else "bearish" if cues["bias"] < -0.2 else "neutral",
-         "text": cues["text"]},
+        {"factor": "News flow", "signal": "neutral" if in_replay else
+         "bullish" if news["bias"] > 0.15 else "bearish" if news["bias"] < -0.15 else "neutral",
+         "text": ("Not replayed: there is no news history, so it is left out of replay decisions."
+                  if in_replay else
+                  news["text"] + (" Top driver: " + news["drivers"][0]["title"] if news["drivers"] else ""))},
+        {"factor": "Global cues", "signal": "neutral" if in_replay else
+         "bullish" if cues["bias"] > 0.2 else "bearish" if cues["bias"] < -0.2 else "neutral",
+         "text": "Not replayed: no cue history, so it is left out of replay decisions." if in_replay else cues["text"]},
         {"factor": "Timeline", "signal": "neutral", "text": f"{sess['phase_note']} {sess['expiry_note']}"},
     ]
     if vix:
@@ -84,18 +184,102 @@ def analyze(key: str = "NIFTY", interval: str = "5m") -> dict:
     out = {
         "instrument": {"key": key, "name": inst.name, "lot_size": inst.lot_size, "strike_step": inst.strike_step},
         "generated_at": now.isoformat(timespec="seconds"),
-        "data_source": source, "data_delayed": source != "angel_one",
+        "data_source": source, "data_delayed": source not in ("angel_one",) and not source.startswith("replay"),
         "session": sess, "vix": vix, "expected_move_rest_of_day": round(em, 1) if em else None,
         **result, "reasons": reasons, "option": option, "pcr": options.pcr(chain), "chain": chain,
         "news": news, "global": cues, "candles": chart_payload(raw5), "broker_connected": angel.api is not None,
+        "spot_live": (None if in_replay else _spot_ltp(inst)) or float(raw5["close"].iloc[-1]),
+        "replay": replay.status(), "orb": orb_sig, "first30": f30, "expiry_play": exp_sig,
+        "mtf": ladder, "yesterday": yesterday, "sides": sides, "flow": flow_read,
+        "flow_trade": flow.trade(flow_read, plan.get("direction") or 0, option, chain),
+        "chains": {expiry.isoformat(): chain, **({exp_sig["option"]["expiry"]: exp_sig.pop("_chain")}
+                                                 if exp_sig and exp_sig.get("_chain") else {})},
+        "shock": None if in_replay else shock_check(raw5, daily, vix, news),
+        # Plain CALL/PUT card (owner, 9 Nov): the lean, the owner's own entry bar via the
+        # same entry_evidence the live trader uses, and the indicators in simple words.
+        "plain": plain_read(result, ladder, daily, result["price"], now,
+                            sess["can_enter"], float(settings.get("entry_score_min") or 0.5)),
     }
     _log_signal(key, out)
     return out
 
 
+def _expiry_signal(key, orb_sig, sess, price, vix, settings, chain, expiry, now, in_replay) -> dict | None:
+    """Tuesday-only copy of the First-Hour signal, priced on TODAY's expiring contract."""
+    if not sess["is_expiry_day"] or not orb_sig.get("direction"):
+        return None
+    sig = {k: v for k, v in orb_sig.items() if k != "option"}
+    sig["name"] = "Expiry breakout"
+    if not sess["can_enter"]:
+        sig["verdict"] = "NO TRADE"
+    today = now.date()
+    if expiry != today:  # after 12:00 the main chain has rolled to next week; fetch today's contracts
+        chain = options.live_chain(key, today, price) if sess["is_open"] and not in_replay else None
+    o = options.plan_trade(key, sig["direction"], price, today, vix["value"] if vix else None,
+                           sig.get("risk_points") or 0, sig.get("target_points") or 0, settings, chain, now, otm_steps=1)
+    lot = INSTRUMENTS[key].lot_size
+    o["lots"], o["quantity"] = 1, lot
+    o["premium_stop"] = round(max(o["premium_stop"], o["premium"] - EXPIRY_MAX_LOSS / lot, 0.05), 2)
+    # plan_trade sized these for its own lot count; restate them for the one lot this slot really takes,
+    # or the per-trade loss cap judges a position that will never be opened.
+    o["charges_round_trip"] = options.round_trip_cost(o["premium"], lot)
+    o["capital_needed"] = round(o["premium"] * lot, 2)
+    o["max_loss"] = round((o["premium"] - o["premium_stop"]) * lot + o["charges_round_trip"], 2)
+    sig["option"], sig["_chain"] = o, chain
+    sig["text"] = (f"Expiry-day play ({'NOW' if sig['verdict'] != 'NO TRADE' else 'info'}): {orb_sig.get('text', '')} "
+                   f"Trades today's {o['strike']:.0f} {o['option_type']} at about Rs {o['premium']:.1f}, 1 lot, "
+                   f"max loss Rs {EXPIRY_MAX_LOSS:,.0f}.")
+    return sig
+
+
+def shock_check(df5, daily, vix, news) -> dict | None:
+    """Shock days (war headlines, crashes, VIX spikes). Historical NIFTY behaviour, 2008-2026 daily data:
+    - VIX +15% in a day (81 cases): next day up 60% of the time (avg +0.46%), next-day range ~1.8x normal.
+    - NIFTY -3% in a day (70 cases): up 20 days later 64% of the time (avg +2.1%).
+    - Named geopolitical shocks (Uri, Balakot, Ukraine, Israel, Pahalgam, Sindoor): mostly recovered within 5-20 days.
+    """
+    today = df5.index[-1].date()
+    prev = daily[daily.index.date < today]
+    if not len(prev):
+        return None
+    pc = float(prev["close"].iloc[-1])
+    chg = (float(df5["close"].iloc[-1]) / pc - 1) * 100
+    reasons = []
+    if chg <= -2:
+        reasons.append(f"NIFTY is down {chg:.1f}% today")
+    if chg >= 2:
+        reasons.append(f"NIFTY is up {chg:.1f}% today")
+    if vix and vix.get("change_pct", 0) >= 15:
+        reasons.append(f"India VIX jumped {vix['change_pct']:.0f}%")
+    geo = [d for d in news.get("drivers", []) if d.get("direction", 0) < 0 and any(w in d["title"].lower() for w in ("war", "missile", "strike", "attack", "terror", "border", "flood", "earthquake", "cyclone"))]
+    if geo:
+        reasons.append("geopolitical/disaster headline: " + geo[0]["title"][:90])
+    if not reasons:
+        return None
+    return {"active": True, "reasons": reasons,
+            "playbook": [
+                "Expect roughly double the normal intraday range: the first-hour breakout is the right tool, wider stops are normal.",
+                "Option premiums are expensive (high IV). Buy ATM, not far OTM; IV falls when fear fades and eats far-OTM options first.",
+                "History favours a rebound, not a collapse: after VIX spikes NIFTY rose the next day 60% of the time; after -3% days it was higher 20 days later 64% of the time.",
+                "Don't buy puts into the close after a crash day; the next session gaps up more often than down.",
+            ]}
+
+
+def _spot_ltp(inst) -> float | None:
+    """Freshest spot price: Angel One LTP when connected (real time), else None."""
+    api = angel.api
+    if api is None:
+        return None
+    try:
+        res = api.ltpData(inst.angel_exchange, inst.key if inst.key != "NIFTY" else "Nifty 50", inst.angel_spot_token)
+        return float(res["data"]["ltp"])
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _log_signal(key: str, out: dict) -> None:
     """Append when the verdict changes during market hours, for honest after-the-fact review."""
-    if not out["session"]["is_open"]:
+    if not out["session"]["is_open"] or replay.active():
         return
     with _lock:
         if _last_verdict.get(key) == out["verdict"]:

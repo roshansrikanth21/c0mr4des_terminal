@@ -23,6 +23,11 @@ CACHE_TTL = {"1m": 20, "5m": 30, "15m": 60, "1d": 600}
 YF_PERIOD = {"1m": "5d", "5m": "60d", "15m": "60d", "1d": "2y"}
 ANGEL_INTERVAL = {"1m": "ONE_MINUTE", "5m": "FIVE_MINUTE", "15m": "FIFTEEN_MINUTE", "1d": "ONE_DAY"}
 ANGEL_LOOKBACK_DAYS = {"1m": 5, "5m": 25, "15m": 55, "1d": 600}
+# What Angel will actually serve in one request, measured on the VM 28 Oct 2026: 5m stops at 100
+# days (69 sessions), 15m at 200 days (136 sessions) - asking for 400 returns the same 136.
+# get_candles() deliberately asks for much less, because live signals want the freshest frame,
+# not the longest one. Training wants the longest one, and that is what long_history() is for.
+ANGEL_MAX_DAYS = {"1m": 30, "5m": 100, "15m": 200, "1d": 2000}
 
 
 def _normalize(df: pd.DataFrame) -> pd.DataFrame:
@@ -41,13 +46,40 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     return df[ok].astype(float)
 
 
+def _token_error(res) -> bool:
+    """SmartAPI returns expired/invalid sessions as a normal response, not an exception."""
+    if not isinstance(res, dict) or res.get("status") or res.get("success"):
+        return False
+    msg = f"{res.get('errorCode', '')} {res.get('message', '')}".lower()
+    return any(k in msg for k in ("ag8001", "ag8002", "ag8003", "token", "session"))
+
+
+def _mute_smartapi() -> None:
+    """SmartAPI logs every failed request with full headers (session token included) to the journal
+    and to ./logs/<date>/app.log. Turn that logger off; our own warnings say enough."""
+    try:
+        import logzero
+
+        logzero.logger.disabled = True
+        for h in list(logzero.logger.handlers):
+            logzero.logger.removeHandler(h)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class AngelClient:
-    """Thin SmartAPI wrapper: login once, reuse session, back off on failure."""
+    """Thin SmartAPI wrapper: login once a day, re-login when the session expires, back off on failure.
+
+    Angel One sessions die at midnight IST, so a long-running server must log in again every day.
+    """
 
     def __init__(self):
         self.api = None
+        self._login_day = None
         self._failed_at = 0.0
         self._lock = threading.Lock()
+        self._throttle = threading.Lock()
+        self._last_call = 0.0
 
     @staticmethod
     def configured() -> bool:
@@ -57,20 +89,23 @@ class AngelClient:
         if not self.configured():
             return None
         with self._lock:
-            if self.api is not None:
+            if self.api is not None and self._login_day == datetime.now(IST).date():
                 return self.api
+            self.api = None
             if _time.time() - self._failed_at < 300:
                 return None
             try:
                 import pyotp
                 from SmartApi import SmartConnect
 
+
                 api = SmartConnect(api_key=os.environ["ANGEL_API_KEY"])
+                _mute_smartapi()
                 totp = pyotp.TOTP(os.environ["ANGEL_TOTP_KEY"]).now()
                 res = api.generateSession(os.environ["ANGEL_CLIENT_ID"], os.environ["ANGEL_PASSWORD"], totp)
                 if not res or not res.get("status"):
                     raise RuntimeError(res.get("message") if isinstance(res, dict) else "login failed")
-                self.api = api
+                self.api, self._login_day = api, datetime.now(IST).date()
                 log.info("Angel One session established")
                 return api
             except Exception as exc:  # noqa: BLE001
@@ -82,7 +117,7 @@ class AngelClient:
         with self._lock:
             self.api = None
 
-    def candles(self, inst: Instrument, interval: str) -> pd.DataFrame | None:
+    def candles(self, inst: Instrument, interval: str, lookback_days: int | None = None) -> pd.DataFrame | None:
         api = self.session()
         if api is None:
             return None
@@ -91,11 +126,20 @@ class AngelClient:
             "exchange": inst.angel_exchange,
             "symboltoken": inst.angel_spot_token,
             "interval": ANGEL_INTERVAL[interval],
-            "fromdate": (now - timedelta(days=ANGEL_LOOKBACK_DAYS[interval])).strftime("%Y-%m-%d %H:%M"),
+            "fromdate": (now - timedelta(days=lookback_days or ANGEL_LOOKBACK_DAYS[interval])).strftime("%Y-%m-%d %H:%M"),
             "todate": now.strftime("%Y-%m-%d %H:%M"),
         }
         try:
-            res = api.getCandleData(params)
+            with self._throttle:  # Angel allows ~3 historical calls/sec; bursts of NIFTY+SENSEX tripped it
+                wait = self._last_call + 0.6 - _time.time()
+                if wait > 0:
+                    _time.sleep(wait)
+                res = api.getCandleData(params)
+                self._last_call = _time.time()
+            if _token_error(res):
+                log.warning("Angel session expired - logging in again")
+                self.reset()
+                return None
             rows = (res or {}).get("data") or []
             if not rows:
                 return None
@@ -103,7 +147,8 @@ class AngelClient:
             return _normalize(df)
         except Exception as exc:  # noqa: BLE001
             log.warning("Angel candles failed (%s %s): %s", inst.key, interval, exc)
-            self.reset()
+            if any(k in str(exc).lower() for k in ("token", "session")):  # not on rate limits: re-login makes them worse
+                self.reset()
             return None
 
     def ltp(self, exchange: str, tokens: list[str]) -> dict:
@@ -115,6 +160,10 @@ class AngelClient:
         try:
             for i in range(0, len(tokens), 50):
                 res = api.getMarketData("FULL", {exchange: tokens[i:i + 50]})
+                if _token_error(res):
+                    log.warning("Angel session expired - logging in again")
+                    self.reset()
+                    return out
                 for q in ((res or {}).get("data") or {}).get("fetched", []) or []:
                     out[str(q.get("symbolToken"))] = q
         except Exception as exc:  # noqa: BLE001
@@ -146,9 +195,13 @@ def get_candles(key: str, interval: str = "5m") -> tuple[pd.DataFrame, str]:
     ck = (key, interval)
     with _LOCK:
         hit = _CACHE.get(ck)
-        if hit and _time.time() - hit[0] < CACHE_TTL[interval]:
+        from . import replay  # a past day never changes: replay reuses data instead of hitting Angel's rate limit
+        ttl = 3600 if replay.active() else CACHE_TTL[interval]
+        if hit and _time.time() - hit[0] < ttl:
             return hit[1], hit[1].attrs.get("source", "cache")
     df, source = angel.candles(inst, interval), "angel_one"
+    if (df is None or df.empty) and hit and hit[1].attrs.get("source") == "angel_one"             and _time.time() - hit[0] < 4 * CACHE_TTL[interval]:
+        return hit[1], "angel_one"  # one failed refresh: a 1-2 minute old live frame beats 15-minute delayed Yahoo
     if df is None or df.empty:
         df, source = _yahoo(inst.yf_symbol, interval), "yahoo_delayed"
     if df is None or df.empty:
@@ -157,6 +210,29 @@ def get_candles(key: str, interval: str = "5m") -> tuple[pd.DataFrame, str]:
     with _LOCK:
         _CACHE[ck] = (_time.time(), df)
     return df, source
+
+
+def long_history(key: str, interval: str = "5m") -> pd.DataFrame:
+    """The LONGEST intraday series we can get, for training only.
+
+    `get_candles` answers "what is the market doing now" and prefers the live feed, which on Angel
+    is capped at 25 days for 5m. Training wants history, so ask Angel for its documented maximum
+    and fall back to Yahoo, then keep whichever actually has more sessions. Whichever wins, the
+    bars are final history, so the 15-minute Yahoo delay is irrelevant here.
+    """
+    inst = INSTRUMENTS[key]
+    best, best_days, best_src = None, 0, "unknown"
+    for df, src in ((angel.candles(inst, interval, lookback_days=ANGEL_MAX_DAYS[interval]), "angel_one"),
+                    (_yahoo(inst.yf_symbol, interval), "yahoo_delayed")):
+        if df is None or df.empty:
+            continue
+        n = len(set(df.index.date))
+        if n > best_days:
+            best, best_days, best_src = df, n, src
+    if best is None:
+        raise RuntimeError(f"No history available for {key} {interval}")
+    best.attrs["source"] = best_src
+    return best
 
 
 def get_quote_series(symbol: str, period: str = "5d", interval: str = "1d") -> pd.DataFrame | None:

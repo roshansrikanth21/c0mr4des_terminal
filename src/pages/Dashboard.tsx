@@ -10,13 +10,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 import { useAnalysis, type Analysis, type Symbol } from '@/lib/api';
 import { useDashboardStore, type DashboardTab } from '@/hooks/use-dashboard-store';
+import { setViewMode, useAppearance } from '@/lib/appearance';
+import { SimpleView } from '@/components/SimpleView';
 import { CandleChart } from '@/components/CandleChart';
+import { DecisionPanel } from '@/components/terminal/Decision';
 import {
-  GlobalPanel, NewsPanel, OptionPanel, ReasonsPanel, StructurePanel, TimelinePanel, VerdictPanel,
+  GlobalPanel, NewsPanel, OptionPanel, OrbPanel, PaperPanel, PredictPanel, ReasonsPanel, StructurePanel, TimelinePanel, VerdictPanel,
 } from '@/components/terminal/Panels';
 
 const ResponsiveGrid: any = Responsive;
-const MOBILE_ORDER = ['verdict', 'chart', 'option', 'reasons', 'timeline', 'structure', 'global', 'news'];
+const MOBILE_ORDER = ['verdict', 'orb', 'chart', 'option', 'paper', 'reasons', 'timeline', 'structure', 'global', 'news', 'predict'];
 
 /** Narrow screens: one column, conclusion first. */
 function stacked(layout: readonly { i: string; h: number }[], cols: number) {
@@ -26,19 +29,31 @@ function stacked(layout: readonly { i: string; h: number }[], cols: number) {
     .map((it) => { const out = { i: it.i, x: 0, y, w: cols, h: it.i === 'chart' ? 5 : Math.max(it.h, 4) }; y += out.h; return out; });
 }
 const SYMBOLS: Symbol[] = ['NIFTY', 'SENSEX'];
+// Focus mode: only what matters mid-trade, bigger tiles. Not persisted, not draggable.
+const FOCUS_LAYOUT = [
+  { i: 'chart', x: 0, y: 0, w: 8, h: 6 },
+  { i: 'verdict', x: 8, y: 0, w: 4, h: 6 },
+  { i: 'orb', x: 0, y: 6, w: 4, h: 4 },
+  { i: 'option', x: 4, y: 6, w: 4, h: 4 },
+  { i: 'paper', x: 8, y: 6, w: 4, h: 4 },
+];
 
 export function Dashboard() {
   const [symbol, setSymbol] = useState<Symbol>(() => (localStorage.getItem('symbol') as Symbol) || 'NIFTY');
   const [activeTab, setActiveTab] = useState<DashboardTab>('terminal');
   const { isEditMode, toggleEditMode, resetPanelScales, resetLayout } = useDashboardStore();
+  const { view } = useAppearance();
+  const simple = view === 'simple';
   const { data, error, live, updatedAt } = useAnalysis(symbol);
   const lastVerdict = useRef<string | null>(null);
+  const lastGen = useRef<string | null>(null);
 
   useEffect(() => { localStorage.setItem('symbol', symbol); lastVerdict.current = null; }, [symbol]);
 
   // React to the live market: notify when the verdict flips during market hours.
   useEffect(() => {
-    if (!data) return;
+    if (!data || data.generated_at === lastGen.current) return;
+    lastGen.current = data.generated_at;
     const v = data.verdict;
     if (lastVerdict.current && lastVerdict.current !== v && data.session.is_open) {
       const fn = v === 'BUY' ? toast.success : v === 'SELL' ? toast.error : toast.message;
@@ -48,6 +63,10 @@ export function Dashboard() {
       }
     }
     lastVerdict.current = v;
+    for (const ev of data.paper?.events ?? []) {
+      if (ev.type === 'paper_entry' && ev.trade) toast.message(`Paper ENTRY ${ev.trade.side} ${ev.trade.strike}`, { description: `${ev.trade.symbol} @ ₹${ev.trade.entry_premium}` });
+      if (ev.type === 'paper_exit' && ev.trade) (ev.trade.pnl! >= 0 ? toast.success : toast.error)(`Paper EXIT ${ev.trade.symbol}: ₹${ev.trade.pnl}`, { description: ev.trade.reason });
+    }
   }, [data, symbol]);
 
   useEffect(() => {
@@ -85,6 +104,15 @@ export function Dashboard() {
 
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex border border-border rounded-md p-1 bg-muted/20">
+            {([['simple', 'Simple'], [view === 'focus' ? 'focus' : 'full', 'Terminal']] as const).map(([v, label]) => (
+              <button key={label} onClick={() => setViewMode(v)}
+                className={cn('px-4 py-2 text-xs font-mono font-black tracking-widest uppercase rounded-sm transition-all',
+                  (label === 'Simple') === simple ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground')}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex border border-border rounded-md p-1 bg-muted/20">
             {SYMBOLS.map((s) => (
               <button key={s} onClick={() => setSymbol(s)}
                 className={cn('px-5 py-2 text-xs font-mono font-black tracking-widest uppercase rounded-sm transition-all',
@@ -93,13 +121,13 @@ export function Dashboard() {
               </button>
             ))}
           </div>
-          <div className={cn('border shadow-sm px-6 py-3 rounded-md min-w-[130px]',
+          <div className={cn('border shadow-sm px-6 py-3 rounded-md min-w-[130px]', simple && 'hidden',
             data?.verdict === 'BUY' ? 'border-green-500/50 bg-green-500/10' : data?.verdict === 'SELL' ? 'border-red-500/50 bg-red-500/10' : 'border-border bg-muted/20')}>
             <div className="text-right">
               <div className="text-[9px] font-mono text-muted-foreground uppercase leading-none mb-1">Verdict</div>
               <span className={cn('text-sm font-black font-mono',
                 data?.verdict === 'BUY' ? 'text-green-500' : data?.verdict === 'SELL' ? 'text-red-500' : 'text-primary')}>
-                {data?.verdict ?? '...'}
+                {data?.verdict === 'BUY' ? 'CALL' : data?.verdict === 'SELL' ? 'PUT' : data?.verdict ?? '...'}
               </span>
             </div>
           </div>
@@ -112,6 +140,7 @@ export function Dashboard() {
         </div>
       )}
 
+      {simple ? <SimpleView a={data} symbol={symbol} /> : (
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as DashboardTab)} className="w-full">
         <TabsList className="bg-muted/30 border border-border p-1 h-12 mb-8 flex flex-wrap max-w-fit">
           {([['terminal', 'Market Terminal'], ['context', 'Market Context'], ['news', 'Global News']] as const).map(([v, label]) => (
@@ -122,16 +151,23 @@ export function Dashboard() {
         </TabsList>
         {(['terminal', 'context', 'news'] as DashboardTab[]).map((tab) => (
           <TabsContent key={tab} value={tab} className="mt-0">
-            {activeTab === tab && <DashboardGrid tab={tab} symbol={symbol} data={data} />}
+            {activeTab === tab && (
+              <div className="space-y-6">
+                {tab === 'terminal' && <DecisionPanel a={data} />}
+                <DashboardGrid tab={tab} symbol={symbol} data={data} />
+              </div>
+            )}
           </TabsContent>
         ))}
       </Tabs>
+      )}
 
       {/* --- FOOTER STICKY --- */}
       <div className="fixed bottom-0 left-0 w-full bg-background/95 backdrop-blur-sm border-t border-border p-3 shadow-lg z-40">
         <div className="px-8 flex justify-between items-center w-full">
           <div className="flex items-center gap-3">
             <div className={cn('h-2.5 w-2.5 rounded-full', data?.session.is_open ? 'bg-green-500 animate-pulse' : 'bg-muted-foreground')} />
+            {!simple && <>
             <Button variant="outline" size="sm" className="h-8 border-primary/20 bg-primary/5 hover:bg-primary/10 transition-all"
               onClick={() => { resetLayout(activeTab); toast.success('Dashboard arrangement reset.'); }}>
               <RotateCcw className="w-4 h-4 mr-2" />Reset Arrangement
@@ -144,6 +180,7 @@ export function Dashboard() {
               onClick={() => { resetPanelScales(activeTab); toast.success('Panel text scaling reset.'); }}>
               <SlidersHorizontal className="w-4 h-4 mr-2" />Reset Text Scale
             </Button>
+            </>}
           </div>
           <span className="text-xs font-mono text-muted-foreground hidden md:block">
             {symbol} | {data ? `UPDATED ${new Date(updatedAt).toLocaleTimeString('en-IN')}` : 'SYNCING'} | NOT FINANCIAL ADVICE
@@ -204,8 +241,11 @@ function AdaptivePanel({ tab, panelId, isEditMode, children }: { tab: DashboardT
 }
 
 function DashboardGrid({ tab, symbol, data }: { tab: DashboardTab; symbol: Symbol; data: Analysis | null }) {
-  const { layouts, isEditMode, updateLayout } = useDashboardStore();
-  const layout = layouts[tab];
+  const { layouts, isEditMode: editing, updateLayout } = useDashboardStore();
+  const { view } = useAppearance();
+  const focus = view === 'focus' && tab === 'terminal';
+  const layout = focus ? FOCUS_LAYOUT : layouts[tab];
+  const isEditMode = editing && !focus;
   const { width, containerRef, mounted } = useContainerWidth();
 
   const panels: Record<string, React.ReactNode> = {
@@ -217,10 +257,13 @@ function DashboardGrid({ tab, symbol, data }: { tab: DashboardTab; symbol: Symbo
     structure: <StructurePanel a={data} />,
     global: <GlobalPanel a={data} />,
     news: <NewsPanel />,
+    paper: <PaperPanel a={data} />,
+    orb: <OrbPanel a={data} />,
+    predict: <PredictPanel symbol={symbol} />,
   };
 
   const gridItemClass = cn(
-    'h-full w-full overflow-hidden rounded-lg bg-card/40 backdrop-blur-sm border border-border shadow-sm transition-all',
+    'h-full w-full overflow-hidden rounded-lg bg-card border border-border shadow-sm transition-all',
     isEditMode && 'ring-2 ring-primary ring-offset-2 cursor-move border-dashed border-primary/50 bg-primary/5',
   );
 

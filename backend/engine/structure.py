@@ -112,6 +112,90 @@ def key_levels(intraday: pd.DataFrame, daily: pd.DataFrame, step: int) -> list[d
     return levels
 
 
+def htf_levels(intraday: pd.DataFrame, daily: pd.DataFrame) -> list[dict]:
+    """Higher-timeframe highs/lows: previous week, confirmed daily swings, confirmed 1-hour swings.
+
+    Big players defend these; price often stalls or reverses at them. Only data before the
+    current bar is used (daily/weekly strictly before today, 1h swings confirmed by later bars).
+    """
+    out: list[dict] = []
+    today = intraday.index[-1].date()
+    past = daily[daily.index.date < today] if not daily.empty else daily
+    if len(past) >= 6:
+        wk = past.copy()
+        wk["week"] = [d.isocalendar()[1] for d in wk.index.date]
+        cur_week = pd.Timestamp(today).isocalendar()[1]
+        prev = wk[wk["week"] != cur_week]
+        if len(prev):
+            last_week = prev[prev["week"] == prev["week"].iloc[-1]]
+            out.append({"name": "Prev Week High", "price": float(last_week["high"].max()), "weight": 3})
+            out.append({"name": "Prev Week Low", "price": float(last_week["low"].min()), "weight": 3})
+        dpiv = swings(past.tail(60), k=2, min_atr=0.8)
+        for p in dpiv[-6:]:
+            out.append({"name": f"Daily Swing {'High' if p['type'] == 'H' else 'Low'}", "price": p["price"], "weight": 3})
+    h1 = intraday.resample("60min", offset="15min").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+    if len(h1) > 20:
+        for p in swings(h1.iloc[:-1].tail(120), k=2, min_atr=0.8)[-6:]:
+            out.append({"name": f"1H Swing {'High' if p['type'] == 'H' else 'Low'}", "price": p["price"], "weight": 2})
+    return out
+
+
+def prev_session(daily: pd.DataFrame, intraday: pd.DataFrame) -> dict | None:
+    """Where yesterday actually ended: its high, low, close, and where in that range it stopped.
+
+    Closing near the high means buyers held it overnight; closing near the low means sellers did.
+    Today's gap is measured against that close, because a gap is the market re-pricing overnight
+    news before anyone can trade it.
+    """
+    if daily is None or daily.empty or intraday is None or intraday.empty:
+        return None
+    today = intraday.index[-1].date()
+    prev = daily[daily.index.date < today]
+    if not len(prev):
+        return None
+    row = prev.iloc[-1]
+    hi, lo, close = float(row["high"]), float(row["low"]), float(row["close"])
+    rng = hi - lo
+    pos = ((close - lo) / rng * 100) if rng > 0 else 50.0
+
+    today_bars = intraday[intraday.index.date == today]
+    open_px = float(today_bars["open"].iloc[0]) if len(today_bars) else None
+    gap = (open_px - close) if open_px is not None else None
+    gap_pct = (gap / close * 100) if gap is not None and close else None
+
+    if pos >= 80:
+        where = "right at the high - buyers held it into the close"
+    elif pos >= 60:
+        where = "in the upper half - buyers finished stronger"
+    elif pos > 40:
+        where = "mid-range - neither side won the close"
+    elif pos > 20:
+        where = "in the lower half - sellers finished stronger"
+    else:
+        where = "right at the low - sellers held it into the close"
+
+    text = (f"Yesterday closed at {close:,.0f} after trading {lo:,.0f}-{hi:,.0f} "
+            f"({rng:,.0f} points of range), finishing {where}.")
+    if gap is not None:
+        if abs(gap_pct or 0) < 0.1:
+            text += " Today opened flat to yesterday's close."
+        else:
+            text += (f" The latest session opened {gap:+,.0f} points ({gap_pct:+.2f}%) "
+                     f"{'above' if gap > 0 else 'below'} that close - a "
+                     f"{'gap up' if gap > 0 else 'gap down'}.")
+
+    return {
+        "date": prev.index[-1].date().isoformat(),
+        "high": round(hi, 2), "low": round(lo, 2), "close": round(close, 2),
+        "range": round(rng, 2), "close_position_pct": round(pos, 1),
+        "open_today": round(open_px, 2) if open_px is not None else None,
+        "gap_points": round(gap, 2) if gap is not None else None,
+        "gap_pct": round(gap_pct, 2) if gap_pct is not None else None,
+        "text": text,
+    }
+
+
 def swing_zones(piv: list[dict], atr_value: float) -> list[dict]:
     """Cluster swing prices into support/resistance zones; more touches = stronger."""
     prices = sorted(p["price"] for p in piv)

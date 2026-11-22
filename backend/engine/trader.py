@@ -1,0 +1,492 @@
+﻿"""Paper autopilot + gated live orders.
+
+PAPER (default): every live BUY/SELL verdict opens a simulated option position at the live premium
+(Angel One LTP when connected, otherwise a Black-Scholes estimate), then exits on the index stop,
+index target, or 15:15. Risk caps (trades/day, daily loss) are enforced. Everything is saved to
+data/paper_trades.json so you can review the day honestly.
+
+LIVE: off unless backend/.env has LIVE_TRADING=true AND Angel One is connected. Even then the app
+never fires on its own: you click "Place order", the server re-checks the caps, and sends one LIMIT
+order through SmartAPI. Exits on live positions are your job (the app alerts you).
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import shutil
+import threading
+from datetime import date, datetime, time
+from pathlib import Path
+
+from . import flow
+from .config import ENTRY_RULES, INSTRUMENTS, IST
+from .data import angel
+from .lessons import lessons
+from .options import MAX_LOTS, bs, entry_blockers, implied_vol, round_trip_cost, years_to_expiry
+
+log = logging.getLogger("engine.trader")
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+PAPER_FILE = DATA_DIR / "paper_trades.json"
+REPLAY_FILE = DATA_DIR / "replay_paper.json"
+ORDER_LOG = DATA_DIR / "live_orders.jsonl"
+SQUARE_OFF = time(15, 15)
+TIME_STOP = time(*ENTRY_RULES["time_stop"])  # cut the last-hour bleed instead of holding to 15:15
+
+
+def live_enabled() -> bool:
+    return os.getenv("LIVE_TRADING", "").lower() == "true"
+
+
+class PaperTrader:
+    def __init__(self, path: Path | None = None):
+        self.path = path or PAPER_FILE
+        self._lock = threading.Lock()
+        self.state = self._load()
+
+    @staticmethod
+    def _valid(state) -> bool:
+        return isinstance(state, dict) and isinstance(state.get("open"), dict) and isinstance(state.get("closed"), list)
+
+    def _load(self) -> dict:
+        """Never lose the record silently.
+
+        A truncated/corrupt JSON used to come back as an empty book, and the next save then
+        overwrote the whole history. Now: read the main file, fall back to the .bak, and keep a
+        copy of anything unreadable so it can be recovered by hand.
+        """
+        bak = self.path.with_name(self.path.name + ".bak")
+        for p in (self.path, bak):
+            try:
+                state = json.loads(p.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                continue
+            except Exception as exc:  # noqa: BLE001  corrupt or unreadable
+                log.error("paper book %s is unreadable (%s) - preserving it", p.name, exc)
+                if p == self.path:
+                    keep = self.path.with_name(f"{self.path.name}.corrupt-{datetime.now(IST):%Y%m%d-%H%M%S}.json")
+                    try:
+                        shutil.copy2(self.path, keep)
+                        self.path.unlink()  # so the next save cannot copy the broken file over .bak
+                        log.error("copy saved as %s", keep.name)
+                    except Exception:  # noqa: BLE001
+                        pass
+                continue
+            if self._valid(state):
+                if p == bak:
+                    log.error("recovered the paper book from %s", bak.name)
+                return state
+            log.error("paper book %s has the wrong shape - ignoring it", p.name)
+        return {"open": {}, "closed": []}
+
+    def _save(self):
+        """Atomic write + rolling .bak so a kill mid-write cannot truncate the record."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
+            f.write(json.dumps(self.state, indent=1, default=str))
+            f.flush()
+            os.fsync(f.fileno())
+        if self.path.exists():
+            try:
+                shutil.copy2(self.path, self.path.with_name(self.path.name + ".bak"))
+            except Exception:  # noqa: BLE001
+                pass
+        os.replace(tmp, self.path)
+
+    # ---------- helpers ----------
+    def today_closed(self, key: str | None = None, day: date | None = None) -> list[dict]:
+        d = (day or datetime.now(IST).date()).isoformat()  # IST, not the host's local date
+        return [t for t in self.state["closed"] if t["opened_at"][:10] == d and (key is None or t["instrument"] == key)]
+
+    def day_pnl(self, day: date | None = None) -> float:
+        return sum(t["pnl"] for t in self.today_closed(day=day))
+
+    def _premium_now(self, pos: dict, spot: float, now: datetime, chain: list | None) -> tuple[float, str]:
+        if chain:
+            row = next((r for r in chain if r["strike"] == pos["strike"]), None)
+            ltp = (row or {}).get(pos["option_type"], {}).get("ltp") if row else None
+            if ltp:
+                return float(ltp), "live"
+        exp = date.fromisoformat(pos["expiry"])
+        return bs(spot, pos["strike"], years_to_expiry(exp, now), pos["iv"], pos["option_type"])["price"], "model"
+
+    # ---------- main hook, called on every fresh analysis ----------
+    def on_analysis(self, a: dict, settings: dict) -> dict:
+        """Run every strategy in its own paper slot so they can be compared live."""
+        key = a["instrument"]["key"]
+        events = []
+        if key not in settings.get("autopilot_instruments", ["NIFTY"]):
+            return {"events": [], "open": []}
+        enabled = settings.get("autopilot_strategies", ["First-Hour", "First-30", "Expiry"])
+
+        def gate(name, verdict):  # a switched-off strategy opens nothing, but still manages a position it holds
+            return verdict if name in enabled else None
+
+        events += self._process(f"{key}|engine", "Engine", gate("Engine", a.get("verdict")), a.get("option"), a.get("plan"), a, settings,
+                                settings["max_trades_per_day"])
+        orb = a.get("orb") or {}
+        events += self._process(f"{key}|orb", "First-Hour", gate("First-Hour", orb.get("verdict")), orb.get("option"),
+                                {"direction": orb.get("direction", 0), "stop": orb.get("stop"), "target": orb.get("target")},
+                                a, settings, 1)
+        f30 = a.get("first30") or {}
+        events += self._process(f"{key}|first30", "First-30", gate("First-30", f30.get("verdict")), f30.get("option"),
+                                {"direction": f30.get("direction", 0), "stop": f30.get("stop"), "target": f30.get("target")},
+                                a, settings, 1)
+        ex = a.get("expiry_play") or {}
+        events += self._process(f"{key}|expiry", "Expiry", gate("Expiry", ex.get("verdict")), ex.get("option"),
+                                {"direction": ex.get("direction", 0), "stop": ex.get("stop"), "target": ex.get("target")},
+                                a, settings, 1)
+        return {"events": events, "open": [p for s, p in self.state["open"].items() if s.startswith(key + "|")]}
+
+    def _process(self, slot, strategy, verdict, option, plan, a, settings, max_trades) -> list[dict]:
+        key = a["instrument"]["key"]
+        now = datetime.fromisoformat(a["generated_at"])
+        spot = a.get("spot_live") or a["price"]
+        events = []
+        self._note_day_rules(settings)
+        with self._lock:
+            pos = self.state["open"].get(slot)
+            if pos:
+                d = pos["dir"]
+                # If the service was down at 15:15 the position never came off. Close it at its last
+                # mark instead of managing yesterday's contract against today's price forever.
+                stale = datetime.fromisoformat(pos["opened_at"]).date() < now.date()
+                if stale:
+                    prem, src = float(pos.get("mark") or pos["entry_premium"]), "last mark"
+                else:
+                    # mark each position against ITS contract's chain: after the noon roll the main chain is next week's
+                    prem, src = self._premium_now(pos, spot, now, (a.get("chains") or {}).get(pos["expiry"]))
+                pos["mark"] = round(prem, 2)
+                pos["unrealized"] = round((prem - pos["entry_premium"]) * pos["quantity"], 2)
+                tgt = pos.get("index_target")
+                hit_stop = (spot <= pos["index_stop"]) if d > 0 else (spot >= pos["index_stop"])
+                hit_tgt = tgt is not None and ((spot >= tgt) if d > 0 else (spot <= tgt))
+                eod = now.time() >= SQUARE_OFF or not a["session"]["is_open"]
+                # The clock is the most reliable edge a long option has: after 14:30 the remaining
+                # time value bleeds faster than an intraday move can pay for it.
+                tstop = not stale and now.time() >= TIME_STOP
+                # premium-based stop as a backstop (theta can kill a position before the index stop hits)
+                prem_stop = prem <= pos["premium_stop"]
+                if stale or hit_stop or hit_tgt or eod or prem_stop or tstop:
+                    reason = ("stale (square-off missed)" if stale
+                              else "target" if hit_tgt else "stop" if hit_stop
+                              else "premium stop" if prem_stop
+                              else f"{TIME_STOP:%H:%M} time stop" if tstop and not eod
+                              else "15:15 square-off")
+                    cost = round_trip_cost((pos["entry_premium"] + prem) / 2, pos["quantity"])
+                    pnl = round((prem - pos["entry_premium"]) * pos["quantity"] - cost, 2)
+                    closed = {**pos, "closed_at": now.isoformat(), "exit_spot": spot, "exit_premium": round(prem, 2),
+                              "exit_source": src, "reason": reason, "charges": cost, "pnl": pnl, "stale": stale}
+                    self.state["closed"].append(closed)
+                    del self.state["open"][slot]
+                    events.append({"type": "paper_exit", "trade": closed})
+                self._save()
+            elif verdict in ("BUY", "SELL") and option and plan.get("stop") is not None:
+                cap = int(settings.get("max_open_positions", 1) or 0)
+                held = next(iter(self.state["open"].values()), None)
+                mine = [t for t in self.state["closed"] if t.get("slot") == slot]
+                n_today = sum(1 for t in mine if t["opened_at"][:10] == now.date().isoformat())
+                loss_cap = -settings["capital"] * settings.get("max_daily_loss_pct", 25.0) / 100
+                profit_cap = settings["capital"] * float(settings.get("daily_profit_pct", 20.0)) / 100
+                day_pnl = self.day_pnl(now.date())
+                room = -loss_cap + day_pnl        # the unspent part of today's loss limit
+                lots = max(1, option.get("lots", 0))
+                qty = lots * INSTRUMENTS[key].lot_size
+                risk_rs = round((option["premium"] - option.get("premium_stop", option["premium"])) * qty, 2)
+                # Keep the day's circuit breakers in the book so the desk can show them without
+                # re-reading settings. Written only when they change.
+                cooling = mine and (now - datetime.fromisoformat(mine[-1]["closed_at"])).total_seconds() < 900
+                entry_loss_cap = float(settings.get("max_loss_per_trade", 0) or 0)
+                entry_score_min = float(settings.get("entry_score_min", 0) or 0)
+                score_a = float(a.get("score") or 0.0)
+                blockers = entry_blockers(option, INSTRUMENTS[key].lot_size, now)
+                if strategy == "Expiry":  # short-dated by design: charges and theta are what this slot measures, and its loss is capped
+                    blockers = [b for b in blockers if b["name"] == "clock"]
+                if cap and held and len(self.state["open"]) >= cap and held.get("slot") != slot:
+                    # One trade at a time: a second strategy must wait its turn instead of stacking risk.
+                    why = (f"one position at a time - {held['strategy']} still holds {held['symbol']}" if cap == 1
+                           else f"{len(self.state['open'])} positions already open (cap {cap})")
+                    events.append({"type": "blocked", "reason": f"{strategy}: {why}"})
+                elif (spot - plan["stop"]) * plan["direction"] <= 0:
+                    events.append({"type": "blocked", "reason": f"{strategy}: stop is on the wrong side of price - skipped"})
+                elif cooling:
+                    events.append({"type": "blocked", "reason": f"{strategy}: cooling off 15 min after the last exit"})
+                elif n_today >= max_trades:
+                    events.append({"type": "blocked", "reason": f"{strategy}: max {max_trades} trade(s)/day reached"})
+                elif day_pnl >= profit_cap:
+                    events.append({"type": "blocked", "reason": (
+                        f"Daily profit target Rs {profit_cap:,.0f} hit - Rs {day_pnl:,.0f} banked, "
+                        "done for the day")})
+                elif day_pnl <= loss_cap:
+                    events.append({"type": "blocked", "reason": "Daily loss limit hit - done for the day"})
+                elif risk_rs > room:
+                    events.append({"type": "blocked", "reason": (
+                        f"{strategy}: this trade risks Rs {risk_rs:,.0f} but only Rs {max(room, 0):,.0f} of "
+                        "the day's loss limit is left - no entry that could breach the day")})
+                elif entry_loss_cap > 0 and float(option.get("max_loss", 0) or 0) > entry_loss_cap:
+                    # Owner, 9 Nov (his words in MAILBOX): "set a loss cap to 1 or 2k max per trade".
+                    events.append({"type": "blocked", "reason": (
+                        f"{strategy}: worst case Rs {option.get('max_loss'):,.0f} is above the "
+                        f"Rs {entry_loss_cap:,.0f} per-trade cap (owner, 9 Nov)")})
+                elif entry_score_min > 0 and strategy != "Expiry" and not entry_evidence(
+                        a, plan, entry_score_min):
+                    # Owner, 9 Nov: "when you have backed up evidence to support that you know the
+                    # trade is gonna go your way". Expiry keeps its own owner-blessed pilot terms.
+                    s_dir_ok = (score_a >= entry_score_min) if plan["direction"] > 0 else (score_a <= -entry_score_min)
+                    mtf_phase = (a.get("mtf") or {}).get("phase")
+                    events.append({"type": "blocked", "reason": (
+                        f"{strategy}: below the owner evidence bar (9 Nov) - score {score_a:+.2f} "
+                        f"(need {'<=' if plan['direction'] < 0 else '>='}{entry_score_min:.2f} in the trade's "
+                        f"direction) and MTF {mtf_phase} (need aligned with the trade)")})
+                elif blockers:
+                    why = "; ".join(b["detail"] for b in blockers)
+                    events.append({"type": "blocked", "reason": f"{strategy}: {why}", "gate": blockers})
+                    self._note_gate(now, strategy, blockers)
+                else:
+                    o, p = option, plan
+                    # Paper always takes at least 1 lot (same as the lab), and flags when that breaks your risk budget.
+                    oversize = o.get("lots", 0) < 1
+                    exp = date.fromisoformat(o["expiry"])
+                    iv = (o["greeks"].get("iv")
+                          or implied_vol(o["premium"], spot, o["strike"], years_to_expiry(exp, now), o["option_type"])
+                          or (a["vix"]["value"] / 100 if a.get("vix") else 0.14))
+                    pos = {"slot": slot, "strategy": strategy, "instrument": key, "dir": p["direction"], "side": o["side"],
+                           "symbol": o["symbol_hint"], "strike": o["strike"], "option_type": o["option_type"],
+                           "expiry": o["expiry"], "quantity": qty, "lots": lots, "oversize": oversize, "entry_premium": o["premium"],
+                           "premium_source": o["premium_source"], "premium_stop": o["premium_stop"],
+                           "premium_target": o["premium_target"], "iv": iv, "entry_spot": spot,
+                           "index_stop": p["stop"], "index_target": p.get("target"), "opened_at": now.isoformat(),
+                           "score": a["score"], "mark": o["premium"], "unrealized": 0.0}
+                    # Shadow decision engine: it records a probability next to the fill so the
+                    # model can be scored against reality later. It does NOT block or allow anything
+                    # until it has been promoted on out-of-sample evidence (see engine/decision.py).
+                    try:
+                        from . import decision
+
+                        feats = decision.live_features(a, p["direction"], p["stop"], spot, expiry=o["expiry"])
+                        pos["decision"] = decision.decide(feats, strategy)
+                    except Exception:  # noqa: BLE001
+                        pos["decision"] = None
+                    # Flow shadow: what the timeframes, chain and order book said at the fill. It is
+                    # recorded so the read can be scored forward; it never blocks or allows a trade.
+                    try:
+                        chain_for = (a.get("chains") or {}).get(o["expiry"]) or a.get("chain")
+                        pos["flow"] = flow.trade(a.get("flow"), p["direction"], o, chain_for)
+                    except Exception:  # noqa: BLE001
+                        pos["flow"] = None
+                    self.state["open"][slot] = pos
+                    self._save()
+                    events.append({"type": "paper_entry", "trade": pos})
+                    self._note_gate(now, strategy, [])
+        return events
+
+    def _note_day_rules(self, settings: dict) -> None:
+        """Keep today's circuit breakers in the book so the desk can show them even on a quiet day."""
+        profit_pct = round(float(settings.get("daily_profit_pct", 20.0)), 2)
+        loss_pct = round(float(settings.get("max_daily_loss_pct", 25.0)), 2)
+        capital = float(settings.get("capital", 10000.0))
+        rules = {"profit_stop": round(capital * profit_pct / 100, 2),
+                 "loss_stop": round(capital * loss_pct / 100, 2),
+                 "profit_pct": profit_pct, "loss_pct": loss_pct}
+        if self.state.get("day_rules") != rules:
+            self.state["day_rules"] = rules
+            self._save()
+
+    def _note_gate(self, now: datetime, strategy: str, blockers: list[dict]) -> None:
+        """Remember the last entry decision so the desk can say why nothing is trading.
+
+        Written only when the reason changes: the loop runs every 15 seconds and a disk write per
+        tick would be pure noise.
+        """
+        sig = [b["name"] for b in blockers]
+        prev = self.state.get("last_gate") or {}
+        if prev.get("strategy") == strategy and prev.get("blocked") == sig:
+            prev["at"] = now.isoformat()
+            return
+        self.state["last_gate"] = {
+            "at": now.isoformat(), "strategy": strategy, "blocked": sig,
+            "reasons": [b["detail"] for b in blockers],
+            "values": {b["name"]: b["value"] for b in blockers},
+        }
+        self._save()
+
+    def summary(self, day: date | None = None) -> dict:
+        today = self.today_closed(day=day)
+        allc = self.state["closed"]
+        hh, mm = ENTRY_RULES["no_entry_after"]
+        wins = [t for t in allc if t["pnl"] > 0]
+        by_strategy = {}
+        for t in allc:
+            b = by_strategy.setdefault(t.get("strategy", "Engine"), {"trades": 0, "wins": 0, "pnl": 0.0})
+            b["trades"] += 1
+            b["wins"] += t["pnl"] > 0
+            b["pnl"] = round(b["pnl"] + t["pnl"], 2)
+        # Where each strategy stands on the agreed gate, so the journal page shows the same verdict the
+        # Saturday report sends. Cheap: a handful of closed trades.
+        gate = {}
+        for name in by_strategy:
+            sc = scorecard([t for t in allc if t.get("strategy", "Engine") == name])
+            verdict, checks = go_no_go(sc)
+            gate[name] = {"verdict": verdict, "checks": checks, "scorecard": sc}
+        dr = self.state.get("day_rules") or {}
+        day_pnl = round(self.day_pnl(day), 2)
+        day_state = {"pnl": day_pnl}
+        if dr:
+            stop_profit = float(dr.get("profit_stop") or 0)
+            stop_loss = float(dr.get("loss_stop") or 0)
+            day_state.update({
+                "profit_stop": stop_profit, "loss_stop": stop_loss,
+                "room": round(max(stop_loss + day_pnl, 0.0), 2),
+                "stopped": ("profit" if day_pnl >= stop_profit
+                            else "loss" if day_pnl <= -stop_loss else None),
+            })
+        return {
+            "by_strategy": by_strategy,
+            "day": day_state,
+            "day_rules": dr or None,
+            "open": list(self.state["open"].values()),
+            "today": {"trades": len(today), "pnl": round(sum(t["pnl"] for t in today), 2),
+                      "wins": sum(1 for t in today if t["pnl"] > 0)},
+            "all_time": {"trades": len(allc), "pnl": round(sum(t["pnl"] for t in allc), 2), "wins": len(wins),
+                         "win_rate": round(len(wins) / len(allc) * 100, 1) if allc else None},
+            "closed": list(reversed(allc[-200:])),
+            "lessons": lessons(allc),
+            "go_no_go": gate,
+            "entry_rules": {
+                "no_entry_after": f"{hh:02d}:{mm:02d}",
+                "time_stop": f"{TIME_STOP:%H:%M}",
+                "max_charge_pct": ENTRY_RULES["max_charge_pct"],
+                "max_theta_pct": ENTRY_RULES["max_theta_pct"],
+            },
+            "last_gate": self.state.get("last_gate"),
+            "live_trading_enabled": live_enabled(), "broker_connected": angel.api is not None,
+        }
+
+    def reset(self):
+        with self._lock:
+            self.state = {"open": {}, "closed": []}
+            self._save()
+
+
+def scorecard(trades: list[dict]) -> dict:
+    """The go/no-go numbers for a list of closed trades (oldest first)."""
+    pnl = [t["pnl"] for t in trades]
+    wins, losses = [p for p in pnl if p > 0], [p for p in pnl if p <= 0]
+    streak = worst = 0
+    for p in pnl:
+        streak = streak + 1 if p <= 0 else 0
+        worst = max(worst, streak)
+    avg_w = sum(wins) / len(wins) if wins else 0.0
+    avg_l = -sum(losses) / len(losses) if losses else 0.0
+    return {"trades": len(pnl), "net": round(sum(pnl), 2), "win_rate": round(100 * len(wins) / len(pnl), 1) if pnl else None,
+            "avg_win": round(avg_w, 2), "avg_loss": round(avg_l, 2),
+            "payoff": round(avg_w / avg_l, 2) if avg_l else None, "worst_streak": worst,
+            # Trades where one lot cost more risk than the settings' budget allows. The paper book always
+            # takes at least 1 lot so the record stays comparable with the lab, but a real account this
+            # small cannot place them - so they must not quietly count towards a GO.
+            "oversize": sum(1 for t in trades if t.get("oversize"))}
+
+
+def entry_evidence(a: dict, plan: dict, min_score: float) -> bool:
+    """Owner evidence bar (9 Nov, words recorded in MAILBOX): take a trade only when the stacks back it.
+    The score must clear the floor IN the trade's direction, and the multi-timeframe read (daily
+    included - the owner asked for "identifying trends based on the daily market highs and lows")
+    must be aligned the same way. min_score <= 0 disables the bar."""
+    if min_score <= 0:
+        return True
+    score = float(a.get("score") or 0.0)
+    dir_ok = (score >= min_score) if plan["direction"] > 0 else (score <= -min_score)
+    mtf = a.get("mtf") or {}
+    aligned = (mtf.get("phase") == "aligned"
+               and ((mtf.get("primary") or {}).get("direction") == plan["direction"]))
+    return bool(dir_ok and aligned)
+
+
+def go_no_go(sc: dict, need: int = 20) -> tuple[str, list[str]]:
+    """Rules agreed before going live: >=20 trades, win rate >=40%, avg win >=1.5x avg loss, net positive,
+    losing streak <=6, and every trade actually affordable inside the risk budget."""
+    over = sc.get("oversize", 0)
+    checks = [
+        (sc["trades"] >= need, f"trades {sc['trades']}/{need}"),
+        ((sc["win_rate"] or 0) >= 40, f"win rate {sc['win_rate'] or 0}% (need 40%)"),
+        ((sc["payoff"] or 0) >= 1.5, f"avg win/avg loss {sc['payoff'] or 0}x (need 1.5x)"),
+        (sc["net"] > 0, f"net Rs {sc['net']:,.0f} (need > 0)"),
+        (sc["worst_streak"] <= 6, f"worst losing streak {sc['worst_streak']} (max 6)"),
+        (over == 0, f"{over} trade(s) were bigger than your risk budget (need 0)"),
+    ]
+    lines = [("OK " if ok else "-- ") + txt for ok, txt in checks]
+    if sc["trades"] < need:
+        return "NOT YET (too few trades)", lines
+    return ("GO" if all(ok for ok, _ in checks) else "NO-GO"), lines
+
+
+paper = PaperTrader()
+replay_paper = PaperTrader(REPLAY_FILE)
+
+
+# ---------------- live orders (explicit click only) ----------------
+def _find_contract(key: str, expiry: str, strike: float, kind: str) -> dict | None:
+    from .options import _scrip_master
+
+    inst = INSTRUMENTS[key]
+    exp = date.fromisoformat(expiry).strftime("%d%b%Y").upper()
+    for r in _scrip_master():
+        if (r.get("name") == inst.angel_name and r.get("expiry") == exp and r.get("exch_seg") == inst.option_exchange
+                and abs(float(r.get("strike", 0)) / 100 - strike) < 0.01 and r["symbol"].endswith(kind)):
+            return r
+    return None
+
+
+def place_live_order(key: str, expiry: str, strike: float, kind: str, lots: int, side: str, limit_price: float,
+                     settings: dict) -> dict:
+    """One LIMIT order via SmartAPI. Caller must be a deliberate user click."""
+    if not live_enabled():
+        return {"ok": False, "error": "Live trading is disabled. Set LIVE_TRADING=true in backend/.env to enable."}
+    api = angel.session()
+    if api is None:
+        return {"ok": False, "error": "Angel One is not connected."}
+    if lots < 1:
+        return {"ok": False, "error": "Lots must be at least 1."}
+    if side == "BUY":
+        if len([t for t in _order_log_today() if t.get("side") == "BUY" and t.get("ok")]) >= settings["max_trades_per_day"]:
+            return {"ok": False, "error": "Max trades per day reached."}
+        if paper.day_pnl() <= -settings["capital"] * settings.get("max_daily_loss_pct", 25.0) / 100:
+            return {"ok": False, "error": "Daily loss limit reached."}
+        max_lots = int(settings["capital"] // (limit_price * INSTRUMENTS[key].lot_size)) if limit_price > 0 else 0
+        if lots > max_lots:
+            return {"ok": False, "error": f"Lots must be 1..{max_lots} for your capital."}
+    elif lots > MAX_LOTS:
+        # Selling options needs margin the app cannot see; keep the hard cap from the paper book.
+        return {"ok": False, "error": f"Sell size is capped at {MAX_LOTS} lots."}
+    c = _find_contract(key, expiry, strike, kind)
+    if not c:
+        return {"ok": False, "error": "Contract not found in Angel One scrip master."}
+    tick = 0.05
+    price = round(round(limit_price / tick) * tick, 2)
+    params = {
+        "variety": "NORMAL", "tradingsymbol": c["symbol"], "symboltoken": c["token"], "transactiontype": side,
+        "exchange": INSTRUMENTS[key].option_exchange, "ordertype": "LIMIT", "producttype": "INTRADAY",
+        "duration": "DAY", "price": str(price), "quantity": str(lots * INSTRUMENTS[key].lot_size),
+    }
+    rec = {"at": datetime.now(IST).isoformat(), "side": side, **params}
+    try:
+        fn = getattr(api, "placeOrderFullResponse", None)
+        res = fn(params) if fn else {"status": True, "data": {"orderid": api.placeOrder(params)}}
+        ok = bool(res and res.get("status") and (res.get("data") or {}).get("orderid"))
+        rec.update({"ok": ok, "response": res})
+    except Exception as exc:  # noqa: BLE001
+        rec.update({"ok": False, "error": str(exc)})
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with ORDER_LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, default=str) + "\n")
+    return {"ok": rec.get("ok", False), "order": rec, "error": rec.get("error") or (None if rec.get("ok") else str(rec.get("response")))}
+
+
+def _order_log_today() -> list[dict]:
+    if not ORDER_LOG.exists():
+        return []
+    d = datetime.now(IST).date().isoformat()
+    rows = [json.loads(x) for x in ORDER_LOG.read_text(encoding="utf-8").splitlines() if x.strip()]
+    return [r for r in rows if str(r.get("at", ""))[:10] == d]
+

@@ -1,11 +1,11 @@
-"""Engine tests: deterministic, offline (no network)."""
-from datetime import date, datetime
+﻿"""Engine tests: deterministic, offline (no network)."""
+from datetime import date, datetime, timedelta
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from backend.engine import candles, options, structure, timeline
+from backend.engine import candles, mtf, options, structure, timeline
 from backend.engine.config import IST
 from backend.engine.data import _normalize, closed_bars
 from backend.engine.news import score_text
@@ -176,3 +176,1542 @@ def test_evaluate_blocks_entries_when_market_closed():
     daily = df.resample("1D").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
     r = evaluate(df, daily, 50, session={"can_enter": False, "phase": "closed"})
     assert r["verdict"] == "NO TRADE"
+
+
+def test_htf_levels_use_only_past_data():
+    df = session_bars(5, drift=1.0)
+    daily = df.resample("1D").agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}).dropna()
+    lv = structure.htf_levels(df, daily)
+    today = df.index[-1].date()
+    today_high = df[df.index.date == today]["high"].max()
+    names = {x["name"] for x in lv}
+    assert "Prev Week High" in names or any(n.startswith("1H Swing") for n in names)
+    assert all(x["price"] != today_high or x["name"].startswith("1H") for x in lv)
+
+
+def test_paper_trader_lifecycle(tmp_path, monkeypatch):
+    from backend.engine import trader
+    monkeypatch.setattr(trader, "PAPER_FILE", tmp_path / "paper.json")
+    pt = trader.PaperTrader()
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1, "max_trades_per_day": 3, "max_daily_loss_pct": 3,
+                "autopilot_instruments": ["NIFTY"]}
+    base = {"instrument": {"key": "NIFTY"}, "session": {"is_open": True}, "vix": {"value": 14}, "chain": None,
+            "score": 0.6, "reasons": [{"text": "x"}], "spot_live": 23000.0, "price": 23000.0}
+    opt = {"side": "BUY CE", "symbol_hint": "NIFTY 27 OCT 23000 CE", "strike": 23000, "option_type": "CE",
+           "expiry": "2026-10-27", "quantity": 65, "lots": 1, "premium": 150.0, "premium_source": "model",
+           "premium_stop": 120.0, "premium_target": 210.0, "greeks": {"delta": 0.5}}
+    a = {**base, "generated_at": "2026-10-21T10:00:00+05:30", "verdict": "BUY", "option": opt,
+         "plan": {"direction": 1, "stop": 22950.0, "target": 23100.0}}
+    assert pt.on_analysis(a, settings)["events"][0]["type"] == "paper_entry"
+    b = {**a, "generated_at": "2026-10-21T10:30:00+05:30", "verdict": "NO TRADE", "spot_live": 23110.0, "price": 23110.0}
+    ev = pt.on_analysis(b, settings)["events"][0]
+    assert ev["type"] == "paper_exit" and ev["trade"]["reason"] == "target" and ev["trade"]["pnl"] > 0
+    assert not pt.state["open"]
+    assert pt.summary()["by_strategy"]["Engine"]["trades"] == 1
+
+
+def test_orb_breakout_rules():
+    from backend.engine import orb
+    closes = [23000, 23010, 23020, 23005, 23015, 23010] * 2 + [23012, 23015, 23060]  # breakout on the last bar
+    df = make_bars(closes, start="2026-10-21 09:15", spread=5)
+    now = df.index[-1].to_pydatetime() + pd.Timedelta(minutes=5)
+    r = orb.evaluate(df, prev_close=22950, now=now)
+    assert r["verdict"] == "BUY" and r["stop"] == pytest.approx(df.iloc[:12].low.min())
+    assert r["target"] == pytest.approx(r["entry"] + 2 * (r["entry"] - r["stop"]))
+    r2 = orb.evaluate(df, prev_close=23100, now=now)  # breakout, but below yesterday's close -> filtered
+    assert r2["verdict"] == "NO TRADE"
+    early = orb.evaluate(df.iloc[:8], prev_close=22950, now=df.index[7].to_pydatetime())
+    assert early["status"] == "forming"
+
+
+def test_orb_survives_off_window_rows():
+    # Real bug (8 Nov 2026): Yahoo returned one zero-volume bar at 15:30 on a Sunday.
+    # `day` is non-empty but the 09:15-10:15 slice is empty -> NaN in the payload -> /api/signal 500.
+    from backend.engine import orb
+    df = make_bars([24986.4], start="2026-11-08 15:30", spread=0)  # Sunday, outside the window
+    now = pd.Timestamp("2026-11-08 19:30", tz=IST).to_pydatetime()
+    r = orb.evaluate(df, prev_close=24900.0, now=now)
+    assert r["status"] == "waiting" and r["verdict"] == "NO TRADE"
+    assert "range_high" not in r
+    # Same shape on a trading morning with feed lag: bars exist, none in the window yet.
+    df2 = make_bars([23000, 23005, 23010], start="2026-10-21 11:00", spread=5)
+    now2 = df2.index[-1].to_pydatetime()
+    r2 = orb.evaluate(df2, prev_close=22950, now=now2)
+    assert r2["status"] == "waiting" and "range_high" not in r2
+
+
+def test_first_hour_uses_one_strike_otm():
+    risk = {"capital": 10000, "risk_per_trade_pct": 25, "max_trades_per_day": 2, "max_daily_loss_pct": 25}
+    now = datetime(2026, 10, 21, 11, 0, tzinfo=IST)
+    ce = options.plan_trade("NIFTY", 1, 23010, date(2026, 10, 27), 14, 60, 120, risk, now=now, otm_steps=1)
+    pe = options.plan_trade("NIFTY", -1, 23010, date(2026, 10, 27), 14, 60, 120, risk, now=now, otm_steps=1)
+    assert ce["strike"] == 23050 and pe["strike"] == 22950
+
+
+def test_angel_token_error_detected():
+    from backend.engine.data import _token_error
+    assert _token_error({"success": False, "message": "Invalid Token", "errorCode": "AG8001", "data": ""})
+    assert not _token_error({"status": True, "data": []})
+    assert not _token_error(None)
+
+
+def test_replay_clock_freezes_while_engine_busy():
+    import time
+    from datetime import date
+    from backend.engine import replay
+    replay.start(date(2026, 10, 16), speed=600)
+    replay.hold(True)
+    t0 = replay.now()
+    time.sleep(0.3)
+    assert replay.now() == t0
+    replay.hold(False)
+    time.sleep(0.1)
+    assert replay.now() > t0
+    replay.stop()
+
+
+def test_scorecard_and_go_no_go():
+    from backend.engine.trader import go_no_go, scorecard
+    trades = [{"pnl": p} for p in [-1000, -1000, 3000, -1000, 3500] * 4]
+    sc = scorecard(trades)
+    assert sc["trades"] == 20 and sc["win_rate"] == 40.0 and sc["worst_streak"] == 2
+    assert go_no_go(sc)[0] == "GO"
+    assert go_no_go(scorecard(trades[:5]))[0].startswith("NOT YET")
+
+
+def test_go_no_go_blocks_trades_the_account_could_not_afford():
+    from backend.engine.trader import go_no_go, scorecard
+    trades = [{"pnl": p} for p in [-1000, -1000, 3000, -1000, 3500] * 4]
+    assert scorecard(trades)["oversize"] == 0
+    trades[3]["oversize"] = True  # one lot risked more than the settings' budget allowed
+    sc = scorecard(trades)
+    assert sc["oversize"] == 1
+    verdict, lines = go_no_go(sc)
+    assert verdict == "NO-GO"
+    assert any("bigger than your risk budget" in ln for ln in lines)
+
+
+def test_disabled_strategy_opens_nothing(tmp_path):
+    from backend.engine.trader import PaperTrader
+    a = {"instrument": {"key": "NIFTY"}, "verdict": "BUY", "option": {"lots": 1}, "plan": {"direction": 1, "stop": 1},
+         "orb": {}, "first30": {}, "generated_at": "2026-10-23T10:30:00+05:30", "price": 100, "spot_live": 100,
+         "session": {"is_open": True}}
+    res = PaperTrader(tmp_path / "p.json").on_analysis(a, {"autopilot_strategies": ["First-Hour"], "max_trades_per_day": 2})
+    assert res["events"] == [] and res["open"] == []
+
+
+def test_lots_are_capped_on_cheap_premiums():
+    from datetime import date, datetime
+    from backend.engine import options
+    from backend.engine.config import IST
+    now = datetime(2026, 10, 13, 14, 15, tzinfo=IST)
+    o = options.plan_trade("NIFTY", 1, 22582, date(2026, 10, 13), 16.9, 200, 400,
+                           {"capital": 10000, "risk_per_trade_pct": 25, "max_trades_per_day": 2, "max_daily_loss_pct": 25},
+                           None, now, otm_steps=1)
+    assert o["lots"] <= options.MAX_LOTS
+
+
+# ---------------- robustness (audit 25 Oct 2026) ----------------
+def _entry_analysis(when: str, spot: float = 23000.0, verdict: str = "BUY") -> dict:
+    opt = {"side": "BUY CE", "symbol_hint": "NIFTY 27 OCT 23000 CE", "strike": 23000, "option_type": "CE",
+           "expiry": "2026-10-27", "quantity": 65, "lots": 1, "premium": 150.0, "premium_source": "model",
+           "premium_stop": 120.0, "premium_target": 210.0, "greeks": {"delta": 0.5}}
+    return {"instrument": {"key": "NIFTY"}, "session": {"is_open": True}, "vix": {"value": 14}, "chain": None,
+            "score": 0.6, "reasons": [], "spot_live": spot, "price": spot, "generated_at": when,
+            "verdict": verdict, "option": opt, "plan": {"direction": 1, "stop": 22950.0, "target": 23100.0}}
+
+
+def test_paper_book_recovers_from_a_corrupt_file(tmp_path):
+    from backend.engine import trader
+    p = tmp_path / "paper.json"
+    pt = trader.PaperTrader(p)
+    pt.state["closed"].append({"pnl": 10.0, "opened_at": "2026-10-21T10:00:00+05:30", "instrument": "NIFTY",
+                               "strategy": "First-Hour", "slot": "NIFTY|orb", "closed_at": "2026-10-21T11:00:00+05:30"})
+    pt._save()
+    pt._save()  # second save turns the valid file into paper.json.bak
+    p.write_text('{"open": {', encoding="utf-8")  # what a kill mid-write used to leave behind
+    again = trader.PaperTrader(p)
+    assert len(again.state["closed"]) == 1
+    assert list(tmp_path.glob("paper.json.corrupt-*.json")), "the unreadable file must be preserved"
+
+
+def test_missed_square_off_is_closed_next_session(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"]}
+    assert pt.on_analysis(_entry_analysis("2026-10-21T10:00:00+05:30"), settings)["events"][0]["type"] == "paper_entry"
+    # Next day, between stop and target: nothing would have closed it, so it must be forced out.
+    ev = pt.on_analysis(_entry_analysis("2026-10-22T09:20:00+05:30", verdict="NO TRADE"), settings)["events"][0]
+    assert ev["type"] == "paper_exit" and ev["trade"]["reason"] == "stale (square-off missed)"
+    assert ev["trade"]["stale"] is True and not pt.state["open"]
+    # Keyed on opened_at, so yesterday's forced exit never touches today's daily-loss cap.
+    assert pt.today_closed(day=date(2026, 10, 22)) == []
+    assert pt.today_closed(day=date(2026, 10, 21)) != []
+
+
+def test_first30_has_no_target():
+    from backend.engine import orb
+    closes = [23000, 23001, 23002, 23003, 23004, 23005]
+    df = make_bars(closes, start="2026-10-21 09:15", spread=1)
+    r = orb.first30(df, datetime(2026, 10, 21, 9, 50, tzinfo=IST))
+    assert r["verdict"] == "BUY" and r["direction"] == 1
+    assert r["target"] is None and "no target" in r["text"]
+
+
+def test_settings_are_clamped(tmp_path, monkeypatch):
+    from backend.engine import service
+    monkeypatch.setattr(service, "SETTINGS_FILE", tmp_path / "settings.json")
+    s = service.save_settings({"capital": -5, "max_trades_per_day": 0,
+                               "risk_per_trade_pct": 500, "max_daily_loss_pct": 300})
+    assert s["capital"] == 1000.0 and s["max_trades_per_day"] == 1
+    assert s["risk_per_trade_pct"] == 100.0 and s["max_daily_loss_pct"] == 100.0
+
+
+def test_evaluate_refuses_a_nearly_empty_frame():
+    df = make_bars([100, 101, 102])
+    with pytest.raises(RuntimeError):
+        evaluate(df, df, 50)
+
+
+
+def test_expiry_play_is_one_lot_with_capped_loss():
+    from datetime import date, datetime
+    from backend.engine import service
+    from backend.engine.config import IST
+    now = datetime(2026, 10, 27, 10, 30, tzinfo=IST)  # a Tuesday expiry
+    orb_sig = {"verdict": "BUY", "direction": 1, "stop": 22900, "target": 23300, "risk_points": 100, "target_points": 200,
+               "text": "breakout"}
+    sess = {"is_expiry_day": True, "can_enter": True, "is_open": True}
+    sig = service._expiry_signal("NIFTY", orb_sig, sess, 23000, {"value": 15}, service.load_settings(), None,
+                                 date(2026, 10, 27), now, in_replay=True)
+    o = sig["option"]
+    assert sig["verdict"] == "BUY" and o["lots"] == 1 and o["expiry"] == "2026-10-27"
+    assert (o["premium"] - o["premium_stop"]) * 65 <= service.EXPIRY_MAX_LOSS + 1
+    # the figures the per-trade loss cap reads must describe the one lot actually taken
+    assert o["quantity"] == 65 and o["capital_needed"] == round(o["premium"] * 65, 2)
+    assert o["max_loss"] <= service.EXPIRY_MAX_LOSS + o["charges_round_trip"] + 1
+    assert service._expiry_signal("NIFTY", orb_sig, {**sess, "is_expiry_day": False}, 23000, None, {}, None,
+                                  date(2026, 10, 27), now, True) is None
+
+
+# ---------------- multi-timeframe ladder ----------------
+def to_daily(df5):
+    return df5.resample("1D").agg({"open": "first", "high": "max", "low": "min",
+                                   "close": "last", "volume": "sum"}).dropna()
+
+
+def test_ladder_reads_an_uptrend_on_every_timeframe():
+    df5 = session_bars(days=25, drift=1.5)
+    out = mtf.ladder(df5, to_daily(df5))
+    assert out["bias"] > 0.2
+    assert out["phase"] in ("aligned", "conflict", "pullback")
+    assert out["counted"] >= 4
+    for row in out["rows"]:
+        if row["available"]:
+            assert row["direction"] >= 0, row
+    assert out["primary"]["direction"] == 1
+
+
+def test_ladder_calls_a_fast_rally_inside_a_downtrend_a_pullback():
+    df5 = session_bars(days=25, drift=-1.5)
+    base = float(df5["close"].iloc[-13])
+    tail = df5.iloc[-12:].copy()
+    tail["close"] = base + np.arange(1, 13) * 10.0
+    tail["open"] = np.r_[base, tail["close"].values[:-1]]
+    tail["high"] = np.maximum(tail["open"], tail["close"]) + 4
+    tail["low"] = np.minimum(tail["open"], tail["close"]) - 4
+    df5 = pd.concat([df5.iloc[:-12], tail])
+
+    out = mtf.ladder(df5, to_daily(df5))
+    assert out["phase"] == "pullback"
+    assert out["bias"] < 0            # the slow timeframes still rule the read
+    assert "pullback" in out["story"].lower()
+
+
+def test_ladder_says_so_when_there_is_no_history():
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    out = mtf.ladder(empty, empty)
+    assert out["phase"] == "unclear"
+    assert out["primary"] is None
+    assert out["counted"] == 0
+
+
+# ---------------- previous session ----------------
+def test_previous_session_reports_close_position_and_gap():
+    daily = pd.DataFrame(
+        {"open": [22900.0, 23000.0], "high": [22960.0, 23100.0], "low": [22880.0, 22900.0],
+         "close": [22920.0, 23085.0], "volume": [0.0, 0.0]},
+        index=pd.DatetimeIndex(["2026-10-15", "2026-10-16"], tz=IST))
+    intraday = make_bars([23150.0, 23160.0, 23170.0], start="2026-10-19 09:15")
+    out = structure.prev_session(daily, intraday)
+    assert out["close"] == 23085.0
+    assert out["range"] == 200.0
+    assert out["close_position_pct"] == 92.5
+    assert out["gap_points"] == 65.0
+    assert "gap up" in out["text"]
+
+
+# ---------------- both option sides ----------------
+def test_both_sides_are_priced_and_affordability_is_honest():
+    now = datetime(2026, 10, 23, 10, 0, tzinfo=IST)
+    expiry = date(2026, 10, 27)
+    poor = options.quote_both_sides("NIFTY", 23000.0, expiry, 14.0, {"capital": 1000.0}, None, now)
+    assert poor["call"]["premium"] > 0 and poor["put"]["premium"] > 0
+    assert poor["affordable"] == []
+    assert "Neither side fits" in poor["text"]
+
+    rich = options.quote_both_sides("NIFTY", 23000.0, expiry, 14.0, {"capital": 10_000_000.0}, None, now)
+    assert rich["affordable"] == ["call", "put"]
+    for side in ("call", "put"):
+        row = rich[side]
+        assert row["lot_cost"] == pytest.approx(row["premium"] * row["lot_size"], rel=0.01)
+        # A long option can go to zero: the worst case is the whole premium, not premium minus stop.
+        assert row["worst_case"] > row["lot_cost"]
+        assert row["theta_per_lot_per_day"] >= 0
+
+
+def test_only_one_position_is_open_at_a_time(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"capital": 100000, "risk_per_trade_pct": 1, "max_trades_per_day": 3,
+                "max_daily_loss_pct": 3, "max_open_positions": 1}
+    a = _entry_analysis("2026-10-21T10:00:00+05:30")
+    first = pt._process("NIFTY|engine", "Engine", "BUY", a["option"], a["plan"], a, settings,
+                        settings["max_trades_per_day"])
+    assert first[0]["type"] == "paper_entry"
+
+    second = pt._process("NIFTY|orb", "First-Hour", "BUY", a["option"], a["plan"], a, settings,
+                         settings["max_trades_per_day"])
+    assert second[0]["type"] == "blocked"
+    assert "one position at a time" in second[0]["reason"]
+    assert len(pt.state["open"]) == 1
+
+    # Raise the cap and the waiting strategy is allowed through - the guard is a setting, not a dead end.
+    loose = {**settings, "max_open_positions": 2}
+    third = pt._process("NIFTY|orb", "First-Hour", "BUY", a["option"], a["plan"], a, loose,
+                        loose["max_trades_per_day"])
+    assert third[0]["type"] == "paper_entry" and len(pt.state["open"]) == 2
+
+
+def test_expiry_is_opt_in_by_owner_decision():
+    # Owner call 26 Oct: the 1.41 profit factor comes from expiry days, the least trustworthy prices in
+    # the record, so the Expiry slot must not paper-trade until it has banked its own honest record.
+    from backend.engine.service import DEFAULT_STRATEGIES, ALL_STRATEGIES
+    assert "Expiry" not in DEFAULT_STRATEGIES
+    assert set(DEFAULT_STRATEGIES).issubset(ALL_STRATEGIES)
+    assert set(DEFAULT_STRATEGIES) <= {"First-Hour", "First-30"}
+
+
+# ---------------- failure patterns + experiment registry ----------------
+def test_lessons_names_recurring_failure_shapes():
+    from backend.engine.lessons import lessons
+
+    def t(when, reason, pnl, oversize=False):
+        return {"opened_at": when, "reason": reason, "pnl": pnl, "oversize": oversize, "stale": False}
+
+    closed = [
+        t("2026-10-21T14:10:00+05:30", "15:15 square-off", -1097.84),   # late chase, bled to close
+        t("2026-10-26T09:48:00+05:30", "stop", -201.87),               # first-hour stop
+        t("2026-10-23T10:35:00+05:30", "premium stop", -1410.35),      # decay death
+        t("2026-10-23T09:45:00+05:30", "15:15 square-off", 5226.87),   # winner held to close
+        t("2026-10-23T10:20:00+05:30", "stop", -1837.72, oversize=True),
+    ]
+    out = lessons(closed)
+    assert out["counts"]["late_entry"] == 1
+    assert out["counts"]["bled_to_close"] == 1
+    assert out["counts"]["early_loss"] == 3
+    assert out["counts"]["decay_death"] == 1
+    assert out["counts"]["winners_held_to_close"] == 1
+    assert out["counts"]["oversize_loss"] == 1
+
+    # the standing warnings survive: tiny sample + concentrated profit
+    names = {f["name"] for f in out["flags"]}
+    assert "sample" in names and "luck" in names
+    assert out["losses"] == 4
+
+    empty = lessons([])
+    assert "No paper trades yet" in empty["text"] and empty["net"] == 0.0
+
+
+def test_experiment_registry_seeds_once_and_appends(tmp_path, monkeypatch):
+    from backend.engine import experiments
+    f = tmp_path / "experiments.jsonl"
+    monkeypatch.setattr(experiments, "FILE", f)
+    n = len(experiments._seed())                                        # committed truth, whatever its size
+    rows = experiments.all()
+    assert len(rows) == n                                               # seeded on first read
+    assert all(set(r) >= {"id", "date", "area", "name", "change", "evidence", "status", "owner"} for r in rows)
+    assert [r["id"] for r in rows] == sorted({r["id"] for r in rows})   # no duplicate ids
+
+    again = experiments.all()
+    assert len(again) == n                                              # second read does NOT reseed a new copy
+
+    new = experiments.record("process", "test row", "unit test", "evidence", "testing", "unit")
+    assert new["id"] == n + 1 and len(experiments.all()) == n + 1
+    assert len(experiments.all()) == n + 1                              # the failed write must not have appended
+
+
+def test_experiment_registry_picks_up_rows_committed_after_it_was_created(tmp_path, monkeypatch):
+    import json as _json
+    from backend.engine import experiments
+    f = tmp_path / "experiments.jsonl"
+    monkeypatch.setattr(experiments, "FILE", f)
+    seeds = experiments._seed()
+    old = seeds[:9]                                                     # an install older than rows 10+
+    f.write_text("\n".join(_json.dumps(r) for r in old) + "\n", encoding="utf-8")
+    rows = experiments.all()
+    assert len(rows) == len(seeds) and {r["id"] for r in seeds[9:]} <= {r["id"] for r in rows}
+    assert len(f.read_text(encoding="utf-8").splitlines()) == len(seeds)
+
+    f.write_text("{not json}\n", encoding="utf-8")                      # a corrupt file is never rewritten
+    assert experiments.all() == []
+    assert f.read_text(encoding="utf-8") == "{not json}\n"
+
+
+# ---------------- multi-capital paper experiment ----------------
+def _cap_analysis(when: str = "2026-10-27T10:00:00+05:30", verdict: str = "BUY",
+                  premium: float = 150.0, spot: float = 23000.0) -> dict:
+    direction = 1 if verdict == "BUY" else -1
+    kind = "CE" if direction > 0 else "PE"
+    opt = {"side": f"BUY {kind}", "symbol_hint": f"NIFTY 27 OCT 23000 {kind}", "strike": 23000,
+           "option_type": kind, "expiry": "2026-10-27", "quantity": 65, "lots": 1, "premium": premium,
+           "premium_source": "model", "premium_stop": round(premium * 0.8, 2),
+           "premium_target": round(premium * 1.4, 2), "greeks": {"delta": 0.5}}
+    leg = {"verdict": verdict, "direction": direction,
+           "stop": spot - 50 if direction > 0 else spot + 50,
+           "target": spot + 100 if direction > 0 else spot - 100, "option": opt}
+    return {"instrument": {"key": "NIFTY"}, "session": {"is_open": True}, "vix": {"value": 14},
+            "chain": None, "chains": {}, "score": 0.6, "reasons": [], "spot_live": spot, "price": spot,
+            "generated_at": when, "verdict": "NO TRADE", "option": None, "plan": {},
+            "orb": leg, "first30": {},
+            "sides": {"call": {"lot_cost": 9000.0, "worst_case": 9200.0},
+                      "put": {"lot_cost": 9500.0, "worst_case": 9700.0}}}
+
+
+def _cap_book(tmp_path, monkeypatch, cid: str):
+    from backend.engine import capital_test as ct
+    monkeypatch.setattr(ct, "DATA_DIR", tmp_path)
+    return ct.CaseBook(next(s for s in ct.CASES if s["id"] == cid))
+
+
+def _cap_settings() -> dict:
+    return {"autopilot_instruments": ["NIFTY"], "autopilot_strategies": ["First-Hour", "First-30"],
+            "capital": 10000, "risk_per_trade_pct": 25, "max_trades_per_day": 2,
+            "max_daily_loss_pct": 25, "max_open_positions": 1}
+
+
+def test_capital_cases_size_differently_and_keep_separate_files(tmp_path, monkeypatch):
+    a = _cap_analysis()
+    sizes = {}
+    for cid in ("A", "B", "C"):
+        book = _cap_book(tmp_path, monkeypatch, cid)
+        ev = book.on_analysis(a, _cap_settings())["events"]
+        assert ev and ev[0]["type"] == "paper_entry"
+        pos = ev[0]["trade"]
+        sizes[cid] = pos["quantity"]
+        assert book.path.parent == tmp_path and book.path.name == f"{cid}.json"
+    # risk per lot is Rs 1,950 (30 points x 65), so 20% of each stake buys 1 / 3 / 4 lots
+    assert sizes == {"A": 65, "B": 195, "C": 260}
+    assert len({tmp_path / "A.json", tmp_path / "B.json", tmp_path / "C.json"}) == 3
+    assert not (tmp_path / "D.json").exists(), "no case may write into another case's book"
+
+
+def test_capital_puts_only_case_skips_calls_and_takes_the_put(tmp_path, monkeypatch):
+    book = _cap_book(tmp_path, monkeypatch, "D")
+    assert book.on_analysis(_cap_analysis(verdict="BUY"), _cap_settings())["open"] == []
+
+    ev = book.on_analysis(_cap_analysis(verdict="SELL", premium=140.0), _cap_settings())["events"]
+    assert ev and ev[0]["type"] == "paper_entry"
+    assert ev[0]["trade"]["option_type"] == "PE" and ev[0]["trade"]["dir"] == -1
+
+
+def test_capital_second_trade_needs_a_green_first_trade(tmp_path, monkeypatch):
+    from datetime import date
+    book = _cap_book(tmp_path, monkeypatch, "A")
+    d = date(2026, 10, 27)
+    assert book.budget_today(d) == 1
+    book.state["closed"].append({"pnl": -500.0, "opened_at": "2026-10-27T10:00:00+05:30",
+                                "closed_at": "2026-10-27T11:00:00+05:30"})
+    assert book.budget_today(d) == 1, "a losing day stops at one trade"
+    book.state["closed"][0]["pnl"] = 800.0
+    assert book.budget_today(d) == 2, "only a green first trade unlocks the second"
+
+
+def test_capital_case_busts_resets_and_archives_the_era(tmp_path, monkeypatch):
+    book = _cap_book(tmp_path, monkeypatch, "A")
+    book.state["closed"].append({"pnl": -5000.0, "opened_at": "2026-10-27T10:00:00+05:30",
+                                "closed_at": "2026-10-27T11:00:00+05:30", "charges": 50.0})
+    book._save()
+    assert book.equity() == 5000.0
+
+    ev = book.on_analysis(_cap_analysis(verdict="NO TRADE"), _cap_settings())["events"]
+    assert ev and ev[0]["type"] == "bust" and ev[0]["era"] == 1
+    assert book.equity() == 10000.0 and book.state["closed"] == []
+    snaps = list(tmp_path.glob("A_bust*.json"))
+    assert len(snaps) == 1
+    import json as _json
+    assert _json.loads(snaps[0].read_text(encoding="utf-8"))["closed"][0]["pnl"] == -5000.0
+    assert book.report()["busts"] == 1 and book.report()["net"] == -5000.0
+
+
+def test_capital_case_never_borrows_and_never_resets_an_untraded_book(tmp_path, monkeypatch):
+    book = _cap_book(tmp_path, monkeypatch, "A")
+    a = _cap_analysis()
+    a["sides"] = {"call": {"lot_cost": 12000.0, "worst_case": 12300.0},
+                  "put": {"lot_cost": 12000.0, "worst_case": 12300.0}}
+    out = book.on_analysis(a, _cap_settings())
+    assert out["open"] == [] and out["events"][0]["type"] == "blocked"
+    assert "no trade rather than invented money" in out["events"][0]["reason"]
+    assert book.equity() == 10000.0 and not list(tmp_path.glob("A_bust*.json")), \
+        "a stake that cannot fund a lot is not a loss and must not be reset"
+
+
+
+# ---------------- A+B: cost/theta gate and time discipline (26 Oct 2026) ----------------
+def _gated_option(premium: float, theta_per_day: float, lot: int = 65) -> dict:
+    return {"side": "BUY CE", "symbol_hint": "NIFTY 27 OCT 23000 CE", "strike": 23000, "option_type": "CE",
+            "expiry": "2026-10-27", "lots": 1, "premium": premium, "premium_stop": round(premium * 0.8, 2),
+            "premium_target": round(premium * 1.4, 2), "lot_size": lot,
+            "greeks": {"delta": 0.5, "theta_per_day": theta_per_day}}
+
+
+def test_entry_gate_blocks_near_expiry_theta_and_cheap_contracts():
+    now = datetime(2026, 10, 21, 10, 0, tzinfo=IST)
+    assert options.entry_blockers(_gated_option(190.0, -16.0), 65, now) == [], \
+        "a week-out ATM option pays ~8% theta and ~0.6% charges - it must pass"
+    near = options.entry_blockers(_gated_option(120.0, -40.0), 65, now)
+    assert [b["name"] for b in near] == ["theta"] and near[0]["value"] > 20
+    cheap = options.entry_blockers(_gated_option(25.0, -1.0), 65, now)
+    assert [b["name"] for b in cheap] == ["charges"], "a Rs 1,625 lot cannot carry Rs 50 of costs"
+    late = options.entry_blockers(_gated_option(190.0, -16.0), 65, datetime(2026, 10, 21, 13, 5, tzinfo=IST))
+    assert [b["name"] for b in late] == ["clock"]
+    # Missing greeks mean "cannot judge", not "blocked": old books and hand-built tests still replay.
+    assert options.entry_blockers({"premium": 190.0}, 65, now) == []
+
+
+def test_entry_gate_blocks_the_trade_and_says_why(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"]}
+    a = _entry_analysis("2026-10-21T10:00:00+05:30")
+    a["option"] = {**a["option"], "premium": 120.0, "premium_stop": 100.0,
+                   "greeks": {"delta": 0.5, "theta_per_day": -40.0}}
+    ev = pt.on_analysis(a, settings)["events"]
+    assert ev[0]["type"] == "blocked" and "theta" in ev[0]["reason"]
+    assert not pt.state["open"]
+    gate = pt.summary()["last_gate"]
+    assert gate["blocked"] == ["theta"] and gate["reasons"]
+    assert pt.summary()["entry_rules"]["no_entry_after"] == "13:00"
+
+
+def test_time_stop_closes_the_last_hour_bleed(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"]}
+    assert pt.on_analysis(_entry_analysis("2026-10-21T10:00:00+05:30"), settings)["events"][0]["type"] == "paper_entry"
+    # Same spot, still inside stop and target, but past 14:30: the clock takes it out.
+    ev = pt.on_analysis(_entry_analysis("2026-10-21T14:35:00+05:30"), settings)["events"][0]
+    assert ev["type"] == "paper_exit" and ev["trade"]["reason"] == "14:30 time stop"
+
+
+def test_capital_cases_inherit_the_entry_gate(tmp_path, monkeypatch):
+    book = _cap_book(tmp_path, monkeypatch, "C")
+    a = _cap_analysis()
+    a["orb"]["option"] = {**a["orb"]["option"], "greeks": {"delta": 0.5, "theta_per_day": -40.0}}
+    ev = book.on_analysis(a, _cap_settings())["events"]
+    assert ev and ev[0]["type"] == "blocked" and "theta" in ev[0]["reason"]
+    assert book.state["open"] == {}
+
+
+# ---------------- defined-risk credit spreads ----------------
+def _spread_analysis(when: str = "2026-10-28T10:00:00+05:30", spot: float = 25000.0,
+                     verdict: str = "BUY") -> dict:
+    return {"instrument": {"key": "NIFTY"}, "session": {"is_open": True, "expiry": "2026-11-03"},
+            "vix": {"value": 15}, "chains": {}, "chain": None, "score": 0.6, "reasons": [],
+            "spot_live": spot, "price": spot, "generated_at": when,
+            "orb": {"verdict": verdict, "direction": 1 if verdict == "BUY" else -1}}
+
+
+def test_credit_spread_is_defined_risk_and_direction_maps():
+    from backend.engine import spreads
+    now = datetime(2026, 10, 28, 10, 0, tzinfo=IST)
+    exp = date(2026, 11, 3)
+    bull = spreads.plan("NIFTY", 1, 25000.0, exp, 15, now)
+    assert bull["kind"] == "bull_put" and bull["option_type"] == "PE"
+    assert bull["long_strike"] < bull["short_strike"] < 25000.0
+    assert bull["credit"] > 0 and bull["credit_value"] == pytest.approx(bull["credit"] * 65, rel=0.01)
+    assert bull["margin"] == pytest.approx(bull["width"] * 65)          # defined risk: the width
+    assert bull["max_loss"] > 0 and bull["stop_debit"] == pytest.approx(bull["credit"] * 2, rel=0.01)
+    assert bull["target_debit"] == pytest.approx(bull["credit"] * 0.5, rel=0.01)
+    assert bull["credit_pct_of_width"] >= 8.0
+
+    bear = spreads.plan("NIFTY", -1, 25000.0, exp, 15, now)
+    assert bear["kind"] == "bear_call" and bear["option_type"] == "CE"
+    assert 25000.0 < bear["short_strike"] < bear["long_strike"]
+
+
+def test_spread_book_takes_half_the_credit(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    out = b.on_analysis(_spread_analysis())
+    assert out["events"][0]["type"] == "spread_entry"
+    pos = out["open"]
+    assert pos["margin"] <= b.equity
+    # 200 points in favour closes the spread at roughly half the credit
+    ev = b.on_analysis(_spread_analysis("2026-10-28T11:30:00+05:30", spot=25200.0))["events"]
+    assert ev[0]["type"] == "spread_exit"
+    assert ev[0]["trade"]["reason"] == "target (50% of credit)" and ev[0]["trade"]["pnl"] > 0
+    assert b.report()["trades"] == 1 and b.equity > 50000.0
+    again = b.on_analysis(_spread_analysis("2026-10-28T11:45:00+05:30"))
+    assert again["events"] == [] and again["open"] is None, "one spread a day"
+
+
+def test_spread_book_stops_at_twice_the_credit(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    b.on_analysis(_spread_analysis())
+    ev = b.on_analysis(_spread_analysis("2026-10-28T11:30:00+05:30", spot=24700.0))["events"]
+    assert ev[0]["trade"]["reason"] == "stop (2x credit)"
+    assert -3500 < ev[0]["trade"]["pnl"] < 0, "the stop must cap the loss near the credit, not the width"
+
+
+def test_spread_book_never_borrows_and_never_stacks(tmp_path):
+    from backend.engine import spreads
+    poor = spreads.SpreadBook(tmp_path / "poor.json", {"stake": 5000.0})
+    out = poor.on_analysis(_spread_analysis())
+    assert out["open"] is None and out["events"][0]["type"] == "blocked"
+    assert "never borrowed" in out["events"][0]["reason"]
+
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    b.on_analysis(_spread_analysis())
+    second = b.on_analysis(_spread_analysis("2026-10-28T10:30:00+05:30", verdict="SELL"))
+    assert second["events"] == [] and second["open"]["kind"] == "bull_put", "one spread at a time"
+
+
+def test_spread_book_holds_to_expiry_instead_of_closing_the_same_afternoon(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    b.on_analysis(_spread_analysis())                                  # 28 Oct, 6 DTE
+    same_day = b.on_analysis(_spread_analysis("2026-10-28T14:35:00+05:30"))
+    assert same_day["events"] == [] and same_day["open"] is not None, "no 14:30 time stop any more"
+    next_day = b.on_analysis(_spread_analysis("2026-10-29T11:00:00+05:30"))
+    assert next_day["events"] == [] and next_day["open"] is not None, "held overnight"
+    assert b.report()["trades"] == 0
+
+    ev = b.on_analysis(_spread_analysis("2026-11-03T15:20:00+05:30"))["events"]   # expiry day
+    assert ev[0]["type"] == "spread_exit"
+    assert ev[0]["trade"]["reason"] in ("expiry day close", "target (50% of credit)")
+    assert ev[0]["trade"]["pnl"] > 0, "an OTM spread that expires is kept"
+    assert b.report()["trades"] == 1
+
+
+def test_spread_book_never_reprices_an_expired_contract(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    opened = b.on_analysis(_spread_analysis())["open"]
+    # The service was down over expiry. `years_to_expiry` clamps to 60 seconds, so marking this
+    # against today's spot would invent a P&L for a contract that no longer exists.
+    ev = b.on_analysis(_spread_analysis("2026-11-05T10:00:00+05:30"))["events"]
+    trade = ev[0]["trade"]
+    assert trade["reason"] == "expired (last mark)"
+    assert trade["exit_debit"] == pytest.approx(opened["mark"]), "settled flat at the last mark"
+    assert -500 < trade["pnl"] < 0, "flat minus charges - not a made-up gain or loss"
+
+
+def test_spread_book_labels_the_rules_version(tmp_path):
+    from backend.engine import spreads
+    b = spreads.SpreadBook(tmp_path / "s.json")
+    pos = b.on_analysis(_spread_analysis())["open"]
+    assert pos["rules_version"] == spreads.RULES_VERSION == 2
+    b.on_analysis(_spread_analysis("2026-11-03T15:20:00+05:30"))
+    rep = b.report()
+    assert rep["rules_version"] == 2
+    assert rep["by_version"]["2"]["trades"] == 1
+
+
+# ---------------- the target must scale with the range, not be a fixed number ----------------
+def test_fixed_points_demand_a_different_win_rate_every_day():
+    from backend.engine import orb
+    # Same 10-point target, three different mornings: the requirement moves with the stop.
+    assert orb.breakeven_win_rate(64, 10) == 86.5
+    assert orb.breakeven_win_rate(95, 10) == 90.5
+    assert orb.breakeven_win_rate(178, 10) == 94.7
+    # 2R demands the same number whatever the range is.
+    assert orb.breakeven_win_rate(64, 128) == 33.3
+    assert orb.breakeven_win_rate(178, 356) == 33.3
+
+
+def test_target_plan_is_two_r_and_knows_its_break_even():
+    from backend.engine import orb
+    long_side = orb.target_plan(22800.0, 22704.0, 2.0)
+    assert long_side["risk_points"] == 96.0
+    assert long_side["target"] == 22992.0 and long_side["target_points"] == 192.0
+    assert long_side["breakeven_win_rate"] == 33.3
+    short_side = orb.target_plan(22800.0, 22896.0, 2.0)
+    assert short_side["target"] == 22608.0
+    assert short_side["breakeven_win_rate"] == 33.3
+    flat = orb.target_plan(22800.0, 22800.0)
+    assert flat["risk_points"] == 0 and flat["breakeven_win_rate"] is None
+
+
+# ---------------- daily circuit breakers ----------------
+def _closed_on(day: str, pnl: float, slot: str = "NIFTY|orb", strategy: str = "First-Hour") -> dict:
+    return {"pnl": pnl, "slot": slot, "strategy": strategy, "instrument": "NIFTY",
+            "opened_at": f"{day}T10:00:00+05:30", "closed_at": f"{day}T11:00:00+05:30"}
+
+
+def _day_settings(capital: float = 10000.0, profit_pct: float = 20.0, loss_pct: float = 25.0) -> dict:
+    return {"autopilot_strategies": ["Engine"], "capital": capital, "risk_per_trade_pct": 25,
+            "max_trades_per_day": 3, "max_daily_loss_pct": loss_pct,
+            "daily_profit_pct": profit_pct, "autopilot_instruments": ["NIFTY"]}
+
+
+def test_day_stops_once_the_profit_target_is_banked(tmp_path):
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    pt.state["closed"].append(_closed_on("2026-10-21", 2000.0))       # +20% of Rs 10k
+    ev = pt.on_analysis(_entry_analysis("2026-10-21T14:00:00+05:30"), _day_settings())["events"]
+    assert ev[0]["type"] == "blocked" and "profit target" in ev[0]["reason"]
+    assert not pt.state["open"]
+    assert pt.state["day_rules"]["profit_stop"] == 2000.0
+
+
+def test_a_trade_cannot_risk_more_than_the_day_has_left(tmp_path):
+    from backend.engine import trader
+    # Rs 10k book, 25% daily loss limit = Rs 2,500. The trade below risks (150-120)*65 = Rs 1,950.
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    pt.state["closed"].append(_closed_on("2026-10-21", -2000.0))      # only Rs 500 of room left
+    ev = pt.on_analysis(_entry_analysis("2026-10-21T12:00:00+05:30"), _day_settings())["events"]
+    assert ev[0]["type"] == "blocked" and "only Rs 500" in ev[0]["reason"]
+    assert not pt.state["open"], "a trade that could breach the day must never be opened"
+
+    fits = trader.PaperTrader(tmp_path / "q.json")
+    fits.state["closed"].append(_closed_on("2026-10-21", -400.0))     # Rs 2,100 of room, trade needs 1,950
+    ev = fits.on_analysis(_entry_analysis("2026-10-21T12:00:00+05:30"), _day_settings())["events"]
+    assert ev[0]["type"] == "paper_entry"
+
+
+def test_day_state_reports_the_room_and_the_stop(tmp_path):
+    from datetime import date as _d
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    pt.state["closed"].append(_closed_on("2026-10-21", -1200.0))
+    pt.on_analysis(_entry_analysis("2026-10-21T14:00:00+05:30"), _day_settings())   # records the rules
+    day = pt.summary(day=_d(2026, 10, 21))["day"]
+    assert day["pnl"] == -1200.0 and day["room"] == 1300.0 and day["stopped"] is None
+    assert day["profit_stop"] == 2000.0 and day["loss_stop"] == 2500.0
+
+
+
+# ---------------- decision engine ----------------
+def _feature_frame(days: int = 30, per_day: int = 2) -> "pd.DataFrame":
+    """Synthetic training table: a real signal on range_atr, plus noise."""
+    import numpy as np
+    import pandas as pd
+    from backend.engine.dataset import FEATURES
+
+    rng = np.random.default_rng(7)
+    rows = []
+    for d in range(days):
+        for k in range(per_day):
+            f = {name: float(rng.normal()) for name in FEATURES}
+            signal = f["range_atr"]
+            win = 1 if signal > 0.4 else 0
+            rows.append({"day": f"2026-08-{d + 1:02d}", "time": f"2026-08-{d + 1:02d}T10:{k}5:00",
+                         "slice": "NIFTY First-Hour", **f, "win": win,
+                         "pnl": 2000.0 if win else -1000.0, "r": 2.0 if win else -1.0,
+                         "is_first30": float(k)})
+    return pd.DataFrame(rows)
+
+
+def test_auc_is_one_for_perfect_separation_and_zero_for_inverted():
+    import numpy as np
+    from backend.engine.decision import _auc
+
+    y = np.array([0, 0, 1, 1], dtype=float)
+    assert _auc(y, np.array([0.1, 0.2, 0.8, 0.9])) == 1.0
+    assert _auc(y, np.array([0.9, 0.8, 0.2, 0.1])) == 0.0
+    assert abs(_auc(y, np.array([0.5, 0.5, 0.5, 0.5])) - 0.5) < 1e-9
+
+
+def test_walk_forward_only_scores_days_it_did_not_train_on():
+    from backend.engine import decision
+
+    df = _feature_frame()
+    wf = decision.walk_forward(df)
+    assert wf["ok"] is True
+    assert wf["oos_trades"] == len(df), "every row is scored exactly once, out of sample"
+    for f in wf["folds"]:
+        assert f["train_days"] + f["test_days"] == 30, "folds are a partition of the sessions"
+        assert f["train_days"] > 0 and f["test_days"] > 0
+    assert wf["oos_auc"] > 0.7, "a clean synthetic signal must survive walk-forward"
+    # Both heads are reported, and the EV head is the one promotion depends on.
+    assert "win_filters" in wf and "ev_filters" in wf
+
+
+def test_decision_cannot_trade_below_the_sample_floor(tmp_path, monkeypatch):
+    import json
+
+    from backend.engine import decision
+
+    monkeypatch.setattr(decision, "MODEL_FILE", tmp_path / "m.json")
+    card = {"version": "t", "status": "active", "samples": decision.MIN_LIVE - 1,
+            "w": [0.0] + [0.0] * len(decision.MODEL_FEATURES), "w_ev": [0.0] + [0.0] * len(decision.MODEL_FEATURES),
+            "mu": [0.0] * len(decision.MODEL_FEATURES), "sd": [1.0] * len(decision.MODEL_FEATURES),
+            "breakeven": 0.33, "threshold": 0.0}
+    (tmp_path / "m.json").write_text(json.dumps(card), encoding="utf-8")
+    out = decision.decide({"range_atr": 1.0}, "First-Hour")
+    assert out["action"] == "SHADOW", "a promoted-looking model under the floor still cannot decide"
+    assert out["confidence"] in ("none", "low")
+
+
+def test_a_promoted_model_answers_go_or_no_go_on_expected_r(tmp_path, monkeypatch):
+    import json
+
+    from backend.engine import decision
+
+    monkeypatch.setattr(decision, "MODEL_FILE", tmp_path / "m.json")
+    n = len(decision.MODEL_FEATURES)
+    card = {"version": "t", "status": "active", "samples": decision.MIN_LIVE,
+            "w": [0.0] * (n + 1), "w_ev": [0.5] + [0.0] * n,
+            "mu": [0.0] * n, "sd": [1.0] * n, "breakeven": 0.33, "threshold": 0.0}
+    (tmp_path / "m.json").write_text(json.dumps(card), encoding="utf-8")
+    go = decision.decide({"range_atr": 1.0}, "First-Hour")
+    assert go["action"] == "GO" and go["ev_r"] > 0
+    card["w_ev"] = [-0.5] + [0.0] * n
+    (tmp_path / "m.json").write_text(json.dumps(card), encoding="utf-8")
+    no = decision.decide({"range_atr": 1.0}, "First-Hour")
+    assert no["action"] == "NO_GO" and no["ev_r"] < 0
+
+
+def test_features_never_read_the_bar_they_fill_on():
+    """The entry fills at bar i0's open, so nothing from i0 onwards may enter the feature vector."""
+    import numpy as np
+    import pandas as pd
+
+    from backend.engine.dataset import features
+
+    idx = pd.date_range("2026-10-28 09:15", periods=30, freq="5min", tz="Asia/Kolkata")
+    rng = np.random.default_rng(3)
+    close = 22600 + np.cumsum(rng.normal(0, 3, len(idx)))
+    day = pd.DataFrame({"open": close, "high": close + 4, "low": close - 4,
+                        "close": close, "volume": 0.0}, index=idx)
+    ctx = {"hist": day, "day_start": 0, "pdh": 22700.0, "pdl": 22500.0, "pdc": 22600.0,
+           "vix": 13.0, "expiry": None}
+    before = features(day, 20, ctx, 1, 22600.0, float(day.open.iloc[20]))
+
+    future = day.copy()
+    future.iloc[21:, :] = future.iloc[21:, :] * 1.10  # rewrite every bar AFTER the fill
+    ctx2 = {**ctx, "hist": future}
+    after = features(future, 20, ctx2, 1, 22600.0, float(day.open.iloc[20]))
+
+    assert before is not None and after is not None
+    assert before == after, "a feature that changes when future bars change is lookahead"
+
+
+
+def test_a_paper_entry_carries_the_shadow_decision(tmp_path):
+    """The model records its read next to every fill. It must never be able to block one."""
+    from backend.engine import trader
+    pt = trader.PaperTrader(tmp_path / "p.json")
+    settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"]}
+    ev = pt.on_analysis(_entry_analysis("2026-10-21T10:00:00+05:30"), settings)["events"][0]
+    assert ev["type"] == "paper_entry", "the decision engine must not veto an entry while in shadow"
+    assert "decision" in ev["trade"], "every fill records what the model thought of it"
+
+
+
+def test_shadow_scorecard_compares_what_it_said_to_what_happened():
+    from backend.engine import decision
+
+    def trade(p, ev, pnl, risk):
+        return {"pnl": pnl, "entry_premium": risk, "premium_stop": 0.0, "quantity": 1.0,
+                "decision": {"p_win": p, "ev_r": ev}}
+
+    closed = [trade(0.30, -0.2, -1000, 1000), trade(0.55, 0.6, 1000, 1000),
+              trade(0.70, 0.9, 2000, 1000), {"pnl": 500, "decision": None}]
+    sc = decision.scorecard(closed)
+    assert sc["trades"] == 3, "trades without a recorded decision are not scored"
+    assert sc["actual_win_rate"] == 66.7
+    assert sc["predicted_p"] == 51.7
+    assert sc["rank_corr"] == 1.0, "the model ranked the loser last and the biggest winner first"
+    assert sc["net"] == 2000
+    assert decision.scorecard([])["trades"] == 0
+
+
+
+def test_refit_refuses_to_train_on_a_worse_feed():
+    """The weekly cron runs unattended. One broker outage must not silently replace a
+    broker-feed model with a shorter delayed-feed one."""
+    from backend.engine import decision
+
+    prev = {"w": [0.5], "source": "angel_one", "sessions": 64, "version": "lr-old"}
+    assert decision._downgrade(prev, "yahoo_delayed", 60), "delayed feed is a downgrade"
+    assert decision._downgrade(prev, "angel_one", 40), "same source, 40 vs 64 sessions is a shrink"
+    assert decision._downgrade(prev, "angel_one", 70) is None, "more history is a normal refit"
+    assert decision._downgrade(prev, "angel_one", 60) is None, "a small shrink is tolerated"
+    upgraded = {"w": [0.5], "source": "yahoo_delayed", "sessions": 60}
+    assert decision._downgrade(upgraded, "angel_one", 64) is None, "the broker feed is an upgrade"
+    assert decision._downgrade(None, "yahoo_delayed", 10) is None, "the first fit has nothing to lose"
+    weightless = {"source": "angel_one", "sessions": 64}
+    assert decision._downgrade(weightless, "yahoo_delayed", 60) is None, "no weights, no model to protect"
+
+    kept = decision._kept(prev, "feed downgraded")
+    assert kept["ok"] is False
+    assert kept["refit_refused"] == "feed downgraded"
+    assert kept["w"] == [0.5] and kept["version"] == "lr-old", "the working model survives a refusal"
+
+
+
+def test_daily_summary_groups_by_the_day_the_trade_opened():
+    from backend.engine import daily
+
+    closed = [
+        {"opened_at": "2026-10-28T09:45:00+05:30", "pnl": -653, "strategy": "First-Hour"},
+        {"opened_at": "2026-10-28T10:20:00+05:30", "pnl": -5090, "strategy": "First-Hour"},
+        {"opened_at": "2026-10-27T09:50:00+05:30", "pnl": 1200, "strategy": "First-30"},
+    ]
+    days = daily.by_day(closed)
+    assert [d["date"] for d in days] == ["2026-10-28", "2026-10-27"], "newest day first"
+    assert days[0]["trades"] == 2 and days[0]["pnl"] == -5743 and days[0]["wins"] == 0
+    assert days[1]["wins"] == 1 and days[1]["win_rate"] == 100.0
+
+    paper = {"closed": closed, "today": {"trades": 2, "pnl": -5743, "wins": 0},
+             "all_time": {"trades": 3, "pnl": -4543, "win_rate": 33.3},
+             "open": [], "day_rules": {"profit_stop": 2000, "loss_stop": 2500},
+             "day": {"pnl": -5743, "stopped": "loss"}}
+    rep = daily.report(paper, day="2026-10-28")
+    assert rep["trades"] == 2 and rep["pnl"] == -5743 and rep["stopped"] == "loss"
+    assert rep["days"][0]["date"] == "2026-10-28"
+
+    body = daily.text(rep)
+    assert "2 trade(s)" in body and "Rs -5,743" in body, "the number the owner asked for is in the first line"
+    assert "LOSS limit hit" in body and "All time: 3 trades" in body
+    assert all(ord(ch) < 128 for ch in body), "phone messages stay ASCII"
+
+
+def test_daily_summary_says_so_when_nothing_traded():
+    from backend.engine import daily
+
+    rep = daily.report({"closed": [], "today": {"trades": 0, "pnl": 0, "wins": 0},
+                        "all_time": {"trades": 0, "pnl": 0, "win_rate": None}}, day="2026-10-28")
+    body = daily.text(rep)
+    assert "0 trade(s)" in body
+    assert "No trades today" in body
+
+
+
+def test_registry_moves_a_status_but_never_rewrites_evidence(tmp_path, monkeypatch):
+    import json
+
+    from backend.engine import experiments
+
+    monkeypatch.setattr(experiments, "FILE", tmp_path / "experiments.jsonl")
+    seeds = experiments._seed()
+    stale = [dict(r) for r in seeds]
+    stale = [dict(r, status="proposed") if r["id"] == 15 else r for r in stale]
+    experiments.FILE.write_text("\n".join(json.dumps(r) for r in stale) + "\n", encoding="utf-8")
+
+    old_evidence = next(r["evidence"] for r in stale if r["id"] == 15)
+    rows = experiments.all()
+    row15 = next(r for r in rows if r["id"] == 15)
+    assert row15["status"] == "testing", "the code can move a row out of proposed"
+    assert row15["evidence"] == old_evidence, "the evidence column is history and stays put"
+
+    rows = experiments.all()
+    assert next(r for r in rows if r["id"] == 15)["evidence"] == old_evidence, "stable across reads"
+
+
+
+def test_daily_summary_covers_the_other_books():
+    from backend.engine import daily
+
+    rep = daily.report(
+        {"closed": [], "today": {"trades": 0, "pnl": 0, "wins": 0},
+         "all_time": {"trades": 0, "pnl": 0, "win_rate": None}},
+        day="2026-10-30",
+        cases={"cases": [
+            {"id": "A", "label": "Rs 10,000", "net": 7694.0, "return_pct": 76.9,
+             "today": {"trades": 0, "pnl": 0.0}, "open": []},
+            {"id": "B", "label": "Rs 30,000", "net": 13112.0, "return_pct": 43.7,
+             "today": {"trades": 1, "pnl": -1135.62}, "open": []},
+        ]},
+        spreads={"closed": [{"closed_at": "2026-10-30T12:57:00+05:30", "pnl": -1805.39}],
+                 "net": -3823.0, "trades": 3, "open": None, "rules_version": 2},
+    )
+    body = daily.text(rep)
+    assert "Other books" in body
+    assert "A Rs 10,000" in body and "week +76.9%" in body
+    assert "Spreads (v2)" in body and "Rs -1,805" in body and "all-time Rs -3,823" in body
+    assert all(ord(ch) < 128 for ch in body)
+
+
+
+# ---------------- flow: chain, book, shadow trade read ----------------
+def _flow_chain(ce_oi=1000, pe_oi=1200, ce_vol=5000, pe_vol=4000, ce=None, pe=None):
+    call = {"oi": ce_oi, "volume": ce_vol, **(ce or {})}
+    put = {"oi": pe_oi, "volume": pe_vol, **(pe or {})}
+    return [{"strike": 23000.0, "CE": call, "PE": put}]
+
+
+def test_flow_chain_bias_follows_the_side_being_bought():
+    from backend.engine import flow
+
+    bullish = {"ce_oi": 1000, "pe_oi": 1000, "ce_vol": 8000, "pe_vol": 2000}
+    bearish = {"ce_oi": 1000, "pe_oi": 1000, "ce_vol": 2000, "pe_vol": 8000}
+    up, _ = flow._chain_bias(bullish, {"ce_doi": 0, "pe_doi": 0}, 23000, None)
+    down, _ = flow._chain_bias(bearish, {"ce_doi": 0, "pe_doi": 0}, 23000, None)
+    assert up > 0.15 and down < -0.15
+    assert abs(up) <= flow.MAX_BIAS and abs(down) <= flow.MAX_BIAS
+
+
+def test_flow_oi_only_counts_when_it_confirms_price():
+    from backend.engine import flow
+
+    flat = {"ce_oi": 1000, "pe_oi": 1000, "ce_vol": 5000, "pe_vol": 5000}
+    up_prev = {"spot": 22900.0}
+    down_prev = {"spot": 23000.0}
+    with_calls, _ = flow._chain_bias(flat, {"ce_doi": 500, "pe_doi": 0}, 23000, up_prev)
+    against, _ = flow._chain_bias(flat, {"ce_doi": 0, "pe_doi": 500}, 23000, up_prev)
+    down, _ = flow._chain_bias(flat, {"ce_doi": 0, "pe_doi": 500}, 22900, down_prev)
+    assert with_calls > 0.30, "price up + call OI up is longs adding"
+    assert against == 0.0, "price up + put OI up is ambiguous, not bearish"
+    assert down < -0.30, "price down + put OI up is longs adding puts"
+
+
+def test_flow_book_bias_ce_positive_pe_negative_and_missing_is_none():
+    from backend.engine import flow
+
+    bid_heavy = {"bid_qty": 900, "ask_qty": 100, "bid": 100.0, "ask": 100.5}
+    assert flow.book_bias(bid_heavy, "CE")["bias"] > 0
+    assert flow.book_bias(bid_heavy, "PE")["bias"] < 0
+    assert flow.book_bias({"bid_qty": 0, "ask_qty": 0}, "CE") is None
+    assert flow.book_bias({}, "CE") is None, "no depth means unknown, never a fake neutral"
+
+
+def test_flow_no_chain_is_unavailable_not_a_guess():
+    from backend.engine import flow
+
+    now = datetime(2026, 10, 30, 10, 0, tzinfo=IST)
+    read = flow.market("NIFTY", None, {"bias": 0.4}, 23000.0, now, date(2026, 11, 3), persist=False)
+    assert read["available"] is False and read["verdict"] == "no data"
+    assert read["bias"] == 0.0
+    assert flow.trade(read, 1, {"strike": 23000.0, "option_type": "CE"}, None) is None
+
+
+def test_flow_snapshots_throttle_and_delta_common_strikes(tmp_path, monkeypatch):
+    from backend.engine import flow
+
+    monkeypatch.setattr(flow, "FLOW_FILE", tmp_path / "flow.json")
+    monkeypatch.setattr(flow, "_STATE", None)
+    t0 = datetime(2026, 10, 30, 10, 0, tzinfo=IST)
+    chain = _flow_chain()
+    first = flow.snapshot("NIFTY", date(2026, 11, 3), chain, 23000.0, t0)
+    assert first is None, "first snapshot has nothing to compare against"
+    flow.snapshot("NIFTY", date(2026, 11, 3), chain, 23000.0, t0.replace(minute=1))
+    rows = flow._load()["NIFTY|2026-11-03"]
+    assert len(rows) == 1, "a snapshot 60s later is throttled, not appended"
+
+    grown = _flow_chain(ce_oi=1300, pe_oi=1100, ce_vol=6500, pe_vol=4500)
+    prev = flow.snapshot("NIFTY", date(2026, 11, 3), grown, 23010.0, t0.replace(minute=5))
+    assert prev is not None and prev["spot"] == 23000.0
+    d = flow._deltas(flow._leg_map(grown), prev)
+    assert d["n"] == 2 and d["ce_doi"] == 300 and d["pe_doi"] == -100
+    assert d["ce_dvol"] == 1500 and d["pe_dvol"] == 500
+    assert len(flow._load()["NIFTY|2026-11-03"]) == 2
+
+    stale = flow.snapshot("NIFTY", date(2026, 11, 3), grown, 23100.0, t0 + timedelta(days=1))
+    assert stale is None, "an overnight snapshot is not a flow window"
+
+
+def test_flow_trade_reads_the_side_being_bought():
+    from backend.engine import flow
+
+    read = {"available": True, "components": {"mtf": 0.5, "chain": 0.4}}
+    chain = _flow_chain(ce={"bid_qty": 900, "ask_qty": 100, "bid": 100.0, "ask": 100.5},
+                        pe={"bid_qty": 900, "ask_qty": 100, "bid": 90.0, "ask": 90.5})
+    call = flow.trade(read, 1, {"strike": 23000.0, "option_type": "CE"}, chain)
+    put = flow.trade(read, -1, {"strike": 23000.0, "option_type": "PE"}, chain)
+    assert call["verdict"] == "supports" and call["support"] > 0.30
+    assert put["verdict"] == "against" and put["support"] < -0.30
+    assert call["book"]["bias"] > 0 and put["book"]["bias"] < 0, "the book is read for the leg you buy"
+
+    flat = {"available": True, "components": {"mtf": 0.0, "chain": 0.0}}
+    mixed = flow.trade(flat, 1, {"strike": 23000.0, "option_type": "CE"},
+                       _flow_chain(ce={"bid_qty": 500, "ask_qty": 500}))
+    assert mixed["verdict"] == "mixed"
+
+
+def test_expiry_slot_passes_the_theta_gate_but_not_the_clock(tmp_path):
+    from backend.engine.trader import PaperTrader
+    option = {"lots": 1, "premium": 7.0, "premium_stop": 0.05, "premium_target": 30.0, "expiry": "2026-11-03", "side": "BUY CE",
+              "symbol_hint": "NIFTY 03 NOV 22800 CE", "strike": 22800, "option_type": "CE", "premium_source": "live (Angel One)",
+              "lot_size": 65, "greeks": {"theta_per_day": -20.0, "iv": 0.2}}
+    play = {"verdict": "BUY", "direction": 1, "stop": 22600, "target": 23000, "option": option}
+    settings = {"capital": 10000, "max_trades_per_day": 2, "max_daily_loss_pct": 25, "autopilot_strategies": ["Expiry", "First-Hour"]}
+
+    def analysis(at):
+        return {"instrument": {"key": "NIFTY"}, "generated_at": f"2026-11-03T{at}:00+05:30", "price": 22750, "spot_live": 22750,
+                "session": {"is_open": True}, "score": 0.5, "vix": {"value": 15}, "orb": {}, "first30": {}, "expiry_play": play}
+
+    res = PaperTrader(tmp_path / "morning.json").on_analysis(analysis("10:30"), settings)
+    assert [e["trade"]["strategy"] for e in res["events"] if e["type"] == "paper_entry"] == ["Expiry"]
+    late = PaperTrader(tmp_path / "late.json").on_analysis(analysis("13:30"), settings)
+    assert not [e for e in late["events"] if e["type"] == "paper_entry"]
+    # the same contract is still refused for a normal strategy
+    other = PaperTrader(tmp_path / "other.json").on_analysis(
+        {**analysis("10:30"), "expiry_play": None, "orb": {**play}}, settings | {"autopilot_strategies": ["First-Hour"]})
+    assert not [e for e in other["events"] if e["type"] == "paper_entry"]
+
+
+def test_settings_api_keeps_every_risk_setting():
+    # The request model silently dropped fields it did not list, so the Settings page could not save them.
+    from backend.app import Settings
+    from backend.engine.config import RISK_DEFAULTS
+    assert set(RISK_DEFAULTS) <= set(Settings.model_fields)
+
+
+def test_predict_cone_and_bayes_are_sane(tmp_path):
+    from backend.engine import predict as pr
+    now = datetime(2026, 10, 21, 10, 30, tzinfo=IST)  # mid-morning: minutes left to the 15:15 square-off
+    df5 = session_bars(days=40, seed=2)
+    rng = np.random.default_rng(7)
+    idx = pd.date_range("2026-03-01", periods=200, freq="D", tz=IST)
+    walk = 21000.0 + np.cumsum(rng.normal(0, 120, size=200))
+    daily = pd.DataFrame({"open": walk, "high": walk * 1.002, "low": walk * 0.998, "close": walk}, index=idx)
+    out = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                     direction=1, seed=11)
+    t = out["today"]
+    assert t["q10"] <= t["q25"] <= t["median"] <= t["q75"] <= t["q90"]
+    assert 0.0 <= out["today_p_close_up"]["mc"] <= 1.0
+    assert 0.0 <= out["today_p_close_up"]["from_now"] <= 1.0
+    b = out["barriers"]
+    assert 0.0 <= b["touch_stop"] <= 1.0 and b["touch_target"] >= b["target_before_stop"] >= 0.0
+    # The fan: one row per remaining 5-minute step, ordered, each with its own odds.
+    fan = out["fan"]["today"]
+    assert len(fan) == (285 + 4) // 5  # 10:30 -> 15:15 is 285 min = 57 five-minute steps
+    for row in fan:
+        assert row["q10"] <= row["q25"] <= row["median"] <= row["q75"] <= row["q90"]
+        assert 0.0 <= row["p_up"] <= 1.0
+    assert fan[0]["t"] < fan[-1]["t"]
+    bs = out["bayes_up"]
+    assert bs["n"] >= 30 and 0.0 < bs["mean"] < 1.0 and bs["ci95"][0] <= bs["mean"] <= bs["ci95"][1]
+    ns = out["next_session"]
+    assert ns["q10"] <= ns["q25"] <= ns["median"] <= ns["q75"] <= ns["q90"]
+    fan_next = out["fan"]["next"]
+    assert len(fan_next) == pr.SESSION_STEPS and all(r["q10"] <= r["median"] <= r["q90"] for r in fan_next)
+    again = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                       direction=1, seed=11)
+    assert again == out, "same seed must give the same fan"
+    # A sell plan mirrors the barriers: stop above, target below.
+    out_sell = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                          direction=-1, seed=11)
+    assert 0.0 <= out_sell["barriers"]["target_before_stop"] <= 1.0
+
+
+def test_predict_closed_day_has_no_intraday_cone():
+    from backend.engine import predict as pr
+    df5 = session_bars(days=40, seed=2)
+    idx = pd.date_range("2026-03-01", periods=60, freq="D", tz=IST)
+    walk = 21000.0 + np.arange(60) * 9.0
+    daily = pd.DataFrame({"open": walk, "high": walk, "low": walk, "close": walk}, index=idx)
+    sunday = datetime(2026, 10, 25, 19, 0, tzinfo=IST)  # a Sunday
+    out = pr.predict("NIFTY", df5, daily, sunday, spot=23000.0, seed=5)
+    assert out["today"] is None and out["minutes_left"] == 0
+    assert out["next_session"] and out["bayes_up"]
+    assert out["daily"]["days"] > 0
+
+
+def test_predict_fan_follows_the_chart_direction():
+    # Owner (9 Nov): "it should use the actual chart pattern". With everything else fixed,
+    # an all-up daily record must tilt the next-session fan harder to up-day tails than an
+    # all-down record does - the fan inherits the chart's direction, not a coin flip.
+    from backend.engine import predict as pr
+    df5 = session_bars(days=40, seed=2)
+    now = datetime(2026, 10, 21, 10, 30, tzinfo=IST)
+    spot = 23000.0
+    idx = pd.date_range("2026-03-01", periods=200, freq="D", tz=IST)
+    up_walk = np.linspace(20000.0, 24500.0, 200)      # 200 straight up closes
+    dn_walk = np.linspace(24500.0, 20000.0, 200)      # 200 straight down closes
+    up_daily = pd.DataFrame({"open": up_walk, "high": up_walk * 1.002, "low": up_walk * 0.998,
+                             "close": up_walk}, index=idx)
+    dn_daily = pd.DataFrame({"open": dn_walk, "high": dn_walk * 1.002, "low": dn_walk * 0.998,
+                             "close": dn_walk}, index=idx)
+    out_up = pr.predict("NIFTY", df5, up_daily, now, spot=spot, seed=5)
+    out_dn = pr.predict("NIFTY", df5, dn_daily, now, spot=spot, seed=5)
+    assert out_up["bayes_up"]["mean"] > 0.9 and out_dn["bayes_up"]["mean"] < 0.1
+    med_up = out_up["fan"]["next"][-1]["median"]
+    med_dn = out_dn["fan"]["next"][-1]["median"]
+    assert med_up > med_dn, "up-structure must sample up-day tails harder than down-structure"
+    assert out_up["fan"]["next"][-1]["p_up"] > out_dn["fan"]["next"][-1]["p_up"]
+    # day-type tagging is visible in the payload for honesty
+    dt = out_up["size"]["day_types"]
+    assert dt["up"] + dt["down"] == out_up["size"]["intraday_sessions"]
+
+
+def test_predict_levels_dedupe_and_pattern_read():
+    from backend.engine import predict as pr
+    # Key Levels can name the same price twice; the strongest tag wins, nearest sorts first.
+    levels = [{"name": "Round Number", "price": 22980.0, "weight": 1},
+              {"name": "Prev Close", "price": 22980.0, "weight": 2},
+              {"name": "Swing zone (3 touches)", "price": 23120.0, "weight": 3}]
+    ded = pr._dedupe_levels(levels, 23000.0)
+    assert len(ded) == 2
+    assert ded[0]["price"] == 22980.0 and ded[0]["name"] == "Prev Close"
+    assert ded[1]["name"].startswith("Swing zone")
+    assert pr._dedupe_levels([], 23000.0) == []
+    # Pattern read: the same detector the signal engine uses, newest pattern first.
+    df5 = session_bars(days=40, seed=2)
+    pat = pr.pattern_read(df5)
+    assert pat is None or ({"name", "dir", "meaning", "kind"} <= set(pat) and pat["dir"] in (-1, 0, 1))
+    assert pr.pattern_read(df5.head(10)) is None  # too few bars to judge
+
+
+def test_plain_call_put_verdict_simple_words():
+    # Owner (9 Nov): "i want it to be bale to tell me in more simper terms on wether to
+    # call or put and it should have indicators and anaylze maaarket trednds". The card
+    # must speak CALL/PUT, put the daily highs/lows read first, use POINTS not ATR,
+    # and its GO/WAIT must be the exact owner bar (score floor + MTF aligned).
+    from backend.engine import plain as P
+    idx = pd.date_range("2026-09-01", periods=60, freq="D", tz=IST)
+    walk = 21000.0 + np.arange(60) * 9.0
+    daily = pd.DataFrame({"open": walk, "high": walk * 1.002, "low": walk * 0.998, "close": walk}, index=idx)
+    now = datetime(2026, 11, 6, 11, 0, tzinfo=IST)
+    result = {"score": 0.62, "confidence": 0.9, "factors": {"trend": 0.5},
+              "indicators": {"adx": 27.0, "rsi": 61.0, "supertrend": 1},
+              "support": {"name": "Prev Day Low", "price": 24985.3},
+              "resistance": {"name": "Prev Day High", "price": 25080.0},
+              "patterns": [{"name": "Bullish Harami", "direction": 1, "meaning": "the move is losing steam."}]}
+    mtf = {"phase": "aligned", "primary": {"direction": 1}}
+    out = P.plain_read(result, mtf, daily, 25000.0, now, can_enter=True, entry_min=0.5)
+    assert out["choice"] == "CALL" and out["go"] is True and out["wait_reason"] is None
+    assert out["confidence"] == 90
+    assert out["line"].startswith("Leaning CALL")
+    joined = " ".join(out["bullets"]).lower()
+    assert "points" in joined and "atr" not in joined, "level bullet must speak points, not ATR"
+    assert any("daily" in b.lower() for b in out["bullets"]), "daily highs/lows read must be there"
+    assert any("bullish harami" in b.lower() for b in out["bullets"])
+    tones = {c["k"]: c["tone"] for c in out["chips"]}
+    assert tones["Timeframes"] == "up" and tones["Supertrend"] == "up" and tones["RSI"] == "up"
+
+    # Weak evidence: the owner's floor (0.50) blocks the entry but the lean still shows.
+    weak = P.plain_read({"score": 0.31, "confidence": 0.44, "factors": {}, "indicators": {},
+                         "patterns": []}, mtf, daily, 25000.0, now, can_enter=True, entry_min=0.5)
+    assert weak["go"] is False and "0.31" in weak["wait_reason"] and weak["choice"] == "CALL"
+
+    # MTF conflict: score big, timeframes disagreeing - WAIT, in plain words.
+    bad = P.plain_read({"score": 0.62, "confidence": 0.9, "factors": {}, "indicators": {}, "patterns": []},
+                       {"phase": "conflict", "primary": {"direction": -1}}, daily, 25000.0, now,
+                       can_enter=True, entry_min=0.5)
+    assert bad["go"] is False and "Timeframes" in bad["wait_reason"]
+
+    # The mirror case must say PUT and pass.
+    put = P.plain_read({"score": -0.7, "confidence": 0.95, "factors": {"trend": -0.6},
+                        "indicators": {"adx": 30.0, "rsi": 35.0, "supertrend": -1}, "patterns": []},
+                       {"phase": "aligned", "primary": {"direction": -1}}, daily, 25000.0, now,
+                       can_enter=True, entry_min=0.5)
+    assert put["choice"] == "PUT" and put["go"] is True
+    assert any("daily" in b.lower() for b in put["bullets"])
+
+    # Market closed: never a GO.
+    closed = P.plain_read({"score": 0.9, "confidence": 1.0, "factors": {}, "indicators": {}, "patterns": []},
+                          mtf, daily, 25000.0, now, can_enter=False, entry_min=0.5)
+    assert closed["go"] is False and "closed" in closed["wait_reason"].lower()
+
+
+def test_owner_bar_blocks_low_evidence_and_oversize_loss(tmp_path):
+    # Owner rules of 9 Nov (words recorded in MAILBOX): per-trade worst case capped, and no
+    # entry unless the evidence backs the direction (score) and the MTF (daily included) agrees.
+    from backend.engine import trader
+
+    def run(score: float, max_loss: float, phase: str = "aligned"):
+        pt = trader.PaperTrader(tmp_path / f"own-{score}-{max_loss}-{phase}.json")
+        settings = {"autopilot_strategies": ["Engine"], "capital": 100000, "risk_per_trade_pct": 1,
+                    "max_trades_per_day": 3, "max_daily_loss_pct": 3, "autopilot_instruments": ["NIFTY"],
+                    "entry_score_min": 0.5, "max_loss_per_trade": 2000.0}
+        a = _entry_analysis("2026-10-21T10:00:00+05:30")
+        a["score"] = score
+        a["mtf"] = {"phase": phase, "primary": {"direction": 1}}
+        a["option"] = {**a["option"], "max_loss": max_loss}
+        return pt.on_analysis(a, settings)["events"]
+
+    ev = run(0.6, 2600.0)
+    assert ev[0]["type"] == "blocked" and "per-trade cap" in ev[0]["reason"]
+    ev = run(0.3, 1800.0)
+    assert ev[0]["type"] == "blocked" and "owner evidence bar" in ev[0]["reason"]
+    ev = run(0.6, 1800.0, phase="conflict")
+    assert ev[0]["type"] == "blocked" and "owner evidence bar" in ev[0]["reason"]
+    ev = run(0.6, 1800.0)
+    assert ev[0]["type"] == "paper_entry", "a backed-up, affordable trade must still go through"
+
+
+# ---------------- TimesFM push overlay (owner PC worker, option A, 11 Nov) ----------------
+def _write_push(path, now, *, age_s=0.0, key="NIFTY", today=True):
+    import json
+    fan = [{"t": (now + timedelta(minutes=5 * (i + 1))).isoformat(), "q10": 100.0, "q25": 101.0,
+            "median": 102.0, "q75": 103.0, "q90": 104.0, "p_up": 0.5} for i in range(4)]
+    cone = {"q10": 100.0, "q25": 101.0, "median": 102.0, "q75": 103.0, "q90": 104.0, "exp_move": 4.0}
+    raw = {"key": key, "engine": "TimesFM test push", "pushed_at": now.isoformat(),
+           "next": {"asof": (now - timedelta(seconds=age_s)).isoformat(), "cone": cone, "fan": fan}}
+    if today:
+        raw["today"] = {"asof": (now - timedelta(seconds=age_s)).isoformat(), "cone": cone, "fan": fan,
+                        "p_close_up": {"mc": 0.7, "from_now": 0.6123, "day_open": 99.0}}
+    path.write_text(json.dumps(raw))
+
+
+def test_predict_uses_fresh_timesfm_push(tmp_path, monkeypatch):
+    from backend.engine import predict as pr
+    now = datetime(2026, 10, 21, 10, 30, tzinfo=IST)  # mid-morning on a trading day
+    df5 = session_bars(days=40, seed=2)
+    idx = pd.date_range("2026-03-01", periods=60, freq="D", tz=IST)
+    walk = 21000.0 + np.arange(60) * 9.0
+    daily = pd.DataFrame({"open": walk, "high": walk * 1.002, "low": walk * 0.998, "close": walk}, index=idx)
+    p = tmp_path / "push.json"
+    _write_push(p, now)
+    monkeypatch.setenv("TIMESFM_PUSH_PATH", str(p))
+    out = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                     direction=1, seed=11)
+    assert out["forecast_engine"].startswith("TimesFM")
+    assert out["next_session"]["median"] == 102.0        # pushed cone wins
+    assert out["fan"]["next"][0]["q10"] == 100.0         # pushed next fan wins
+    assert out["today"]["median"] == 102.0               # pushed today fan wins
+    assert out["today_p_close_up"]["from_now"] == 0.6123  # pushed probability wins
+    assert out["barriers"]["touch_stop"] is not None     # barriers stay Monte Carlo
+
+
+def test_predict_ignores_stale_or_broken_push(tmp_path, monkeypatch):
+    from backend.engine import predict as pr
+    now = datetime(2026, 10, 21, 10, 30, tzinfo=IST)
+    df5 = session_bars(days=40, seed=2)
+    idx = pd.date_range("2026-03-01", periods=60, freq="D", tz=IST)
+    walk = 21000.0 + np.arange(60) * 9.0
+    daily = pd.DataFrame({"open": walk, "high": walk * 1.002, "low": walk * 0.998, "close": walk}, index=idx)
+    base = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                      direction=1, seed=11)
+    stale = tmp_path / "stale.json"
+    _write_push(stale, now, age_s=3600)
+    monkeypatch.setenv("TIMESFM_PUSH_PATH", str(stale))
+    out = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                     direction=1, seed=11)
+    assert out == base, "a stale push must change nothing"
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"key": "NIFTY", "next": {"asof": "not a date", "fan": []}}')
+    monkeypatch.setenv("TIMESFM_PUSH_PATH", str(bad))
+    out2 = pr.predict("NIFTY", df5, daily, now, spot=23000.0, stop_points=60.0, target_points=90.0,
+                      direction=1, seed=11)
+    assert out2["forecast_engine"] == "Monte Carlo (on this server)"
+
+
+def _straddle_analysis(at, expiry_day=True, spot=25010.0, chain=None, delayed=False, day="2026-11-17"):
+    return {"instrument": {"key": "NIFTY"}, "generated_at": f"{day}T{at}:00+05:30", "price": spot, "spot_live": spot,
+            "data_delayed": delayed, "session": {"is_expiry_day": expiry_day, "is_open": at < "15:30", "expiry": "2026-11-17"},
+            "chains": {"2026-11-17": chain} if chain is not None else {}}
+
+
+def _chain(ce, pe, strike=25000.0):
+    return [{"strike": strike, "CE": {"ltp": ce}, "PE": {"ltp": pe}}]
+
+
+def test_straddle_enters_only_in_the_expiry_window_with_live_quotes(tmp_path):
+    from backend.engine.straddle import StraddleBook
+    no_quotes = lambda *a: {}  # noqa: E731
+    b = StraddleBook(tmp_path / "s.json", quote_fn=no_quotes)
+    assert b.on_analysis(_straddle_analysis("09:21", expiry_day=False, chain=_chain(60, 55)))["events"] == []
+    assert b.on_analysis(_straddle_analysis("09:19", chain=_chain(60, 55)))["events"] == []
+    assert b.on_analysis(_straddle_analysis("09:21", chain=_chain(60, 55), delayed=True))["events"] == []
+    assert b.on_analysis(_straddle_analysis("09:22"))["events"] == []          # no live quote: keep waiting
+    ev = b.on_analysis(_straddle_analysis("09:23", chain=_chain(60, 55)))["events"]
+    assert [e["type"] for e in ev] == ["straddle_entry"] and b.state["open"]["strike"] == 25000.0
+    assert b.state["open"]["legs"]["CE"]["in"] == 60 and b.state["open"]["lot"] == 65
+    late = StraddleBook(tmp_path / "late.json", quote_fn=no_quotes)
+    ev = late.on_analysis(_straddle_analysis("09:26", chain=_chain(60, 55)))["events"]
+    assert [e["type"] for e in ev] == ["straddle_skip"] and late.state["open"] is None
+    assert late.on_analysis(_straddle_analysis("09:27", chain=_chain(60, 55)))["events"] == []   # said once, not again
+
+
+def test_straddle_leg_stop_square_off_and_pnl(tmp_path):
+    from backend.engine.options import round_trip_cost
+    from backend.engine.straddle import StraddleBook
+    b = StraddleBook(tmp_path / "s.json", quote_fn=lambda *a: {})
+    b.on_analysis(_straddle_analysis("09:21", chain=_chain(60, 55)))
+    assert b.on_analysis(_straddle_analysis("10:00", chain=_chain(77, 40)))["events"] == []      # +28%: not yet
+    ev = b.on_analysis(_straddle_analysis("10:05", chain=_chain(78, 38)))["events"]              # +30%: call stops
+    assert [e["type"] for e in ev] == ["straddle_stop"] and b.state["open"]["legs"]["CE"]["out"] == 78
+    # after 12:00 the engine's chain has rolled away; the book must fetch its own quote for the held strike
+    b.quote_fn = lambda key, expiry, strike: {strike: {"CE": 120.0, "PE": 5.0}}
+    ev = b.on_analysis(_straddle_analysis("15:15"))["events"]
+    assert [e["type"] for e in ev] == ["straddle_exit"] and b.state["open"] is None
+    t = b.state["closed"][0]
+    gross = (60 - 78) * 65 + (55 - 5) * 65
+    charges = round_trip_cost((60 + 78) / 2, 65) + round_trip_cost((55 + 5) / 2, 65)
+    assert t["pnl"] == round(gross - charges, 2) and t["pnl_after_slippage"] < t["pnl"]
+    assert t["legs"]["PE"]["why"] == "15:15 square-off"
+    assert b.on_analysis(_straddle_analysis("15:16", chain=_chain(60, 55)))["events"] == []      # one trade a day
+    r = b.report()
+    assert r["paper_only"] and r["trades"] == 1 and r["open"] is None
+    assert StraddleBook(tmp_path / "s.json").report()["trades"] == 1                            # survives a restart
+
+
+def test_straddle_closes_a_position_left_open_overnight(tmp_path):
+    from backend.engine.straddle import StraddleBook
+    b = StraddleBook(tmp_path / "s.json", quote_fn=lambda *a: {})
+    b.on_analysis(_straddle_analysis("09:21", chain=_chain(60, 55)))
+    b.on_analysis(_straddle_analysis("11:00", chain=_chain(50, 45)))
+    ev = b.on_analysis(_straddle_analysis("09:16", expiry_day=False, day="2026-11-18"))["events"]
+    assert [e["type"] for e in ev] == ["straddle_exit"]
+    legs = b.state["closed"][0]["legs"]
+    assert legs["CE"]["out"] == 50 and legs["CE"]["why"].startswith("stale")
+
+
+def _fly_chain(ce, pe, wce, wpe, strike=25000.0):
+    return [{"strike": strike, "CE": {"ltp": ce}, "PE": {"ltp": pe}},
+            {"strike": strike + 350, "CE": {"ltp": wce}, "PE": {"ltp": 900.0}},
+            {"strike": strike - 350, "CE": {"ltp": 900.0}, "PE": {"ltp": wpe}}]
+
+
+def test_hedged_straddle_needs_wing_quotes_and_sells_the_wing_with_its_leg(tmp_path):
+    from backend.engine.options import round_trip_cost
+    from backend.engine.straddle import StraddleBook
+    b = StraddleBook(tmp_path / "h.json", quote_fn=lambda *a: {}, wing_steps=7)
+    assert b.name == "hedged"
+    assert b.on_analysis(_straddle_analysis("09:21", chain=_chain(60, 55)))["events"] == []      # no wing price: no trade
+    ev = b.on_analysis(_straddle_analysis("09:22", chain=_fly_chain(60, 55, 3, 2)))["events"]
+    assert [e["type"] for e in ev] == ["straddle_entry"] and "Protection bought" in ev[0]["text"]
+    legs = b.state["open"]["legs"]
+    assert legs["CE"]["wing_strike"] == 25350.0 and legs["PE"]["wing_strike"] == 24650.0 and legs["CE"]["wing_in"] == 3
+    ev = b.on_analysis(_straddle_analysis("10:05", chain=_fly_chain(78, 38, 6, 1)))["events"]    # call +30%: stops
+    assert [e["type"] for e in ev] == ["straddle_stop"]
+    assert b.state["open"]["legs"]["CE"]["out"] == 78 and b.state["open"]["legs"]["CE"]["wing_out"] == 6
+    assert b.state["open"]["legs"]["PE"]["out"] is None and b.state["open"]["legs"]["PE"]["wing_out"] is None
+    b.quote_fn = lambda key, expiry, strike: {25000.0: {"CE": 120.0, "PE": 5.0}, 24650.0: {"PE": 0.5}, 25350.0: {"CE": 9.0}}
+    ev = b.on_analysis(_straddle_analysis("15:15"))["events"]
+    assert [e["type"] for e in ev] == ["straddle_exit"]
+    t = b.state["closed"][0]
+    fills = [(-1, 60, 78), (1, 3, 6), (-1, 55, 5), (1, 2, 0.5)]
+    gross = sum(side * (out - inn) * 65 for side, inn, out in fills)
+    charges = sum(round_trip_cost((inn + out) / 2, 65) for _, inn, out in fills)
+    assert t["pnl"] == round(gross - charges, 2) and t["credit"] == round((60 + 55 - 3 - 2) * 65, 2)
+    r = b.report()
+    assert r["book"] == "hedged" and r["rules"]["wing_points"] == 350 and r["trades"] == 1
+
+
+def test_straddle_module_runs_both_books_and_keeps_the_naked_report_shape(tmp_path, monkeypatch):
+    from backend.engine import straddle
+    monkeypatch.setattr(straddle, "_books", {
+        "naked": straddle.StraddleBook(tmp_path / "n.json", quote_fn=lambda *a: {}),
+        "hedged": straddle.StraddleBook(tmp_path / "h.json", quote_fn=lambda *a: {}, wing_steps=7)})
+    ev = straddle.on_analysis(_straddle_analysis("09:22", chain=_fly_chain(60, 55, 3, 2)))["events"]
+    assert sorted(e["book"] for e in ev) == ["hedged", "naked"]
+    r = straddle.report()
+    assert r["book"] == "naked" and r["open"]["strike"] == 25000.0 and r["hedged"]["open"]["legs"]["CE"]["wing_in"] == 3
+
+
+def _prop_hourly(days=420, seed=3):
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2025-01-01", periods=days * 24, freq="1h")
+    idx = idx[idx.dayofweek < 5]
+    c = 100 * np.exp(np.cumsum(rng.normal(0.00004, 0.004, len(idx))))
+    o = np.r_[c[0], c[:-1]]
+    return pd.DataFrame({"open": o, "high": np.maximum(o, c) * 1.0005, "low": np.minimum(o, c) * 0.9995, "close": c}, index=idx)
+
+
+def test_prop_book_steps_match_the_research_backtest_trade_for_trade(tmp_path, monkeypatch):
+    import pandas as pd
+    from backend.engine import propbook as P
+    from research import prop_zoo as Z
+    h = _prop_hourly(days=1100)
+    monkeypatch.setitem(Z.COST, "T", 0.01)
+    monkeypatch.setitem(P.COST, "T", 0.01)
+    monkeypatch.setattr(Z, "TRADES", [])
+    Z.daily("T", h)
+    want = [(str(t[2].date()), str(t[3].date()), t[4], round(t[5], 4)) for t in Z.TRADES if t[0].startswith("S12")]
+    assert len(want) >= 5
+    b = P.PropBook(tmp_path / "p.json", fetch=lambda s: None)
+    d = P.signals(P.daily_bars(h, "2030-01-01"))
+    for _, row in d.iterrows():
+        b.step("T", row)
+    got = [(t["entry_day"], t["exit_day"], t["side"], t["R"]) for t in b.state["closed"]]
+    assert got == want[:len(got)] and len(want) - len(got) <= 1          # at most the still-open last trade differs
+
+
+def test_prop_book_ticks_once_a_day_never_backfills_and_reports(tmp_path):
+    from datetime import datetime, timezone
+    from backend.engine import propbook as P
+    h = _prop_hourly()
+    calls = []
+    b = P.PropBook(tmp_path / "p.json", fetch=lambda s: calls.append(s) or h)
+    last = h.index[-1].normalize()
+    now = (last + __import__("pandas").Timedelta(days=1, hours=1)).to_pydatetime().replace(tzinfo=timezone.utc)
+    b.tick(now)
+    assert len(calls) == 7 and set(b.state["last_day"].values()) == {last.date().isoformat()}
+    assert b.state["closed"] == [] and len(b.state["open"]) in (0, 7)    # one day processed, nothing back-filled
+    b.tick(now)
+    assert len(calls) == 7                                                # same UTC day: no second fetch
+    r = P.PropBook(tmp_path / "p.json", fetch=lambda s: None).report()
+    assert r["paper_only"] and r["trades"] == 0 and r["challenge"]["1%"]["phase"] == 1
+    assert P.PropBook(tmp_path / "q.json", fetch=lambda s: None).tick(now)["events"] == []   # no data: no trade, no crash
+
+
+def test_prop_challenge_phases_fail_restart_and_payout():
+    from backend.engine.propbook import challenge
+    tr = lambda day, r: {"exit_day": day, "R": r}                         # noqa: E731
+    st = challenge([tr("2026-01-05", 6), tr("2026-01-06", 5), tr("2026-01-07", 5.5), tr("2026-01-20", 3)], 1.0, upto="2026-01-21")
+    assert st["phase"] == 3 and st["passed_on"] == "2026-01-07" and st["failed"] == 0
+    assert st["paid_pct"] == 2.4 and st["equity_pct"] == 0                # 80% of +3% paid 14 days after funding
+    st = challenge([tr("2026-01-05", 4), tr("2026-01-06", -5.5)], 1.0)
+    assert st["failed"] == 1 and st["attempt"] == 2 and st["phase"] == 1 and st["equity_pct"] == 0   # 5% daily loss
+    st = challenge([tr(f"2026-02-{d:02d}", -2.6) for d in (2, 3, 4, 5)], 1.0)
+    assert st["failed"] == 1 and st["worst_day_pct"] == -2.6              # 10% total loss
+    assert challenge([tr("2026-01-05", 6)], 2.0)["phase"] == 2            # same trades, 2% risk: +12% passes phase 1
+
+
+def test_learner_logs_decisions_with_reasons_then_outcomes_and_never_repeats(tmp_path, monkeypatch):
+    import json
+    from datetime import timezone
+    import pandas as pd
+    import pytest
+    pytest.importorskip("sklearn")
+    from backend.engine import learner as L
+    full = _prop_hourly(days=420, seed=11)
+    monkeypatch.setattr(L, "MARKETS", {"EURUSD": "a", "BTCUSD": "b"})
+    paths = dict(state_path=tmp_path / "s.json", log_path=tmp_path / "l.jsonl", model_path=tmp_path / "m.pkl",
+                 base_path=tmp_path / "none.pkl")
+    at = lambda ts: ts.to_pydatetime().replace(tzinfo=timezone.utc)      # noqa: E731
+    t0 = full.index[-60]
+    fetch = lambda now: (lambda sym: full[full.index <= pd.Timestamp(now)])   # noqa: E731
+    r1 = L.tick(at(t0), fetch=fetch(t0), **paths)
+    assert r1["new"] >= 1 and r1["pending"] == r1["new"] and r1["closed"] == 0
+    rows = [json.loads(x) for x in open(paths["log_path"])]
+    assert rows[0]["event"] == "retrain" and rows[0]["live_rows"] == 0
+    d = [x for x in rows if x["event"] == "decision"]
+    assert len(d) == r1["new"] and all(x["why"] and x["features"]["vol"] is not None and "score" in x for x in d)
+    assert all(pd.Timestamp(x["entry_bar"]) >= t0 - pd.Timedelta(hours=4) for x in d)        # nothing back-filled
+    assert L.tick(at(t0), fetch=fetch(t0), **paths)["new"] == 0                                # same hour: nothing logged twice
+    t1 = full.index[-1]
+    r3 = L.tick(at(t1), fetch=fetch(t1), **paths)
+    assert r3["closed"] >= 1                                                                   # earlier ideas now have outcomes
+    rep = L.report(paths["state_path"])
+    assert rep["paper_only"] and rep["taken"]["n"] + rep["skipped"]["n"] == r3["closed"]
+    assert rep["decisions_logged"] == r3["closed"] + r3["pending"] and rep["model"]["rows"] > 100
+    assert all("R" in c and "features" in c for c in rep["recent"])
+    assert L.report(tmp_path / "missing.json")["decisions_logged"] == 0
+
+
+def test_learner_gate_pauses_a_market_group_whose_own_picks_lost():
+    from datetime import datetime, timezone
+    from backend.engine.learner import allowed_groups
+    now = datetime(2026, 11, 13, tzinfo=timezone.utc)
+    seed = ([{"cls": 0, "t_out": "2026-06-01 10:00:00", "R": -0.5}] * 40 + [{"cls": 3, "t_out": "2026-06-01 10:00:00", "R": 0.4}] * 40
+            + [{"cls": 1, "t_out": "2026-06-01 10:00:00", "R": 1.0}] * 20 + [{"cls": 2, "t_out": "2024-01-01 10:00:00", "R": 1.0}] * 90)
+    assert allowed_groups(now, [], seed) == [3]                 # forex lost, gold too few, indices too old, crypto paying
+    live = [{"features": {"cls": 0}, "score": 0.3, "R": 2.0, "closed_at": "2026-11-01 09:00:00"}] * 30
+    assert allowed_groups(now, live, seed) == [0, 3]            # the engine's own recent winners reopen forex
+    skipped = [{"features": {"cls": 1}, "score": -0.2, "R": 2.0, "closed_at": "2026-11-01 09:00:00"}] * 30
+    assert allowed_groups(now, skipped, seed) == [3]            # ideas it did not like do not count
+    assert allowed_groups(now, [], []) == [0, 1, 2, 3]          # no history at all: nothing is paused

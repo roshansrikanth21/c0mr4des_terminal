@@ -29,6 +29,12 @@ export interface NewsItem {
   published: string; age_minutes: number; direction: number; impact: number; scope: string; keywords: string[];
   why: string; score: number;
 }
+export interface PlainVerdict {
+  choice: 'CALL' | 'PUT' | 'TOO MIXED' | 'NEUTRAL';
+  go: boolean; wait_reason: string | null; confidence: number;
+  line: string; bullets: string[];
+  chips: { k: string; v: string; tone: 'up' | 'down' | 'flat' }[];
+}
 export interface Analysis {
   instrument: { key: Symbol; name: string; lot_size: number; strike_step: number };
   generated_at: string; data_source: string; data_delayed: boolean; session: Session;
@@ -48,7 +54,115 @@ export interface Analysis {
   option: OptionPlan | null; pcr: number | null;
   news: { bias: number; count: number; text: string; drivers: { title: string; direction: number; why: string; source: string }[] };
   global: { bias: number; text: string; cues: Cue[] };
-  candles: Candle[]; broker_connected: boolean;
+  candles: Candle[]; broker_connected: boolean; spot_live?: number;
+  orb?: OrbSignal; first30?: OrbSignal;
+  mtf?: Mtf; yesterday?: Yesterday | null; sides?: Sides; flow?: FlowRead;
+  flow_trade?: FlowTrade | null;
+  shock?: { active: boolean; reasons: string[]; playbook: string[] } | null;
+  paper?: { events: { type: string; reason?: string; trade?: PaperTrade }[]; open: PaperTrade[] };
+  plain?: PlainVerdict | null;
+}
+
+export interface MtfRow {
+  tf: string; label: string; weight: number; available: boolean; score: number; direction: number;
+  adx: number | null; rsi: number | null; atr: number | null; text: string;
+}
+
+export interface Mtf {
+  rows: MtfRow[]; bias: number; agreement: number;
+  phase: 'aligned' | 'pullback' | 'conflict' | 'unclear';
+  story: string; warning: string | null; counted: number; weights: Record<string, number>;
+  primary: { direction: number; text: string; hold_above?: number; flip_below?: number } | null;
+  twap?: number | null; above_twap?: boolean | null;
+}
+
+export interface FlowBook {
+  bid_qty: number; ask_qty: number; imbalance: number;
+  bid: number | null; ask: number | null; spread_pct: number | null; bias: number;
+}
+
+export interface FlowChain {
+  ce_oi: number; pe_oi: number; ce_vol: number; pe_vol: number;
+  pcr_oi: number | null; pcr_vol: number | null;
+  vol_skew: number; vol_bias: number; doi_bias: number; dprice: number;
+  ce_doi: number; pe_doi: number; ce_dvol: number; pe_dvol: number; n: number; spot: number;
+}
+
+export interface FlowRead {
+  available: boolean; bias: number; verdict: 'bullish' | 'bearish' | 'flat' | 'no data';
+  confidence: number; components: { mtf: number; chain: number };
+  chain: FlowChain | null; text: string; caveats: string[];
+}
+
+export interface FlowTrade {
+  support: number; verdict: 'supports' | 'against' | 'mixed'; book: FlowBook | null;
+  text: string; direction: number; strike: number; option_type: 'CE' | 'PE';
+}
+
+export interface Yesterday {
+  date: string; high: number; low: number; close: number; range: number; close_position_pct: number;
+  open_today: number | null; gap_points: number | null; gap_pct: number | null; text: string;
+}
+
+export interface OptionSide {
+  side: string; option_type: 'CE' | 'PE'; strike: number; symbol_hint: string; expiry: string;
+  moneyness: 'ITM' | 'ATM' | 'OTM'; distance_points: number; premium: number; premium_source: string;
+  lot_size: number; lot_cost: number; charges_round_trip: number; worst_case: number;
+  affordable: boolean; pct_of_capital: number | null; delta: number; theta_per_lot_per_day: number;
+  breakeven: number; iv: number | null; oi: number | null; volume: number | null;
+}
+
+export interface Sides {
+  call: OptionSide; put: OptionSide; affordable: string[]; explain: string[];
+  text: string; capital: number; expiry: string; spot: number; atm: number;
+}
+
+export interface OrbSignal {
+  name: string; verdict: Verdict; direction: number; status: string; text: string;
+  range_high?: number; range_low?: number; range_points?: number; prev_close?: number | null;
+  trigger_time?: string; entry?: number; stop?: number; target?: number; option?: OptionPlan | null;
+  flow?: FlowTrade | null;
+}
+
+export interface PaperTrade {
+  slot?: string; strategy?: string;
+  instrument: string; dir: number; side: string; symbol: string; strike: number; option_type: 'CE' | 'PE'; expiry: string;
+  quantity: number; lots: number; entry_premium: number; premium_source: string; premium_stop: number; premium_target: number;
+  entry_spot: number; index_stop: number; index_target: number | null; opened_at: string; score: number; mark?: number;
+  unrealized?: number; closed_at?: string; exit_spot?: number; exit_premium?: number; reason?: string; charges?: number; pnl?: number;
+  flow?: FlowTrade | null;
+}
+
+export interface PaperLessons {
+  counts: Record<string, number>;
+  flags: { name: string; text: string }[];
+  text: string;
+  losses: number;
+  net: number;
+}
+
+export interface PaperSummary {
+  open: PaperTrade[]; today: { trades: number; pnl: number; wins: number };
+  by_strategy: Record<string, { trades: number; wins: number; pnl: number }>;
+  all_time: { trades: number; pnl: number; wins: number; win_rate: number | null }; closed: PaperTrade[];
+  go_no_go?: Record<string, { verdict: string; checks: string[]; scorecard: { trades: number; net: number; oversize: number } }>;
+  lessons?: PaperLessons;
+  live_trading_enabled: boolean; broker_connected: boolean;
+}
+
+export interface CapitalCase {
+  id: string; label: string; capital: number; rule: string; puts_only: boolean;
+  max_lots: number; risk_pct: number; daily_loss_pct: number;
+  equity: number; era_net: number; net: number; stake: number; eras: number; busts: number;
+  return_pct: number; trades: number; win_rate: number | null; payoff: number | null;
+  worst_streak: number; oversize: number; charges: number; ce: number; pe: number;
+  today: { trades: number; pnl: number };
+  open: PaperTrade[]; closed: PaperTrade[];
+}
+
+export interface CapitalTest {
+  started_at: string | null; day_index: number | null; week_days: number;
+  cases: CapitalCase[]; leader: string | null; note: string; rules: string;
 }
 
 export async function getJSON<T>(url: string, timeout = 30000, init?: RequestInit): Promise<T> {
@@ -112,6 +226,48 @@ export function useAnalysis(symbol: Symbol) {
   }, [symbol]);
 
   return { data, error, live, updatedAt };
+}
+
+export interface PredictCone {
+  q10: number; q25: number; median: number; q75: number; q90: number; exp_move: number;
+}
+export interface FanStep {
+  t: string; q10: number; q25: number; median: number; q75: number; q90: number; p_up: number;
+}
+export interface PredictLevel { name: string; price: number; weight: number }
+export interface Predict {
+  key: Symbol; asof: string; price: number; trading_day: boolean; minutes_left: number;
+  today: PredictCone | null;
+  today_p_close_up: { mc: number | null; from_now: number | null; day_open: number | null } | null;
+  barriers: { touch_stop: number | null; touch_target: number | null; target_before_stop: number | null };
+  direction: number;
+  fan?: { today: FanStep[]; next: FanStep[] };
+  levels?: PredictLevel[];
+  pattern?: { name: string; dir: number; kind: string; meaning: string; time: string; strength: number } | null;
+  next_session: PredictCone | null;
+  bayes_up: { k: number; n: number; mean: number; ci95: [number, number] } | null;
+  daily: { score: number; days: number; text: string };
+  size: { paths: number; intraday_sessions: number; daily_days: number };
+  method: string; caveats: string[]; error?: string;
+}
+
+/** Monte Carlo + Bayesian range prediction (owner panel, 9 Nov). Polls gently; no websocket. */
+export function usePredict(symbol: Symbol) {
+  const [data, setData] = useState<Predict | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let closed = false;
+    const poll = async () => {
+      try {
+        const d = await getJSON<Predict>(`/api/predict?symbol=${symbol}`, 45000);
+        if (!closed) { setData(d); setError(null); }
+      } catch (e) { if (!closed) setError((e as Error).message); }
+    };
+    poll();
+    const iv = window.setInterval(poll, 120000);
+    return () => { closed = true; window.clearInterval(iv); };
+  }, [symbol]);
+  return { data, error };
 }
 
 export const inr = (v: number, digits = 0) =>

@@ -75,8 +75,10 @@ def _momentum(df5: pd.DataFrame) -> tuple[float, str, dict]:
 
 
 def evaluate(df5: pd.DataFrame, daily: pd.DataFrame, step: int, now: datetime | None = None,
-             news_bias: float = 0.0, cue_bias: float = 0.0, session: dict | None = None) -> dict:
+             news_bias: float = 0.0, cue_bias: float = 0.0, session: dict | None = None, use_htf: bool = True) -> dict:
     """Score the last CLOSED 5m bar. df5 must contain only closed bars."""
+    if len(df5) < 10:
+        raise RuntimeError(f"Not enough candles to analyse yet ({len(df5)} bar(s), need 10)")
     df5 = df5.tail(600)
     price = float(df5["close"].iloc[-1])
     a5 = float(atr(df5).iloc[-1])
@@ -102,6 +104,8 @@ def evaluate(df5: pd.DataFrame, daily: pd.DataFrame, step: int, now: datetime | 
     reasons.append({"factor": "Momentum (5m)", "signal": _word(m_s), "text": m_txt})
 
     levels = S.key_levels(df5, daily, step) + S.swing_zones(piv[-20:], a5)
+    if use_htf:
+        levels += S.htf_levels(df5, daily)
     sup, res = S.nearest(levels, price)
 
     pats = C.detect(df5, lookback=3)
@@ -127,10 +131,10 @@ def evaluate(df5: pd.DataFrame, daily: pd.DataFrame, step: int, now: datetime | 
     # Location: breaking out of key levels vs. stuck under/over them
     l_s, l_txt = 0.0, []
     for lv in levels:
-        if lv["name"] in ("Prev Day High", "Opening Range High") and df5["close"].iloc[-2] <= lv["price"] < price:
+        if lv["name"] in ("Prev Day High", "Opening Range High", "Prev Week High") and df5["close"].iloc[-2] <= lv["price"] < price:
             l_s += 0.5
             l_txt.append(f"just broke above {lv['name']} ({lv['price']:.0f})")
-        if lv["name"] in ("Prev Day Low", "Opening Range Low") and df5["close"].iloc[-2] >= lv["price"] > price:
+        if lv["name"] in ("Prev Day Low", "Opening Range Low", "Prev Week Low") and df5["close"].iloc[-2] >= lv["price"] > price:
             l_s -= 0.5
             l_txt.append(f"just broke below {lv['name']} ({lv['price']:.0f})")
     pdh = next((lv["price"] for lv in levels if lv["name"] == "Prev Day High"), None)
@@ -168,7 +172,8 @@ def evaluate(df5: pd.DataFrame, daily: pd.DataFrame, step: int, now: datetime | 
         tgt_lvl = sup
     risk_pts = abs(price - stop)
     room = abs(tgt_lvl["price"] - price) if tgt_lvl else 3 * risk_pts
-    target_pts = max(room, MIN_REWARD_RISK * risk_pts) if room >= MIN_REWARD_RISK * risk_pts else room
+    # Aim at the next level, never past it: if that is under 1.5R the trade is gated off below.
+    target_pts = room
     target = price + direction * target_pts
     rr = target_pts / risk_pts if risk_pts else 0
 

@@ -6,10 +6,10 @@ import logging
 import math
 import os
 import time as _time
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
-from .config import CHARGES, IST, INSTRUMENTS
+from .config import CHARGES, ENTRY_RULES, IST, INSTRUMENTS
 from .data import angel
 
 log = logging.getLogger("engine.options")
@@ -86,6 +86,49 @@ def round_trip_cost(premium: float, qty: int) -> float:
     return round(brokerage + exch + sebi + stt + stamp + gst, 2)
 
 
+def entry_blockers(option: dict, lot_size: int, now: datetime, rules: dict | None = None) -> list[dict]:
+    """Why this long option should not be opened right now. Empty list = clear.
+
+    Charges and theta are both measured against the premium paid. Missing greeks mean "cannot
+    judge", not "fine" - they never block, so old records and hand-built tests still replay.
+    """
+    r = {**ENTRY_RULES, **(rules or {})}
+    out: list[dict] = []
+    premium = float(option.get("premium") or 0)
+    lot = int(option.get("lot_size") or lot_size or 0)
+    if premium <= 0 or lot <= 0:
+        return out
+    turnover = premium * lot
+
+    cost = option.get("charges_round_trip")
+    cost = float(cost) if cost is not None else round_trip_cost(premium, lot)
+    charge_pct = cost / turnover * 100
+    if charge_pct > r["max_charge_pct"]:
+        out.append({
+            "name": "charges", "value": round(charge_pct, 2), "limit": r["max_charge_pct"],
+            "detail": (f"charges are {charge_pct:.1f}% of the Rs {turnover:,.0f} premium "
+                       f"(limit {r['max_charge_pct']}%) - too cheap a contract to overcome the cost"),
+        })
+
+    theta_day = (option.get("greeks") or {}).get("theta_per_day")
+    if theta_day is not None:
+        theta_pct = abs(float(theta_day)) * lot / turnover * 100
+        if theta_pct > r["max_theta_pct"]:
+            out.append({
+                "name": "theta", "value": round(theta_pct, 2), "limit": r["max_theta_pct"],
+                "detail": (f"one day of theta is {theta_pct:.1f}% of premium "
+                           f"(limit {r['max_theta_pct']}%) - too close to expiry"),
+            })
+
+    hh, mm = r["no_entry_after"]
+    if now.time() >= time(hh, mm):
+        out.append({
+            "name": "clock", "value": now.strftime("%H:%M"), "limit": f"{hh:02d}:{mm:02d}",
+            "detail": f"no fresh longs after {hh:02d}:{mm:02d} - afternoon chop, worst theta of the day",
+        })
+    return out
+
+
 # ---------------- live option chain (Angel One only) ----------------
 _scrip: list | None = None
 
@@ -113,7 +156,8 @@ def _scrip_master() -> list:
 
 
 def live_chain(key: str, expiry: date, spot: float, width: int = 6) -> list[dict] | None:
-    """Real LTP/OI for strikes around ATM, or None when Angel One is not configured."""
+    """Real LTP/OI/volume and the five-level book for strikes around ATM, or None when Angel
+    One is not configured. The book fields are what `flow.py` reads to see queue pressure."""
     if not angel.configured():
         return None
     inst = INSTRUMENTS[key]
@@ -132,9 +176,30 @@ def live_chain(key: str, expiry: date, spot: float, width: int = 6) -> list[dict
         q = quotes.get(str(r["token"]), {})
         chain.setdefault(k, {"strike": k})[kind] = {
             "symbol": r["symbol"], "token": r["token"], "ltp": q.get("ltp"), "oi": q.get("opnInterest"),
-            "volume": q.get("tradeVolume"),
+            "volume": q.get("tradeVolume"), "avg_price": q.get("avgPrice"),
+            "last_qty": q.get("lastTradeQty"), **_depth(q),
         }
     return [chain[k] for k in sorted(chain)]
+
+
+def _depth(q: dict) -> dict:
+    """Five-level bid/ask quantity and the best prices, from an Angel FULL quote.
+
+    Defensive on purpose: a missing depth block means "unknown", not zero - a zero would read
+    as a perfectly balanced book and feed a fake neutral signal into the flow score.
+    """
+    depth = q.get("depth") or {}
+    buys = [x for x in (depth.get("buy") or []) if isinstance(x, dict)]
+    sells = [x for x in (depth.get("sell") or []) if isinstance(x, dict)]
+    bid_qty = sum(float(x.get("quantity") or 0) for x in buys)
+    ask_qty = sum(float(x.get("quantity") or 0) for x in sells)
+    if bid_qty == 0 and ask_qty == 0:
+        return {}
+    best_bid = buys[0].get("price") if buys else None
+    best_ask = sells[0].get("price") if sells else None
+    return {"bid_qty": int(bid_qty), "ask_qty": int(ask_qty),
+            "bid": float(best_bid) if best_bid else None,
+            "ask": float(best_ask) if best_ask else None}
 
 
 def pcr(chain: list[dict] | None) -> float | None:
@@ -145,8 +210,12 @@ def pcr(chain: list[dict] | None) -> float | None:
     return round(pe / ce, 2) if ce else None
 
 
+MAX_LOTS = 4  # hard cap: a cheap premium must never turn one signal into a huge position
+
+
 def plan_trade(key: str, direction: int, spot: float, expiry: date, vix: float | None, stop_points: float,
-               target_points: float, risk: dict, chain: list[dict] | None = None, now: datetime | None = None) -> dict | None:
+               target_points: float, risk: dict, chain: list[dict] | None = None, now: datetime | None = None,
+               otm_steps: int | None = None) -> dict | None:
     """Pick strike (ATM, or 1 step ITM when expiry is close), estimate premium, size the position."""
     if direction == 0:
         return None
@@ -154,8 +223,13 @@ def plan_trade(key: str, direction: int, spot: float, expiry: date, vix: float |
     kind = "CE" if direction > 0 else "PE"
     atm = round(spot / inst.strike_step) * inst.strike_step
     T = years_to_expiry(expiry, now)
-    itm_shift = 1 if T * 365 < 2 else 0  # near expiry, slightly ITM holds value better
-    strike = atm - direction * itm_shift * inst.strike_step
+    if otm_steps is not None:
+        # Strike test (2y NIFTY, first-hour breakout): 1 step OTM had the best profit factor (1.45 vs 1.41 ATM),
+        # smaller average loss and lower risk of ruin for small accounts.
+        strike = atm + direction * otm_steps * inst.strike_step
+    else:
+        itm_shift = 1 if T * 365 < 2 else 0  # near expiry, slightly ITM holds value better
+        strike = atm - direction * itm_shift * inst.strike_step
     sigma = (vix or 14) / 100
     est = bs(spot, strike, T, sigma, kind)
     premium, source = est["price"], "estimated (Black-Scholes using India VIX)"
@@ -175,7 +249,7 @@ def plan_trade(key: str, direction: int, spot: float, expiry: date, vix: float |
     budget = risk["capital"] * risk["risk_per_trade_pct"] / 100
     lots = int(budget // risk_per_lot) if risk_per_lot > 0 else 0
     affordable = int(risk["capital"] // (premium * inst.lot_size)) if premium > 0 else 0
-    lots = max(0, min(lots, affordable))
+    lots = max(0, min(lots, affordable, MAX_LOTS))
     qty = lots * inst.lot_size
     cost = round_trip_cost(premium, max(qty, inst.lot_size))
     return {
@@ -190,3 +264,119 @@ def plan_trade(key: str, direction: int, spot: float, expiry: date, vix: float |
         "note": ("Position size is 0 lots: your risk-per-trade budget is smaller than one lot's risk. "
                  "Raise capital/risk % in Settings or skip.") if lots == 0 else "",
     }
+
+
+def _liquid_strike(chain: list[dict] | None, atm: float, direction: int, inst, otm_steps: int) -> float:
+    """The strike an owner would actually get filled on: near OTM, with the most open interest.
+
+    Without a live chain we cannot see liquidity, so we fall back to the plain OTM step.
+    """
+    default = atm + direction * otm_steps * inst.strike_step
+    if not chain:
+        return default
+    kind = "CE" if direction > 0 else "PE"
+    lo, hi = atm - 2 * inst.strike_step, atm + 3 * inst.strike_step
+    side = [r for r in chain if lo <= r["strike"] <= hi
+            and ((r["strike"] >= atm) if direction > 0 else (r["strike"] <= atm))]
+    if not side:
+        return default
+    def rank(r):
+        leg = r.get(kind) or {}
+        return (leg.get("oi") or 0, leg.get("volume") or 0)
+    best = max(side, key=rank)
+    return float(best["strike"]) if rank(best) != (0, 0) else default
+
+
+def quote_both_sides(key: str, spot: float, expiry: date, vix: float | None, risk: dict,
+                     chain: list[dict] | None = None, now: datetime | None = None,
+                     otm_steps: int = 1) -> dict:
+    """Price the CALL and the PUT an owner could buy today, side by side, and say which one fits.
+
+    Two things this makes visible that a single ticket cannot:
+
+    * Calls and puts are not symmetric. On the same day the put can cost 50% more than the
+      call: it might be nearer the money, and Indian index options carry a put skew because
+      big players buy downside protection. You cannot compare "a call" with "a put" unless
+      you compare strikes at the same distance from spot.
+    * A long option's worst case is the WHOLE premium, not the premium minus the stop. The
+      stop only caps the loss if it fills.
+    """
+    inst = INSTRUMENTS[key]
+    atm = round(spot / inst.strike_step) * inst.strike_step
+    T = years_to_expiry(expiry, now)
+    sigma = (vix or 14) / 100
+    capital = float(risk.get("capital") or 0)
+    lot = inst.lot_size
+    sides: dict[str, dict] = {}
+
+    for kind, direction in (("CE", 1), ("PE", -1)):
+        strike = _liquid_strike(chain, atm, direction, inst, otm_steps)
+        est = bs(spot, strike, T, sigma, kind)
+        premium, source = est["price"], "estimated (Black-Scholes using India VIX)"
+        row = next((r for r in (chain or []) if r["strike"] == strike), None)
+        leg = (row or {}).get(kind) or {}
+        if leg.get("ltp"):
+            premium = float(leg["ltp"])
+            source = "live (Angel One)"
+            iv = implied_vol(premium, spot, strike, T, kind)
+            if iv:
+                est = bs(spot, strike, T, iv, kind) | {"iv": iv}
+        premium = max(float(premium), 0.05)
+        dist = strike - spot
+        itm = (dist < 0) if kind == "CE" else (dist > 0)
+        cost = premium * lot
+        charges = round_trip_cost(premium, lot)
+        sides["call" if kind == "CE" else "put"] = {
+            "side": f"BUY {kind}", "option_type": kind, "strike": strike,
+            "symbol_hint": f"{inst.key} {expiry.strftime('%d %b').upper()} {int(strike)} {kind}",
+            "expiry": expiry.isoformat(),
+            "moneyness": "ITM" if itm else ("ATM" if abs(dist) < inst.strike_step / 2 else "OTM"),
+            "distance_points": round(dist, 1),
+            "premium": round(premium, 2), "premium_source": source,
+            "lot_size": lot, "lot_cost": round(cost, 2),
+            "charges_round_trip": round(charges, 2),
+            "worst_case": round(cost + charges, 2),
+            "affordable": bool(capital and cost <= capital),
+            "pct_of_capital": round(cost / capital * 100, 1) if capital else None,
+            "delta": round(est.get("delta", 0), 3),
+            "theta_per_lot_per_day": round(abs(est.get("theta_per_day", 0)) * lot, 2),
+            "breakeven": round(strike + premium if kind == "CE" else strike - premium, 2),
+            "iv": est.get("iv"),
+            "oi": leg.get("oi"), "volume": leg.get("volume"),
+        }
+
+    explain: list[str] = []
+    c, p = sides["call"], sides["put"]
+    if c["premium"] > p["premium"] * 1.25:
+        explain.append(f"The call is {c['premium'] / p['premium']:.2f}x the put. Calls are pricing "
+                       f"more risk on the upside.")
+    elif p["premium"] > c["premium"] * 1.25:
+        explain.append(f"The put is {p['premium'] / c['premium']:.2f}x the call. That is put skew: "
+                       f"big players pay up for downside protection, and the market expects sharper "
+                       f"falls than rallies.")
+    else:
+        explain.append("The call and the put cost about the same, so the market is not leaning "
+                       "either way on volatility.")
+    explain.append(f"One lot is premium x {lot}. The premium changes every day with how far the "
+                   f"strike sits from spot, how many days are left, and India VIX - that is why your "
+                   f"one-lot cost moves between about 6k and 10k from day to day.")
+    explain.append(f"These contracts lose roughly Rs {c['theta_per_lot_per_day']:,.0f} (call) and "
+                   f"Rs {p['theta_per_lot_per_day']:,.0f} (put) of value per day to time decay, "
+                   f"before the index moves at all.")
+
+    fits = [k for k, v in sides.items() if v["affordable"]]
+    if len(fits) == 2:
+        text = (f"You can afford either side: call Rs {c['lot_cost']:,.0f}, "
+                f"put Rs {p['lot_cost']:,.0f}.")
+    elif len(fits) == 1:
+        other = "put" if fits[0] == "call" else "call"
+        text = (f"You can only afford the {fits[0]}: Rs {sides[fits[0]]['lot_cost']:,.0f}. "
+                f"The {other} one lot costs Rs {sides[other]['lot_cost']:,.0f}, which is more than "
+                f"your capital - so a {'bearish' if other == 'put' else 'bullish'} trade is not "
+                f"available to you today, however good the setup looks.")
+    else:
+        text = (f"Neither side fits: the call needs Rs {c['lot_cost']:,.0f} and the put "
+                f"Rs {p['lot_cost']:,.0f}, against Rs {capital:,.0f} of capital.")
+
+    return {"call": c, "put": p, "affordable": fits, "explain": explain, "text": text,
+            "capital": capital, "expiry": expiry.isoformat(), "spot": round(spot, 2), "atm": atm}

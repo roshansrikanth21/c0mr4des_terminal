@@ -46,6 +46,23 @@ HOLIDAYS = {
     date(2026, 11, 10), date(2026, 11, 24), date(2026, 12, 25),
 }
 
+# Entry/exit discipline for long options (26 Oct 2026, experiment A+B).
+#
+# Two numbers decide whether a long option is worth opening at all, and both are measured against
+# the premium actually paid, not the notional:
+#   * charges - a flat Rs 20/order plus STT is brutal on a cheap contract: Rs 45 of costs on a
+#     Rs 2,000 lot is 2.2%, while the same trade on a Rs 12,000 lot pays 0.6%.
+#   * theta   - the daily rent. It is ~8% of premium a week out, but 30%+ on a 1-day contract, and
+#     SEBI's FY26 data puts 92% of individual losses in options bought near expiry.
+# The clock rules target the two shapes the paper book actually showed: entries after 13:00 that
+# bought a move already spent, and positions bled all the way to the 15:15 square-off.
+ENTRY_RULES = {
+    "max_charge_pct": 1.0,      # round-trip charges must stay under 1% of premium turnover
+    "max_theta_pct": 20.0,      # one day of theta must stay under 20% of premium (blocks ~1-2 DTE)
+    "no_entry_after": (13, 0),  # no fresh longs in the afternoon chop
+    "time_stop": (14, 30),      # cut what is still open before the last-hour decay
+}
+
 # Charges for BUYING options (round trip). Rates as fractions of premium turnover.
 CHARGES = {
     "brokerage_per_order": 20.0,       # flat discount-broker fee
@@ -57,9 +74,24 @@ CHARGES = {
 }
 
 # Risk defaults (overridable from the Settings page)
+# Small-account defaults (Rs 10k): one NIFTY lot costs ~Rs 7k, an average loss is ~Rs 1.7k (17%).
 RISK_DEFAULTS = {
-    "capital": 100000.0,
-    "risk_per_trade_pct": 1.0,
-    "max_trades_per_day": 3,
-    "max_daily_loss_pct": 3.0,
+    "capital": 10000.0,
+    "risk_per_trade_pct": 25.0,
+    "max_trades_per_day": 2,
+    "max_daily_loss_pct": 25.0,
+    # Bank the day once this much is made (+20% of capital = Rs 2,000 on a Rs 10k book) and take
+    # no more entries. Both of the record's best days handed part of a big win back to a later
+    # entry; the cap is there to keep the win, not to chase a bigger one.
+    "daily_profit_pct": 20.0,
+    # One position at a time. The owner wants to learn one trade before juggling three: the
+    # strategies run in parallel slots, and without this cap two of them can be long at once.
+    "max_open_positions": 1,
+    # Owner bar, 9 Nov (his words recorded in MAILBOX): enter only when "you have backed up
+    # evidence to support that you know the trade is gonna go your way", and no trade may risk
+    # more than "1 or 2k max per trade". Code ships the Settings-page defaults; they live ON
+    # for the desk because they end up in settings.json. trader.py reads these keys:
+    # score >= entry_score_min IN the trade's direction, worst case <= max_loss_per_trade.
+    "entry_score_min": 0.50,
+    "max_loss_per_trade": 2000.0,
 }

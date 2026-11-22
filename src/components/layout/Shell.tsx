@@ -9,11 +9,14 @@ import {
   X,
   PlaySquare,
   Radio,
+  FlaskConical,
   Sun,
   Moon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Link, useLocation } from 'react-router-dom';
+import { setTheme, useAppearance } from '@/lib/appearance';
+import { ReplayBar } from '@/components/ReplayBar';
 
 interface ShellProps {
   children: React.ReactNode;
@@ -22,27 +25,16 @@ interface ShellProps {
 export function Shell({ children }: ShellProps) {
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
-  const [theme, setTheme] = React.useState<'light' | 'dark'>(() => {
-    return (localStorage.getItem('theme') as 'light' | 'dark') || 'dark';
-  });
-
-  const toggleTheme = () => {
-    const newTheme = theme === 'light' ? 'dark' : 'light';
-    setTheme(newTheme);
-    localStorage.setItem('theme', newTheme);
-    if (newTheme === 'dark') {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
-  };
+  const { theme } = useAppearance();
+  const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light');
 
   const navItems = [
     { label: 'Dashboard', icon: LayoutDashboard, path: '/' },
     { label: 'News Radar', icon: Radio, path: '/news' },
     { label: 'Backtest', icon: PlaySquare, path: '/backtest' },
-    { label: 'Signal Log', icon: History, path: '/signals' },
-    { label: 'Risk Settings', icon: Settings, path: '/settings' },
+    { label: 'Trade Journal', icon: History, path: '/signals' },
+    { label: 'Capital Test', icon: FlaskConical, path: '/capital' },
+    { label: 'Settings', icon: Settings, path: '/settings' },
   ];
 
   return (
@@ -124,6 +116,7 @@ export function Shell({ children }: ShellProps) {
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto pt-16 lg:pt-0">
         <div className="p-6 lg:p-12 w-full animate-fade-in">
+          <ReplayBar />
           {children}
         </div>
       </main>

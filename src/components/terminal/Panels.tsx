@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
 import {
-  ArrowDownRight, ArrowUpRight, Ban, CalendarClock, CircleDot, Clock, ExternalLink, Globe2, Layers, Newspaper,
-  ShieldAlert, Target, TrendingDown, TrendingUp,
+  ArrowDownRight, Bot, ArrowUpRight, Ban, CalendarClock, CircleDot, Clock, ExternalLink, Globe2, Layers, Newspaper,
+  ShieldAlert, Target, TrendingDown, TrendingUp, Waypoints, CheckCircle2, Hourglass,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { ago, getJSON, inr, num, signalColor, type Analysis, type NewsItem } from '@/lib/api';
+import { ago, getJSON, inr, num, signalColor, type Analysis, type FanStep, type NewsItem, type PaperSummary, type Predict, type PredictLevel, type Symbol, usePredict } from '@/lib/api';
 
 export function PanelTitle({ icon: Icon, children, right }: { icon: any; children: React.ReactNode; right?: React.ReactNode }) {
   return (
@@ -23,14 +24,19 @@ export function Empty({ text = 'Waiting for data...' }: { text?: string }) {
 }
 
 /* ---------------- VERDICT ---------------- */
+/* CALL or PUT card (owner, 9 Nov: "tell me in more simpler terms on whether to call or
+   put and it should have indicators and analyze market trends"). The lean big and plain,
+   then the owner's own GO/WAIT bar, then evidence bullets (daily highs/lows first) and
+   indicator chips - all translated by the backend from numbers the engine already scored. */
 export function VerdictPanel({ a }: { a: Analysis | null }) {
   if (!a) return <Empty text="Reading the market..." />;
-  const tone = a.verdict === 'BUY' ? 'green' : a.verdict === 'SELL' ? 'red' : 'zinc';
-  const leanColor = a.lean === 'BUY' ? 'text-green-500' : a.lean === 'SELL' ? 'text-red-500' : 'text-muted-foreground';
+  const pl = a.plain;
+  const big = pl?.choice ?? (a.verdict === 'BUY' ? 'CALL' : a.verdict === 'SELL' ? 'PUT' : 'TOO MIXED');
+  const tone = big === 'CALL' ? 'green' : big === 'PUT' ? 'red' : 'zinc';
   return (
     <div className="h-full p-4 flex flex-col gap-3 overflow-y-auto custom-scrollbar">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] font-mono font-black tracking-[0.25em] uppercase">Conclusion</span>
+        <span className="text-[10px] font-mono font-black tracking-[0.25em] uppercase">Call or Put?</span>
         <span className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">
           {a.instrument.key} · {new Date(a.generated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
         </span>
@@ -39,26 +45,60 @@ export function VerdictPanel({ a }: { a: Analysis | null }) {
         tone === 'green' && 'border-green-500/40 bg-green-500/10',
         tone === 'red' && 'border-red-500/40 bg-red-500/10',
         tone === 'zinc' && 'border-border bg-muted/30')}>
-        {a.verdict === 'BUY' ? <TrendingUp className="w-10 h-10 text-green-500 shrink-0" />
-          : a.verdict === 'SELL' ? <TrendingDown className="w-10 h-10 text-red-500 shrink-0" />
+        {big === 'CALL' ? <TrendingUp className="w-10 h-10 text-green-500 shrink-0" />
+          : big === 'PUT' ? <TrendingDown className="w-10 h-10 text-red-500 shrink-0" />
             : <Ban className="w-10 h-10 text-muted-foreground shrink-0" />}
         <div className="min-w-0">
           <div className={cn('text-4xl font-black tracking-tighter leading-none',
-            tone === 'green' ? 'text-green-500' : tone === 'red' ? 'text-red-500' : 'text-foreground')}>{a.verdict}</div>
-          <div className="text-xs mt-1.5 text-muted-foreground">{a.headline}</div>
+            tone === 'green' ? 'text-green-500' : tone === 'red' ? 'text-red-500' : 'text-foreground')}>{big}</div>
+          <div className="text-xs mt-1.5 text-muted-foreground">{pl?.line ?? a.headline}</div>
         </div>
       </div>
-      <div className="grid grid-cols-3 gap-2">
-        <Stat label="Lean" value={a.lean} className={leanColor} />
-        <Stat label="Score" value={(a.score > 0 ? '+' : '') + a.score.toFixed(2)} className={signalColor(a.score)} />
-        <Stat label="Strength" value={`${Math.round(a.confidence * 100)}%`} />
-      </div>
-      <div className="h-1.5 w-full rounded-full bg-secondary relative overflow-hidden">
+      {pl && (
+        <div className={cn('flex items-start gap-2 px-3 py-2 rounded-md border text-xs font-mono font-bold leading-snug',
+          pl.go ? 'border-green-500/40 bg-green-500/10 text-green-500' : 'border-amber-500/40 bg-amber-500/10 text-amber-500')}>
+          {pl.go ? <CheckCircle2 className="w-4 h-4 shrink-0 mt-px" /> : <Hourglass className="w-4 h-4 shrink-0 mt-px" />}
+          <div>
+            <span className="uppercase tracking-widest">{pl.go ? 'Your rules say: GO' : 'Your rules say: WAIT'}</span>
+            {pl.wait_reason && <span className="block font-normal opacity-90 mt-0.5">{pl.wait_reason}</span>}
+          </div>
+        </div>
+      )}
+      {pl?.chips && pl.chips.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {pl.chips.map((c) => (
+            <span key={c.k} className="px-2 py-0.5 rounded-sm border border-border bg-muted/30 text-[10px] font-mono">
+              <span className="text-muted-foreground">{c.k} </span>
+              <span className={cn('font-bold uppercase', c.tone === 'up' && 'text-green-500',
+                c.tone === 'down' && 'text-red-500', c.tone === 'flat' && 'text-foreground/70')}>{c.v}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {pl?.bullets && pl.bullets.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">
+            Evidence · daily highs/lows, trend, momentum, levels, candles
+          </div>
+          {pl.bullets.map((b, i) => (
+            <div key={i} className="flex gap-2 text-xs leading-snug">
+              <span className="mt-1.5 h-1.5 w-1.5 rounded-full shrink-0 bg-primary/70" />
+              <span>{b}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="h-1.5 w-full rounded-full bg-secondary relative overflow-hidden shrink-0">
         <div className="absolute top-0 bottom-0 left-1/2 w-px bg-foreground/40" />
         <div className={cn('absolute top-0 bottom-0', a.score >= 0 ? 'left-1/2 bg-green-500' : 'right-1/2 bg-red-500')}
           style={{ width: `${Math.min(50, Math.abs(a.score) * 50)}%` }} />
       </div>
-      <p className="text-xs leading-relaxed text-muted-foreground">{a.summary}</p>
+      {a.shock?.active && (
+        <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 space-y-1.5">
+          <div className="text-[10px] font-mono font-black uppercase tracking-widest text-amber-500">Shock mode · {a.shock.reasons.join(' · ')}</div>
+          {a.shock.playbook.map((t) => <p key={t} className="text-xs leading-snug">{t}</p>)}
+        </div>
+      )}
       {a.gates.length > 0 && (
         <div className="space-y-1.5">
           <div className="text-[9px] font-mono uppercase tracking-widest text-amber-500">Why not trading</div>
@@ -76,8 +116,8 @@ export function VerdictPanel({ a }: { a: Analysis | null }) {
 
 function Stat({ label, value, className }: { label: string; value: React.ReactNode; className?: string }) {
   return (
-    <div className="border border-border rounded-md px-3 py-2 bg-muted/20">
-      <div className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">{label}</div>
+    <div className="min-w-0 border border-border rounded-md px-2.5 py-2 bg-muted/20">
+      <div className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest truncate">{label}</div>
       <div className={cn('text-sm font-mono font-bold mt-0.5', className)}>{value}</div>
     </div>
   );
@@ -124,7 +164,7 @@ export function OptionPanel({ a }: { a: Analysis | null }) {
         {o.side} <span className="text-foreground">{o.strike}</span>
       </div>
       <div className="text-[10px] font-mono text-muted-foreground uppercase tracking-widest mt-0.5">{o.symbol_hint} · lot {o.lot_size}</div>
-      <div className="grid grid-cols-3 gap-2 mt-3">
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(96px,1fr))] gap-2 mt-3">
         <Stat label="Premium" value={inr(o.premium, 1)} />
         <Stat label="Stop (prem)" value={inr(o.premium_stop, 1)} className="text-red-500" />
         <Stat label="Target (prem)" value={inr(o.premium_target, 1)} className="text-green-500" />
@@ -135,12 +175,13 @@ export function OptionPanel({ a }: { a: Analysis | null }) {
         <Stat label="Capital" value={inr(o.capital_needed)} />
         <Stat label="Max loss" value={inr(o.max_loss)} className="text-red-500" />
       </div>
-      <div className="grid grid-cols-4 gap-2 mt-2 text-[10px] font-mono text-muted-foreground">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[10px] font-mono text-muted-foreground">
         <span>Δ {o.greeks.delta}</span><span>Θ {o.greeks.theta_per_day}/day</span><span>Vega {o.greeks.vega}</span>
         <span>{o.greeks.iv ? `IV ${(o.greeks.iv * 100).toFixed(1)}%` : `VIX ${a.vix?.value ?? '--'}`}</span>
       </div>
       <p className="text-[10px] text-muted-foreground mt-2">Premium: {o.premium_source}. Charges round trip ≈ {inr(o.charges_round_trip)}. Exit everything by {a.session.square_off_by}.</p>
       {o.note && <p className="text-xs text-amber-500 mt-2">{o.note}</p>}
+      <LiveOrderButton a={a} />
     </div>
   );
 }
@@ -308,6 +349,313 @@ export function NewsPanel() {
     <div className="h-full p-4 overflow-y-auto custom-scrollbar">
       <PanelTitle icon={Newspaper}>Market-moving news</PanelTitle>
       <NewsList items={items} compact />
+    </div>
+  );
+}
+
+/* ---------------- PAPER AUTOPILOT ---------------- */
+export function PaperPanel({ a }: { a: Analysis | null }) {
+  const [sum, setSum] = useState<PaperSummary | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => getJSON<PaperSummary>('/api/paper').then((r) => alive && setSum(r)).catch(() => undefined);
+    load();
+    const id = window.setInterval(load, 15000);
+    return () => { alive = false; window.clearInterval(id); };
+  }, [a?.generated_at]);
+  if (!sum) return <Empty />;
+  const opens = sum.open.filter((p) => !a || p.instrument === a.instrument.key);
+  return (
+    <div className="h-full p-4 overflow-y-auto custom-scrollbar">
+      <PanelTitle icon={Bot} right={<span className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">paper · auto</span>}>
+        Autopilot
+      </PanelTitle>
+      <div className="grid grid-cols-[repeat(auto-fit,minmax(96px,1fr))] gap-2">
+        <Stat label="Today P&L" value={inr(sum.today.pnl)} className={sum.today.pnl >= 0 ? 'text-green-500' : 'text-red-500'} />
+        <Stat label="Trades" value={`${sum.today.trades} (${sum.today.wins} won)`} />
+        <Stat label="All-time" value={inr(sum.all_time.pnl)} className={sum.all_time.pnl >= 0 ? 'text-green-500' : 'text-red-500'} />
+      </div>
+      {Object.keys(sum.by_strategy || {}).length > 0 && (
+        <div className="flex gap-3 mt-2 text-[10px] font-mono text-muted-foreground">
+          {Object.entries(sum.by_strategy).map(([k, v]) => (
+            <span key={k}>{k}: <span className={v.pnl >= 0 ? 'text-green-500' : 'text-red-500'}>{inr(v.pnl)}</span> ({v.wins}/{v.trades})</span>
+          ))}
+        </div>
+      )}
+      {sum.lessons && sum.lessons.flags?.length > 0 && (
+        <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/5 p-2.5 space-y-1">
+          <div className="text-[9px] font-mono font-black uppercase tracking-[0.25em] text-amber-500/90">Honest read</div>
+          {sum.lessons.flags.map((f) => (
+            <p key={f.name} className="text-[10px] leading-snug text-muted-foreground">· {f.text}</p>
+          ))}
+        </div>
+      )}
+      {opens.length ? opens.map((open) => (
+        <div key={open.slot || open.opened_at} className={cn('mt-3 rounded-md border p-3', open.dir > 0 ? 'border-green-500/40 bg-green-500/5' : 'border-red-500/40 bg-red-500/5')}>
+          <div className="flex justify-between items-center">
+            <span className="text-sm font-black">{open.side} {open.strike} <span className="text-[9px] font-mono text-muted-foreground uppercase">{open.strategy}</span></span>
+            <span className={cn('text-sm font-mono font-bold', (open.unrealized ?? 0) >= 0 ? 'text-green-500' : 'text-red-500')}>{inr(open.unrealized ?? 0)}</span>
+          </div>
+          <div className="text-[10px] font-mono text-muted-foreground mt-1">
+            {open.symbol} · {open.quantity} qty · in {num(open.entry_premium)} → now {num(open.mark)}
+          </div>
+          <div className="text-[10px] font-mono text-muted-foreground">index stop {num(open.index_stop, 0)} · {open.index_target == null ? 'hold to 15:15' : `target ${num(open.index_target, 0)}`} · since {new Date(open.opened_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</div>
+        </div>
+      )) : (
+        <p className="text-xs text-muted-foreground mt-3">No open paper position. The autopilot paper-trades each enabled strategy separately (First-Hour breakout = main, First-30; Engine is off by default) and exits on stop, target or 15:15.</p>
+      )}
+      {sum.closed.slice(0, 4).map((t) => (
+        <div key={t.opened_at + t.instrument} className="flex justify-between text-[11px] font-mono mt-1.5">
+          <span className="text-muted-foreground">{new Date(t.opened_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })} {t.instrument} {t.side} · {t.strategy} · {t.reason}</span>
+          <span className={(t.pnl ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}>{inr(t.pnl ?? 0)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------- LIVE ORDER (explicit click, server re-checks caps) ---------------- */
+export function LiveOrderButton({ a }: { a: Analysis }) {
+  const [enabled, setEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { getJSON<{ live_trading: boolean; connected: boolean }>('/api/broker/status').then((r) => setEnabled(r.live_trading)).catch(() => undefined); }, []);
+  const o = a.option;
+  if (!enabled || !o || a.verdict === 'NO TRADE' || o.lots < 1) return null;
+  const limit = Math.round(o.premium * 1.01 * 20) / 20;
+  const place = async () => {
+    const msg = `REAL ORDER via Angel One\n\nBUY ${o.lots} lot(s) = ${o.quantity} qty\n${o.symbol_hint}\nLIMIT ₹${limit}\nMax loss ≈ ${inr(o.max_loss)}\n\nYou must manage the exit yourself. Place it?`;
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try {
+      const r = await getJSON<{ ok: boolean; error?: string }>('/api/orders/place', 20000, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: a.instrument.key, expiry: o.expiry, strike: o.strike, option_type: o.option_type, lots: o.lots, side: 'BUY', limit_price: limit, confirm: true }),
+      });
+      r.ok ? toast.success('Order sent to Angel One') : toast.error(r.error || 'Order rejected');
+    } catch (e) { toast.error((e as Error).message); } finally { setBusy(false); }
+  };
+  return (
+    <button onClick={place} disabled={busy}
+      className={cn('w-full mt-3 py-2.5 rounded-md text-xs font-mono font-black uppercase tracking-widest border',
+        o.option_type === 'CE' ? 'border-green-500 text-green-500 hover:bg-green-500/10' : 'border-red-500 text-red-500 hover:bg-red-500/10')}>
+      {busy ? 'Sending...' : `Place real order · ${o.lots} lot @ ₹${limit}`}
+    </button>
+  );
+}
+
+
+/* ---------------- OPENING RANGE PLAYBOOK ---------------- */
+export function OrbPanel({ a }: { a: Analysis | null }) {
+  const o = a?.orb;
+  if (!a || !o) return <Empty />;
+  const tone = o.verdict === 'BUY' ? 'text-green-500' : o.verdict === 'SELL' ? 'text-red-500' : 'text-foreground';
+  const pos = o.range_high && o.range_low ? Math.max(0, Math.min(100, ((a.price - o.range_low) / (o.range_high - o.range_low)) * 100)) : null;
+  return (
+    <div className="h-full p-4 overflow-y-auto custom-scrollbar">
+      <PanelTitle icon={Target} right={<span className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">{o.status}</span>}>
+        First-hour breakout
+      </PanelTitle>
+      <div className={cn('text-3xl font-black tracking-tighter', tone)}>{o.verdict}</div>
+      <p className="text-xs leading-relaxed mt-1">{o.text}</p>
+      {o.range_high && o.range_low && (
+        <div className="mt-3">
+          <div className="flex justify-between text-[10px] font-mono text-muted-foreground"><span>Low {num(o.range_low, 0)}</span><span>{num(o.range_points, 0)} pts</span><span>High {num(o.range_high, 0)}</span></div>
+          <div className="relative h-2 mt-1 rounded-full bg-secondary">
+            {pos !== null && <div className="absolute -top-1 w-1 h-4 bg-primary rounded-sm" style={{ left: `calc(${pos}% - 2px)` }} />}
+          </div>
+          {o.prev_close && <div className="text-[10px] font-mono text-muted-foreground mt-1.5">Yesterday's close {num(o.prev_close, 0)} · price is {a.price > o.prev_close ? 'above (only BUY breaks count)' : 'below (only SELL breaks count)'}</div>}
+        </div>
+      )}
+      {o.option && o.verdict !== 'NO TRADE' && (
+        <div className="mt-3 text-xs font-mono">
+          <span className={o.option.option_type === 'CE' ? 'text-green-500' : 'text-red-500'}>{o.option.side} {o.option.strike}</span>
+          {' '}@ ~{inr(o.option.premium, 1)} · {o.option.lots} lot · stop {num(o.stop, 0)} · target {num(o.target, 0)}
+        </div>
+      )}
+      {a.first30 && (
+        <div className="mt-3 border-t border-border pt-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono font-black uppercase tracking-widest">First-30 rule</span>
+            <span className={cn('text-xs font-black', a.first30.verdict === 'BUY' ? 'text-green-500' : a.first30.verdict === 'SELL' ? 'text-red-500' : 'text-muted-foreground')}>{a.first30.verdict}</span>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">{a.first30.text}</p>
+        </div>
+      )}
+      <p className="text-[10px] text-muted-foreground mt-3">Evidence: 2 years of NIFTY (Nov 2023 - Oct 2026), 549 trades, 44% winners, profit factor 1.41, profitable in 11 of 13 quarters (modelled premiums). This rule now skips expiry days, so the number that applies is PF 1.15 (+Rs 65k) - close to break-even. The First-30 rule is weaker (PF 1.11) and is kept only for comparison.</p>
+    </div>
+  );
+}
+
+/* ---------------- PREDICT (owner request, 9 Nov: Bayesian + Monte Carlo range) ---------------- */
+
+/* Fan forecast (owner, 9 Nov: "a probability showing it will move up or down with the chart"):
+   violet percentile bands around the amber median path, dashed line where price stands now,
+   the chart's own key levels drawn through the fan (short tags, de-overlapped), and a per-step
+   strip that goes green when most paths are above the current price, red below
+   (brightness = distance from a coin flip). Colors match the CandleChart overlay. */
+const lvTag = (n: string) => n
+  .replace('Prev Day High', 'PDH').replace('Prev Day Low', 'PDL').replace('Prev Close', 'PCL')
+  .replace('Opening Range ', 'OR').replace('Swing zone (', 'Zone ').replace(' touches)', 'x')
+  .replace('Round Number', 'Round').replace('Today Open', 'Open').replace('CPR', 'CPR');
+
+function FanChart({ fan, spot, levels = [] }: { fan: FanStep[]; spot: number; levels?: PredictLevel[] }) {
+  const W = 306, H = 148, TOP = 8, STRIP = 9, GAP = 5;
+  const BOT = H - STRIP - GAP - 1;                     // price-zone bottom; the strip sits under it
+  const lo = Math.min(...fan.map(s => s.q10), spot);
+  const hi = Math.max(...fan.map(s => s.q90), spot);
+  const pad = (hi - lo) * 0.08 || 10;
+  const ylo = lo - pad, yhi = hi + pad;
+  const n = fan.length;
+  const px = (i: number) => 3 + (i / Math.max(n - 1, 1)) * (W - 6);
+  const py = (v: number) => TOP + (1 - (v - ylo) / (yhi - ylo)) * (BOT - TOP);
+  const path = (get: (s: FanStep) => number) =>
+    fan.map((s, i) => `${i ? 'L' : 'M'}${px(i).toFixed(1)} ${py(get(s)).toFixed(1)}`).join(' ');
+  const band = (up: (s: FanStep) => number, dn: (s: FanStep) => number) =>
+    `${path(up)}${[...fan].reverse().map((s, j) => `L${px(n - 1 - j).toFixed(1)} ${py(dn(s)).toFixed(1)}`).join(' ')} Z`;
+  const first = fan[0], last = fan[n - 1];
+  const hhmm = (t: string) => new Date(t).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const fmt0 = (v: number) => v.toLocaleString('en-IN', { maximumFractionDigits: 0 });
+  const spotY = py(spot);
+  const slotW = (W - 6) / n;
+  // nearest levels first (backend sorts them), de-overlapped before drawing
+  const shownLevels: PredictLevel[] = [];
+  let lastY = -Infinity;
+  for (const lv of levels.slice(0, 8)) {
+    if (lv.price <= ylo || lv.price >= yhi) continue;
+    const y = py(lv.price);
+    if (Math.abs(y - lastY) < (BOT - TOP) * 0.09) continue;
+    shownLevels.push(lv);
+    lastY = y;
+    if (shownLevels.length >= 3) break;
+  }
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Monte Carlo probability fan">
+        <path d={band(s => s.q90, s => s.q10)} fill="#8b5cf6" fillOpacity={0.14} />
+        <path d={band(s => s.q75, s => s.q25)} fill="#8b5cf6" fillOpacity={0.3} />
+        {shownLevels.map(lv => (
+          <g key={`${lv.name}-${lv.price}`}>
+            <line x1={3} x2={W - 3} y1={py(lv.price)} y2={py(lv.price)} strokeDasharray="2 3"
+                  stroke="#a1a1aa" strokeWidth={0.7} opacity={0.55} />
+            <text x={W - 4} y={py(lv.price) - 1.5} textAnchor="end" fontSize={6.5} opacity={0.8}
+                  fill="#a1a1aa">{lvTag(lv.name)}</text>
+          </g>
+        ))}
+        {spot > ylo && spot < yhi &&
+          <line x1={3} x2={W - 3} y1={spotY} y2={spotY} strokeDasharray="3 3" stroke="#e4e4e7" strokeWidth={1} />}
+        <path d={path(s => s.median)} fill="none" stroke="#f59e0b" strokeWidth={2} />
+        {fan.map((s, i) => (
+          <rect key={s.t} x={Math.max(0.5, px(i) - slotW * 0.4)} y={BOT + GAP}
+                width={Math.max(1.2, slotW * 0.8)} height={STRIP}
+                className={s.p_up >= 0.5 ? 'fill-green-500' : 'fill-red-500'}
+                opacity={0.25 + Math.min(0.6, Math.abs(s.p_up - 0.5) * 2)} />
+        ))}
+      </svg>
+      <div className="flex justify-between mt-1 text-[9px] font-mono text-muted-foreground">
+        <span>{hhmm(first.t)}</span>
+        <span>{fmt0(last.q10)} … {fmt0(last.q90)}</span>
+        <span>{hhmm(last.t)}</span>
+      </div>
+    </div>
+  );
+}
+
+const pct = (v: number | null | undefined) => (v == null ? '--' : `${(v * 100).toFixed(0)}%`);
+
+export function PredictPanel({ symbol }: { symbol: Symbol }) {
+  const { data: p, error } = usePredict(symbol);
+  if (error && !p) return <Empty text={`Prediction unavailable: ${error}`} />;
+  if (!p) return <Empty text="Simulating 2,400 paths..." />;
+  if (p.error) return <Empty text={p.error} />;
+  const hasToday = !!p.fan?.today?.length;
+  const headline = hasToday ? (p.today_p_close_up?.from_now ?? null) : (p.bayes_up?.mean ?? null);
+  const up = (headline ?? 0.5) >= 0.5;
+  const lvls = (p.levels ?? []).slice(0, 6);
+  const dirWord = p.direction > 0 ? 'BUY call' : p.direction < 0 ? 'BUY put' : null;
+  const tone = p.daily?.score != null ? signalColor(p.daily.score) : 'text-muted-foreground';
+  return (
+    <div className="h-full p-4 flex flex-col gap-3 overflow-y-auto custom-scrollbar">
+      <PanelTitle icon={Waypoints} right={
+        <span className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">
+          {p.size.intraday_sessions} sessions · {p.size.paths.toLocaleString('en-IN')} paths
+        </span>}>
+        Forecast
+      </PanelTitle>
+
+      <div className="flex items-end justify-between gap-2">
+        <div>
+          <div className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">
+            {hasToday ? 'Will it move up or down from here?' : 'Up-day rate (Bayesian)'}
+          </div>
+          <div className={cn('text-3xl font-black tracking-tighter leading-none mt-0.5',
+                             headline == null ? 'text-muted-foreground' : up ? 'text-green-500' : 'text-red-500')}>
+            {pct(headline)} <span className="text-xs font-bold text-muted-foreground">{headline == null ? '' : up ? 'UP' : 'DOWN'}</span>
+          </div>
+          <div className="text-[9px] text-muted-foreground mt-1">
+            {hasToday
+              ? `odds price sits above ₹${num(p.price, 0)} at 15:15 (Monte Carlo paths)`
+              : `share of up closes in the last ${p.bayes_up?.n ?? 0} days`}
+          </div>
+        </div>
+        {dirWord && <span className="shrink-0 text-[9px] font-mono px-2 py-0.5 rounded-full border border-border bg-secondary/60">{dirWord} plan live</span>}
+      </div>
+
+      {hasToday && p.fan?.today && (
+        <section>
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
+            Today · {p.minutes_left} min left · bands 10-90% &amp; 25-75% · strip = P(up)
+          </div>
+          <FanChart fan={p.fan.today} spot={p.price} levels={lvls} />
+          <div className="grid grid-cols-2 gap-2 mt-1.5">
+            <Stat label="Close above open" value={pct(p.today_p_close_up?.mc)} />
+            <Stat label="90% width (pts)" value={num(p.today?.exp_move, 0)} />
+          </div>
+          {p.pattern && (
+            <p className={cn('text-[11px] font-mono mt-1.5 leading-snug',
+                             p.pattern.dir > 0 ? 'text-green-500' : p.pattern.dir < 0 ? 'text-red-500' : 'text-muted-foreground')}>
+              {p.pattern.name}: <span className="opacity-80">{p.pattern.meaning}</span>
+            </p>
+          )}
+        </section>
+      )}
+      {!hasToday && (
+        <p className="text-xs text-muted-foreground">{p.trading_day ? 'Simulation window is empty right now.' : 'Holiday or weekend: no intraday fan.'}</p>
+      )}
+
+      {dirWord && (
+        <section>
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1.5">Your live plan detected: {dirWord}</div>
+          <div className="grid grid-cols-3 gap-2">
+            <Stat label="Target first" value={pct(p.barriers.target_before_stop)} className="text-green-500" />
+            <Stat label="Touches target" value={pct(p.barriers.touch_target)} />
+            <Stat label="Touches stop" value={pct(p.barriers.touch_stop)} className="text-red-500" />
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1">How past afternoon behaviour usually comes out against your current stop and target.</p>
+        </section>
+      )}
+
+      {p.fan && p.fan.next.length > 0 && (
+        <section>
+          <div className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground mb-1">
+            Next session · {new Date(p.fan.next[0].t).toLocaleDateString('en-IN', { weekday: 'short' })} 09:15 → 15:15
+          </div>
+          <FanChart fan={p.fan.next} spot={p.price} levels={lvls} />
+          <div className="grid grid-cols-2 gap-2 mt-1.5">
+            <Stat label="Median close" value={num(p.next_session?.median, 0)} />
+            <Stat label="90% width (pts)" value={num(p.next_session?.exp_move, 0)} />
+          </div>
+        </section>
+      )}
+
+      {p.bayes_up && (
+        <p className="text-[11px] leading-relaxed">
+          Bayesian up-day rate: <span className="font-black">{pct(p.bayes_up.mean)}</span>
+          {' '}({p.bayes_up.k}/{p.bayes_up.n} up days · 95% CI {pct(p.bayes_up.ci95[0])}–{pct(p.bayes_up.ci95[1])})
+        </p>
+      )}
+
+      <p className={cn('text-[11px] font-mono', tone)}>{p.daily?.text}</p>
+      <p className="text-[9px] text-muted-foreground">{p.method}</p>
     </div>
   );
 }
